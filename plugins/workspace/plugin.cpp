@@ -1,0 +1,478 @@
+// plugin/workspace —— 文件事务插件（方案 §5.2）。
+//
+// 发布统一 ToolTable（契约 vc_tool.hpp；svc 名 vc.tool.workspace）：
+//   read / list / search —— 只读工具，同步返回
+//   apply                —— 编辑事务（dry_run 校验+diff；正式落盘并按 turn 分组记快照）
+//   undo_turn            —— 整组弹回（两段式：先全组裁决再写回，任一冲突 ⇒ 零改动）
+//
+// jail 根：env ITHACA_WORKSPACE_DIR（UTF-8）> 当前目录。越界 / 保留设备名 /
+// 段尾点一律拒绝，拒绝原因回灌给模型自我纠正。
+//
+// 线程纪律：全部表调用发生在宿主线程无自有线程、无 poster 需求）。
+// 状态边界：快照是纯内存态——插件卸载即弃，撤销能力随激活会话一起撤销（文档明示）。
+#include "iface.hpp"
+
+#include "vc_events.hpp"
+#include "vc_tool.hpp"
+
+#include "diff.hpp"
+#include "edit.hpp"
+#include "fs.hpp"
+#include "jail.hpp"
+#include "snapshots.hpp"
+
+#include <nostos/abi/plugin.hpp>
+#include <nostos/kit/win.hpp>
+
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <mutex>
+#include <system_error>
+#include <functional>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+using nlohmann::json;
+
+constexpr std::size_t kReadCap = 256 * 1024;   // read 的内容字节上限
+constexpr std::size_t kListEntriesCap = 500;   // list 条目上限
+constexpr int kListDepthCap = 6;               // list 递归深度上限
+constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
+constexpr int kSearchDepthCap = 8;
+constexpr std::size_t kSearchHitCap = 50;      // search 命中上限（默认值，参数可降）
+constexpr std::size_t kDiffShowCap = 8 * 1024; // 单文件 diff 文本截断（结果体积护栏）
+
+class WorkspacePlugin {
+public:
+    static constexpr std::string_view name = "vc.workspace";
+    static constexpr std::uint32_t version = NOSTOS_PLUGIN_VERSION(0, 1, 0);
+
+    nostos_status activate(const nostos::abi::Host& host) {
+        host_ = host;
+        const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
+        jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(
+            env != nullptr && *env != '\0' ? env : "."));
+        store_ = std::make_unique<vcws::DiskStore>();
+
+        nostos::abi::init_table(table_);
+        table_.self = this;
+        table_.list = &WorkspacePlugin::list_thunk;
+        table_.execute = &WorkspacePlugin::execute_thunk;
+        if (host.publish(vcws::kToolSvc, &table_) != NOSTOS_OK) {
+            host.log(4, "ithaca.workspace: 发布 vc.tool.workspace 失败（同名服务已存在？）");
+            return NOSTOS_ERR_FAILED;
+        }
+
+        // 热接入提示（发现的主通道是 agent 的配置清单——方案 §4.1；这是给面板/日志看的）
+        const vc_api::ToolRegister note{vcws::kToolSvcName};
+        host_.emit(vc_api::tool_register, &note);
+        host.log(2, "ithaca.workspace: 就绪，jail 根 = " +
+                        nostos::kit::win::wide_to_utf8(jail_->root().c_str()));
+
+        // 工作区热切——重建 Jail 边界，立即生效
+        subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
+            const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
+            if (e->root == nullptr || *e->root == '\0') return;
+            std::error_code ec;
+            fs::create_directories(fs::path(e->root), ec);
+            jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
+            host_.log(2, "ithaca.workspace: 工作区已热切为 " + std::string(e->root));
+        }));
+        return NOSTOS_OK;
+    }
+
+    void deactivate() noexcept {
+        subs_.clear();
+        snaps_ = vcws::SnapshotStack{};  // 快照是内存态：随激活会话一起撤销
+        host_.log(2, "ithaca.workspace: 已停用");
+    }
+
+private:
+    // ---- ToolTable 槽位（noexcept thunk → 成员函数）----------------------------
+
+    static nostos_status list_thunk(void* self, const char** out_json) noexcept {
+        return static_cast<WorkspacePlugin*>(self)->tool_list(out_json);
+    }
+    static nostos_status execute_thunk(void* self, const char* tool, const char* args_json,
+                                       int turn_id, const char** out_json) noexcept {
+        return static_cast<WorkspacePlugin*>(self)->tool_execute(tool, args_json, turn_id,
+                                                                 out_json);
+    }
+
+    nostos_status tool_list(const char** out) {
+        // 工具自述：name + description + JSON schema——agent 据此拼 LLM 的 tools 数组，
+        // 本插件不解释、agent 不硬编码（新增工具插件零 agent 改动的根基）。
+        json schema_path = {{"type", "string"}, {"description", "工作区内相对路径"}};
+        // NOTE: properties 必须显式建 json::object——花括号初始化会把 {"k",v} 对
+        // 变成 [ ["k",v], ... ] 数组对，DeepSeek/OpenAI 的 JSON Schema 不认（踩过：400）
+        auto object_with = [](std::initializer_list<json::value_type> props,
+                              json required) {
+            json properties = json::object();
+            for (const auto& p : props) {
+                if (p.is_array() && p.size() == 2 && p[0].is_string())
+                    properties[p[0].get<std::string>()] = p[1];
+            }
+            return json{{"type", "object"}, {"properties", std::move(properties)},
+                        {"required", std::move(required)}};
+        };
+        json tools = json::array(
+            {json{{"name", "read"},
+                  {"description", "读取工作区内文本文件（拒绝二进制；上限 256KB）"},
+                  {"schema", object_with({{"path", schema_path}}, json::array({"path"}))}},
+             json{{"name", "list"},
+                  {"description", "列出目录内容（含子目录，默认深度 3，上限 500 条）"},
+                  {"schema", object_with(
+                                 {{"path", schema_path},
+                                  {"depth", {{"type", "integer"}, {"description", "1-6"}}}},
+                                 json::array())}},
+             json{{"name", "search"},
+                  {"description", "工作区内按字面量子串搜索（大小写敏感，默认上限 50 命中）"},
+                  {"schema", object_with(
+                                 {{"query", {{"type", "string"}}},
+                                  {"max_hits", {{"type", "integer"}}}},
+                                 json::array({"query"}))}},
+             json{{"name", "apply"},
+                  {"description",
+                   "编辑事务：write（整文件）+ replace（精确块，默认必须恰好命中一次，"
+                   "replace_all=true 全部替换）。"
+                   "dry_run=true 只校验并生成 diff、不落盘；正式落盘按 turn 记入撤销快照"},
+                  {"schema", object_with(
+                                 {{"dry_run", {{"type", "boolean"}}},
+                                  {"ops", {{"type", "array"}}}},
+                                 json::array({"ops"}))}},
+             json{{"name", "undo_turn"},
+                  {"description",
+                   "撤销一个 turn 的全部编辑（默认最近一个）。外部改动过的文件会让整组拒绝"},
+                  {"schema", object_with({{"turn_id", {{"type", "integer"}}}}, json::array())}}});
+        return finish(json{{"ok", true}, {"tools", tools}}, out);
+    }
+
+    nostos_status tool_execute(const char* tool, const char* args_json, int turn_id,
+                               const char** out) {
+        // NOTE: 全工具串行锁——除 agent 外，webui 的 HTTP select 线程也直调本表
+        // （文件树 /api/fs/list），而 list/search 用共享遍历缓冲、finish 写共享
+        // 出参缓冲 out_buf_，双线程并发即竞态。锁粒度 = 单次工具调用，list 被
+        // 500 条上限兜底、apply 有快照纪律，不会长持锁。
+        std::lock_guard<std::mutex> lock(tool_mu_);
+        json args = json::parse(args_json != nullptr ? args_json : "{}", nullptr,
+                                /*allow_exceptions=*/false);
+        if (args.is_discarded() || !args.is_object()) args = json::object();
+        try {
+            const std::string t = tool != nullptr ? tool : "";
+            if (t == "read") return finish(read_tool(args), out);
+            if (t == "list") return finish(list_tool(args), out);
+            if (t == "search") return finish(search_tool(args), out);
+            if (t == "apply") return finish(apply_tool(args, turn_id), out);
+            if (t == "undo_turn") return finish(undo_tool(args), out);
+            return finish(json{{"ok", false}, {"error", "未知工具: \"" + t + "\""}}, out);
+        } catch (const std::exception& e) {
+            return finish(json{{"ok", false}, {"error", std::string("内部错误: ") + e.what()}},
+                          out);
+        }
+    }
+
+    // 约定：NOSTOS_OK 只代表"调用成功"；工具级失败（文件不存在、命中不为 1、越界被拒…）
+    // 以 ok:false + error 的 JSON 返回——这是给模型的正常回灌通路，不是基础设施错误。
+    nostos_status finish(json result, const char** out) {
+        out_buf_ = result.dump();
+        *out = out_buf_.c_str();
+        return NOSTOS_OK;
+    }
+
+    // ---- 工具实现 ---------------------------------------------------------------
+
+    json read_tool(const json& args) {
+        std::wstring full;
+        std::string norm, err;
+        if (!resolve_arg(args.value("path", ""), full, norm, err)) return fail(err);
+        std::string content;
+        if (!store_->read(full, content))
+            return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
+        if (content.find('\0') != std::string::npos)
+            return json{{"ok", false}, {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm}};
+        if (!vcws::utf8_valid(content))
+            return json{{"ok", false}, {"error", "不是有效的 UTF-8 文本: " + norm}};
+        bool truncated = false;
+        if (content.size() > kReadCap) {
+            content = vcws::trim_utf8(content, kReadCap);
+            truncated = true;
+        }
+        return json{{"ok", true}, {"path", norm}, {"content", content}, {"truncated", truncated}};
+    }
+
+    json list_tool(const json& args) {
+        const std::string rel = args.value("path", "");
+        std::wstring full;
+        std::string norm, err;
+        if (rel.empty()) {
+            full = jail_->root();
+        } else if (!resolve_arg(rel, full, norm, err)) {
+            return fail(err);
+        }
+        std::error_code ec;
+        if (!fs::exists(full, ec) || !fs::is_directory(full, ec))
+            return json{{"ok", false}, {"error", "目录不存在: " + (norm.empty() ? "." : norm)}};
+        const int depth = std::min(args.value("depth", 3), kListDepthCap);
+        entries_ = json::array();
+        listed_ = 0;
+        truncated_ = false;
+        walk(full, norm, depth);
+        return json{{"ok", true},
+                    {"entries", entries_},
+                    {"truncated", truncated_}};
+    }
+
+    void walk(const fs::path& dir, const std::string& rel_prefix, int depth) {
+        if (depth <= 0 || listed_ >= kListEntriesCap) {
+            truncated_ = truncated_ || listed_ >= kListEntriesCap;
+            return;
+        }
+        std::error_code ec;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+        for (; it != end && !truncated_; it.increment(ec)) {
+            if (ec) break;
+            std::error_code se;
+            const bool is_dir = it->is_directory(se) && !se;
+            if (it->is_symlink(se) && !se) continue;  // 重解析点不入遍历（防环、防出 jail）
+            const std::string child_rel =
+                rel_prefix.empty() ? nostos::kit::win::wide_to_utf8(it->path().filename().c_str())
+                                   : rel_prefix + "/" +
+                                         nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
+            std::uint64_t size = 0;
+            if (!is_dir) {
+                std::error_code ze;
+                size = static_cast<std::uint64_t>(it->file_size(ze));
+            }
+            entries_.push_back(
+                json{{"path", child_rel}, {"type", is_dir ? "dir" : "file"}, {"size", size}});
+            ++listed_;
+            if (listed_ >= kListEntriesCap) {
+                truncated_ = true;
+                return;
+            }
+            if (is_dir) walk(it->path(), child_rel, depth - 1);
+        }
+        if (ec) truncated_ = true;
+    }
+
+    json search_tool(const json& args) {
+        const std::string query = args.value("query", "");
+        if (query.empty()) return fail("query 为空");
+        const int max_hits =
+            std::min(std::max(args.value("max_hits", static_cast<int>(kSearchHitCap)), 1), 200);
+        hits_ = json::array();
+        scanned_ = 0;
+        hit_count_ = 0;
+        truncated_ = false;
+        stop_ = false;
+        walk_search(jail_->root(), "", static_cast<int>(kSearchDepthCap), query, max_hits);
+        return json{{"ok", true},
+                    {"hits", hits_},
+                    {"scanned", scanned_},
+                    {"truncated", truncated_}};
+    }
+
+    void walk_search(const fs::path& dir, const std::string& rel_prefix, int depth,
+                     const std::string& query, int max_hits) {
+        if (stop_ || depth <= 0) {
+            if (depth <= 0) truncated_ = true;
+            return;
+        }
+        std::error_code ec;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+        for (; it != end && !stop_; it.increment(ec)) {
+            if (ec) break;
+            std::error_code se;
+            if (it->is_symlink(se) && !se) continue;
+            const bool is_dir = it->is_directory(se) && !se;
+            const std::string child_rel =
+                rel_prefix.empty() ? nostos::kit::win::wide_to_utf8(it->path().filename().c_str())
+                                   : rel_prefix + "/" +
+                                         nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
+            if (is_dir) {
+                walk_search(it->path(), child_rel, depth - 1, query, max_hits);
+                continue;
+            }
+            if (++scanned_ > kSearchFilesCap) {
+                truncated_ = true;
+                stop_ = true;
+                return;
+            }
+            std::error_code ze;
+            if (it->file_size(ze) > 1024 * 1024 || ze) continue;  // 大文件跳过
+            std::string content;
+            if (!store_->read(it->path().wstring(), content)) continue;
+            if (content.find('\0') != std::string::npos) continue;  // 二进制跳过
+            for (std::size_t pos = content.find(query);
+                 pos != std::string::npos && hit_count_ < max_hits;
+                 pos = content.find(query, pos + query.size())) {
+                std::size_t line_start = content.rfind('\n', pos);
+                line_start = line_start == std::string::npos ? 0 : line_start + 1;
+                std::size_t line_end = content.find('\n', pos);
+                if (line_end == std::string::npos) line_end = content.size();
+                std::string line_text = content.substr(line_start, line_end - line_start);
+                if (!line_text.empty() && line_text.back() == '\r') line_text.pop_back();
+                const int line_no =
+                    1 + static_cast<int>(std::count(content.begin(), content.begin() + static_cast<long>(pos), '\n'));
+                hits_.push_back(json{{"path", child_rel},
+                                     {"line", line_no},
+                                     {"text", vcws::trim_utf8(line_text, 200)}});
+                ++hit_count_;
+            }
+            if (hit_count_ >= max_hits) {
+                stop_ = true;      // 命中满即停
+                truncated_ = true; // "可能还有更多"以 truncated 标注
+            }
+        }
+        if (ec) truncated_ = true;
+    }
+
+    json apply_tool(const json& args, int turn_id) {
+        std::vector<vcws::EditOp> ops;
+        std::vector<vcws::OpError> parse_errors;
+        vcws::parse_ops(args.value("ops", json::array()), ops, parse_errors);
+        if (!parse_errors.empty()) return fail_json("op 解析失败", parse_errors);
+
+        const bool dry = args.value("dry_run", false);
+        const vcws::ApplyResult r = vcws::apply_ops(*jail_, *store_, ops, dry);
+
+        json files = json::array();
+        for (const auto& e : r.edits) {
+            std::string diff = e.diff;
+            if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
+            files.push_back(json{{"path", e.path},
+                                 {"is_new", e.is_new},
+                                 {"edits", e.ops_count},
+                                 {"diff", diff}});
+        }
+        json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
+        j["files"] = files;
+        if (!r.errors.empty()) j["errors"] = fail_json_errors(r.errors);
+        if (r.ok && !dry) {
+            std::vector<vcws::FileSnap> snaps;
+            snaps.reserve(r.edits.size());
+            for (const auto& e : r.edits)
+                snaps.push_back(vcws::FileSnap{e.path, e.full, e.before, e.after, e.is_new});
+            snaps_.add(turn_id, std::move(snaps));
+            j["snapshot_depth"] = snaps_.depth();
+            // vc.edit.applied：真实落盘后广播（edit-diff 方案：修改即事实，diff 是报告）。
+            // diff_text 拼装含 "── path（N 处编辑）" 文件头 + hunk 集；载荷必须用**具名
+            // 缓冲**——emit 同步派发，paths.dump() 这类语句级临时一悬垂就是 UAF
+            json paths = json::array();
+            std::string diff_text;
+            for (const auto& e : r.edits) {
+                paths.push_back(e.path);  // UTF-8 相对路径；push e.full（wstring）会变码元数组
+                std::string d = e.diff;
+                if (d.size() > kDiffShowCap) d = vcws::trim_utf8(d, kDiffShowCap) + "\n（diff 截断）";
+                diff_text += "── " + e.path;
+                if (e.ops_count > 1) diff_text += "（" + std::to_string(e.ops_count) + " 处编辑）";
+                diff_text += "\n" + d;
+            }
+            const std::string paths_json = paths.dump();
+            const vc_api::EditApplied ap{turn_id, paths_json.c_str(), diff_text.c_str()};
+            host_.emit(vc_api::edit_applied, &ap);
+        }
+        return j;
+    }
+
+    json undo_tool(const json& args) {
+        const bool has_turn = args.contains("turn_id");
+        const vcws::TurnGroup* group =
+            has_turn ? snaps_.find(args.value("turn_id", 0)) : snaps_.peek_latest();
+        if (group == nullptr)
+            return json{{"ok", false},
+                        {"error", "没有可撤销的 turn（栈深 " + std::to_string(snaps_.depth()) + "）"}};
+        const int turn_id = group->turn_id;  // 先拷贝：pop 之后 group 指针失效（ASan 捕获过）
+
+        // 两段式：先全组只读裁决——任一冲突（外部改过 / 被删）⇒ 整组零改动并点名。
+        json conflicts = json::array();
+        for (const auto& f : group->files) {
+            std::string err;
+            if (!vcws::undo_check(*store_, f, err)) conflicts.push_back(err);
+        }
+        if (!conflicts.empty())
+            return json{{"ok", false},
+                        {"error", "撤销被拒：turn #" + std::to_string(turn_id) +
+                                      " 存在外部改动（陈旧检测）"},
+                        {"conflicts", conflicts}};
+
+        json restored = json::array();
+        for (auto it = group->files.rbegin(); it != group->files.rend(); ++it) {
+            std::string err;
+            if (!vcws::undo_write(*store_, *it, err))
+                return json{{"ok", false}, {"error", err}};  // 裁决通过后失败极罕见；如实上报
+            restored.push_back(it->path);
+        }
+        if (has_turn) snaps_.pop_turn(turn_id);
+        else snaps_.pop_latest();
+        // 撤销结果广播（此前契约事件无生产者，tui/webui 的"已撤销"来源）
+        const vc_api::EditUndone ev{turn_id, static_cast<int>(snaps_.depth())};
+        host_.emit(vc_api::edit_undone, &ev);
+        return json{{"ok", true},
+                    {"turn_id", turn_id},
+                    {"restored", restored},
+                    {"snapshot_depth", snaps_.depth()}};
+    }
+
+    // ---- 小件 -------------------------------------------------------------------
+
+    bool resolve_arg(const std::string& rel, std::wstring& full, std::string& norm,
+                     std::string& err) {
+        if (!jail_->resolve(rel, full, norm, err)) {
+            err = "路径被拒: " + err;
+            return false;
+        }
+        return true;
+    }
+
+    static json fail(const std::string& error) { return json{{"ok", false}, {"error", error}}; }
+
+    static json fail_json(const std::string& error, const std::vector<vcws::OpError>& errors) {
+        json j{{"ok", false}, {"error", error}};
+        json arr = json::array();
+        for (const auto& e : errors)
+            arr.push_back(json{{"index", e.index},
+                               {"path", e.path},
+                               {"message", e.message}});
+        j["errors"] = arr;
+        return j;
+    }
+
+    static json fail_json_errors(const std::vector<vcws::OpError>& errors) {
+        json arr = json::array();
+        for (const auto& e : errors)
+            arr.push_back(json{{"index", e.index}, {"path", e.path}, {"message", e.message}});
+        return arr;
+    }
+
+    // ---- 状态 ---------------------------------------------------------------------
+
+    nostos::abi::Host host_{};
+    std::unique_ptr<vcws::Jail> jail_;
+    std::unique_ptr<vcws::TextStore> store_;  // DiskStore；单测走 MemoryStore 的纯逻辑头
+    vcws::SnapshotStack snaps_;
+    std::vector<nostos::abi::Host::Subscription> subs_;  // 工作区热切订阅
+    vc_api::ToolTable table_{};
+    std::mutex tool_mu_;   // 全工具串行锁（webui HTTP 线程与 agent 双线程直调，见 tool_execute）
+    std::string out_buf_;  // execute 出参的存活缓冲（调用期有效纪律）
+
+    // 遍历的产出缓冲（list/search 共用模式：成员缓冲 + 标志）
+    json entries_ = json::array();
+    json hits_ = json::array();
+    std::size_t listed_ = 0;
+    std::size_t scanned_ = 0;
+    std::size_t hit_count_ = 0;
+    bool truncated_ = false;
+    bool stop_ = false;
+};
+
+}  // namespace
+
+NOSTOS_PLUGIN(WorkspacePlugin)

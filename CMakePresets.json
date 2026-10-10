@@ -1,0 +1,43 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 24,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "debug",
+            "displayName": "Ithaca 全量：Debug",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "NOSTOS_PRESET_LABEL": "debug"
+            }
+        },
+        {
+            "name": "release",
+            "displayName": "Ithaca 全量：RelWithDebInfo",
+            "binaryDir": "${sourceDir}/build/release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "NOSTOS_PRESET_LABEL": "release"
+            }
+        },
+        {
+            "name": "asan",
+            "displayName": "Ithaca 全量：RelWithDebInfo + AddressSanitizer",
+            "binaryDir": "${sourceDir}/build/asan",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "NOSTOS_ASAN": "ON",
+                "NOSTOS_PRESET_LABEL": "asan"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "debug", "configurePreset": "debug", "configuration": "Debug" },
+        { "name": "release", "configurePreset": "release", "configuration": "RelWithDebInfo" },
+        { "name": "asan", "configurePreset": "asan", "configuration": "RelWithDebInfo" }
+    ]
+}

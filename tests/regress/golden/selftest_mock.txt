@@ -1,0 +1,95 @@
+== ithaca_host selftest ==
+待加载： D:\CODE\c++\nostos_code\build\debug\bin\llm_mock_plugin.dll
+待加载： D:\CODE\c++\nostos_code\build\debug\bin\workspace_plugin.dll
+待加载： D:\CODE\c++\nostos_code\build\debug\bin\runner_plugin.dll
+待加载： D:\CODE\c++\nostos_code\build\debug\bin\agent_plugin.dll
+已加载插件 'ithaca.llm.mock' v0.2.0
+  [日志 2] ithaca.llm.mock: 就绪（turn 剧本 9 条，间隔 5ms）
+已加载插件 'vc.workspace' v0.1.0
+  [日志 2] ithaca.workspace: 就绪，jail 根 = D:\CODE\c++\nostos_code\tests\regress\.ws
+已加载插件 'vc.runner' v0.1.0
+  [日志 2] ithaca.runner: 就绪（权限模式 suggest，jail 根 = D:\CODE\c++\nostos_code\tests\regress\.ws）
+已加载插件 'vc.agent' v0.1.0
+  [日志 2] ithaca.agent: 全新会话（D:\CODE\c++\nostos_code\tests\regress\.ws\session.json）
+  [日志 2] ithaca.agent: 就绪（工具集 3 个；需批准 2 项）
+自检：活跃插件 4 个。
+selftest[workspace] list（空目录）: ✓
+selftest[workspace] write 新文件（turn 1）: ✓
+selftest[workspace] read 验证写入: ✓
+selftest[workspace] dry_run 校验（turn 2）: ✓
+selftest[workspace] read 确认 dry_run 未落盘: ✓
+selftest[workspace] replace 正式落盘（turn 2）: ✓
+selftest[workspace] undo 撤销 turn 2: ✓
+selftest[workspace] read 验证还原: ✓
+selftest[workspace] undo 撤销 turn 1（新文件 = 删除）: ✓
+selftest[workspace] read 确认已删除: ✓
+    done#1
+    [tool] workspace.apply ok=1 ithaca_smoke/m3.txt（新文件） +1 −0
+    done#2
+    [tool] workspace.read ok=1 ithaca_smoke/m3.txt · 13 字节
+    done#3
+    [tool] workspace.apply ok=1 ithaca_smoke/m3.txt +1 −1
+    delta#4: M3 场景完成
+    done#4
+  [日志 2] ithaca.agent: turn #1 完成（tokens total 1100）
+    done#5
+    [tool] runner.run ok=1 exit -1
+    [tool] runner.run ok=0 exit 1｜BUILD FAILED 
+    done#6
+    [tool] workspace.apply ok=1 ithaca_smoke/fix.txt（新文件） +1 −0
+    done#7
+    [tool] runner.run ok=1 exit -1
+    [tool] runner.run ok=1 exit 0｜BUILD OK
+    delta#8: M5 场景完成
+    done#8
+  [日志 2] ithaca.agent: turn #2 完成（tokens total 3960）
+    delta#9: 输出行 1
+
+    delta#9: 输出行 2
+
+    delta#9: 输出行 3
+
+    delta#9: 输出行 4
+
+    delta#9: 输出行 5
+
+    delta#9: 输出行 6
+
+    delta#9: 输出行 7
+
+    delta#9: 输出行 8
+
+    delta#9: 输出行 9
+
+    delta#9: 输出行 10
+
+    delta#9: 输出行 11
+
+    delta#9: 输出行 12
+
+    delta#9: 输出行 13
+
+    delta#9: 输出行 14
+
+    delta#9: 输出行 15
+
+    delta#9: 输出行 16
+
+    delta#9: 输出行 17
+
+    delta#9: 输出行 18
+
+    delta#9: 输出行 19
+
+    delta#9: 输出行 20
+
+    delta#9: 输出行 21
+
+    cancel#0: turn #3 已被用户取消
+    delta#9: 输出行 22
+
+  [日志 2] ithaca.agent: 已停用
+  [日志 2] ithaca.runner: 已停用
+  [日志 2] ithaca.workspace: 已停用
+  [日志 2] ithaca.llm.mock: 已停用
+selftest 通过：delta=2 done=8 error=0 proposals=5，全程 <T>ms；workspace 冒烟 ✓；M3 闭环 ✓（含死锁回归）；M4 取消 ✓；M5 回灌 ✓
