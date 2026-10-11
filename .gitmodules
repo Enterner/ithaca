@@ -1,0 +1,3 @@
+[submodule "external/nostos"]
+	path = external/nostos
+	url = https://github.com/Enterner/nostos.git

@@ -1,16 +1,16 @@
 == ithaca_host selftest ==
-待加载： D:\CODE\c++\nostos_code\build\debug\bin\llm_mock_plugin.dll
-待加载： D:\CODE\c++\nostos_code\build\debug\bin\workspace_plugin.dll
-待加载： D:\CODE\c++\nostos_code\build\debug\bin\runner_plugin.dll
-待加载： D:\CODE\c++\nostos_code\build\debug\bin\agent_plugin.dll
+待加载： <ROOT>\build\debug\bin\llm_mock_plugin.dll
+待加载： <ROOT>\build\debug\bin\workspace_plugin.dll
+待加载： <ROOT>\build\debug\bin\runner_plugin.dll
+待加载： <ROOT>\build\debug\bin\agent_plugin.dll
 已加载插件 'ithaca.llm.mock' v0.2.0
   [日志 2] ithaca.llm.mock: 就绪（turn 剧本 9 条，间隔 5ms）
 已加载插件 'vc.workspace' v0.1.0
-  [日志 2] ithaca.workspace: 就绪，jail 根 = D:\CODE\c++\nostos_code\tests\regress\.ws
+  [日志 2] ithaca.workspace: 就绪，jail 根 = <ROOT>\tests\regress\.ws
 已加载插件 'vc.runner' v0.1.0
-  [日志 2] ithaca.runner: 就绪（权限模式 suggest，jail 根 = D:\CODE\c++\nostos_code\tests\regress\.ws）
+  [日志 2] ithaca.runner: 就绪（权限模式 suggest，jail 根 = <ROOT>\tests\regress\.ws）
 已加载插件 'vc.agent' v0.1.0
-  [日志 2] ithaca.agent: 全新会话（D:\CODE\c++\nostos_code\tests\regress\.ws\session.json）
+  [日志 2] ithaca.agent: 全新会话（<ROOT>\tests\regress\.ws\session.json）
   [日志 2] ithaca.agent: 就绪（工具集 3 个；需批准 2 项）
 自检：活跃插件 4 个。
 selftest[workspace] list（空目录）: ✓

@@ -15,7 +15,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(mcp_plugin
     src/plugin.cpp   # 生命周期 + 状态回发落盘 + NOSTOS_PLUGIN 入口

@@ -16,7 +16,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(workspace_plugin plugin.cpp)
 # kit 的 include 目录：ops/results 的 JSON 编解码用 nlohmann/json（版本随内核 vendored，

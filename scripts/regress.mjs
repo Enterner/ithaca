@@ -50,7 +50,11 @@ function invokeSelftest() {
         console.error(`✗ selftest 退出码 ${r.status}`);
         process.exit(r.status ?? 1);
     }
-    return fs.readFileSync(outFile, "utf8").replaceAll("\r\n", "\n").replaceAll(/全程 \d+ms/g, "全程 <T>ms");
+    return fs.readFileSync(outFile, "utf8")
+        .replaceAll("\r\n", "\n")
+        .replaceAll(/全程 \d+ms/g, "全程 <T>ms")
+        .replaceAll(root, "<ROOT>")                        // 绝对路径归一化（反斜杠形态）——
+        .replaceAll(root.replaceAll("\\", "/"), "<ROOT>"); // 正斜杠形态。golden 才能跨机器比对
 }
 
 console.log("== 回归：两次连续 selftest ==");

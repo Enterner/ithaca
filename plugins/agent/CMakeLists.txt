@@ -16,7 +16,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(agent_plugin
     src/plugin.cpp      # 薄壳（订阅分发）+ manifest + NOSTOS_PLUGIN 入口

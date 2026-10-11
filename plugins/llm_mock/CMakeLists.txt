@@ -16,7 +16,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(llm_mock_plugin plugin.cpp)
 # kit：nlohmann/json（turn 剧本的编解码，M3 起）

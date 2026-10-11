@@ -21,17 +21,23 @@ Ithaca 是一个本地优先的 AI 编程工作台：浏览器与桌面壳两种
 
 ## 依赖的 Nostos 内核
 
-Ithaca 构建在 [Nostos](https://example.com/nostos)（C ABI 插件内核：可逆组合、事件总线、
-能力层与 SDK）之上。内核是**独立仓库**，本仓不包含任何内核代码——构建期通过 `NOSTOS_ROOT`
-指向内核仓根目录（见 `cmake/nostos_root.cmake`），两者各自演进、互不嵌入。
+Ithaca 构建在 [Nostos](https://github.com/Enterner/nostos)（C ABI 插件内核：可逆组合、
+事件总线、能力层与 SDK）之上。内核是**独立仓库**，本仓不复制内核代码——
+它以 git 子模块挂在 `external/nostos`（`git clone --recurse-submodules` 即随仓取到，
+见 `cmake/nostos_root.cmake`）；内核仓开发者可用环境变量 `NOSTOS_ROOT` 或
+`-DNOSTOS_ROOT=` 指向本地内核，优先级高于子模块。两者各自演进、互不嵌入。
+
+桌面壳的 WebView2 SDK（include + 加载器）取自微软官方 NuGet 包的必需子集，
+已随仓分发在 `third_party/webview2/`（见其 README），无需额外安装。
 
 ## 构建
 
 环境：Windows 10/11、CMake ≥ 3.24、MSVC（VS 2022）、Node.js（任务入口）。
 
 ```powershell
-# 1. 指向 Nostos 内核仓根（含 nostos/CMakeLists.txt 的目录）
-$env:NOSTOS_ROOT = "<nostos 内核仓路径>"
+# 1. 克隆（--recurse-submodules 取内核子模块；普通 clone 也行，build 脚本会自动补）
+git clone --recurse-submodules https://github.com/Enterner/ithaca.git
+cd ithaca
 
 # 2. 一条命令构建全部（宿主 + 桌面壳 + 全部插件 + 单元测试）
 npm run build                # Debug（默认）
@@ -82,6 +88,8 @@ plugins/    agent 编排 / llm_cloud / llm_mock / runner / webui / workspace
 ui/         Vue 3 + Naive UI 前端（构建产物 dist/ 随仓库分发）
 tests/      单元测试 + 场景 + golden
 scripts/    任务脚本（build/dev/regress/e2e/pack，零依赖 .mjs）
+external/   nostos 内核（git 子模块）
+third_party/webview2/   微软 WebView2 SDK 必需子集（include + 加载器）
 docs/       设计文档
 ```
 

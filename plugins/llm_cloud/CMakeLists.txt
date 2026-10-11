@@ -16,7 +16,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(llm_cloud_plugin plugin.cpp)
 # kit：nlohmann/json（请求体/响应块编解码）；winhttp：系统 TLS 客户端（Tier 2，零第三方）

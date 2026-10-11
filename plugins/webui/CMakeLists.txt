@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.24)
 
 # ── plugin/webui —— Web 前端插件（独立工程）──────────────────────────────────
 # 独立构建：cd plugin/webui && cmake --preset debug && cmake --build --preset debug
@@ -16,7 +16,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
-include("${NOSTOS_ROOT}/cmake/plugin_module.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(webui_plugin
     src/plugin.cpp      # 生命周期 + HTTP 路由 + 通用工具 + NOSTOS_PLUGIN 入口

@@ -22,6 +22,7 @@ fs.mkdirSync(ws, { recursive: true });
 const env = { ...process.env };
 env.ITHACA_WORKSPACE_DIR = ws;
 env.ITHACA_SESSION_FILE = path.join(ws, "session.json");
+env.ITHACA_LLM_ACTIVE = "mock";   // mock 缺省休眠（非测试模式不发布），必须显式开启
 env.ITHACA_MOCK_DELAY_MS = "5";
 
 const plugins = ["llm_mock", "workspace", "runner", "agent"]

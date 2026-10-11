@@ -29,6 +29,11 @@ function run(cmd, args) {
 }
 
 if (!testOnly) {
+    // 内核子模块没初始化（普通 git clone 而非 --recurse-submodules）就先补上
+    if (!fs.existsSync(path.join(root, "external", "nostos", "CMakeLists.txt")) &&
+        fs.existsSync(path.join(root, ".git"))) {
+        run("git", ["submodule", "update", "--init"]);
+    }
     run("cmake", ["--preset", preset]);
     run("cmake", ["--build", "--preset", preset]);
 }

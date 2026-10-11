@@ -15,6 +15,11 @@ set(WV2 "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2/build/native")
 
 add_executable(ithaca WIN32 ithaca.cpp app.rc)   # app.rc：品牌图标（标题栏/任务栏）
 target_include_directories(ithaca PRIVATE "${WV2}/include")
+# WebView2 加载器动态链接：DLL 随构建拷到 exe 旁（静态库约 10MB 不入仓，见
+# third_party/webview2/README.md）
 target_link_libraries(ithaca PRIVATE
-    "${WV2}/x64/WebView2LoaderStatic.lib"
+    "${WV2}/x64/WebView2Loader.dll.lib"
     user32 gdi32 ole32 oleaut32 advapi32 winhttp shell32 uuid dwmapi)
+add_custom_command(TARGET ithaca POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${WV2}/x64/WebView2Loader.dll" "$<TARGET_FILE_DIR:ithaca>")

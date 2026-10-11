@@ -29,7 +29,8 @@ const stage = path.join(pack, `Ithaca-${version}-x64`);
 fs.rmSync(stage, { recursive: true, force: true });
 
 // ---- 组装 ----
-const need = ["ithaca.exe", "ithaca_host.exe", "llm_mock_plugin.dll", "llm_cloud_plugin.dll",
+const need = ["ithaca.exe", "ithaca_host.exe", "WebView2Loader.dll",
+              "llm_mock_plugin.dll", "llm_cloud_plugin.dll",
               "workspace_plugin.dll", "runner_plugin.dll", "agent_plugin.dll", "mcp_plugin.dll",
               "webui_plugin.dll"];
 for (const d of ["plugins", "web", "data/sessions", "data/workspace"]) {

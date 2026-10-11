@@ -1,4 +1,6 @@
-﻿build/
+﻿# 根级构建目录（锚定：third_party/webview2/build/ 里的 SDK 文件要随仓分发）
+/build/
+shell/build-*/
 .*/
 node_modules/
 playwright-report/
