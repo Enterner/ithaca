@@ -68,15 +68,13 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
                 if (best < 0) act = "";
             }
         }
+        // 只选不切：会话激活统一走下方 switch_to_——旧实现在此手工复刻 switch_to_
+        // 的前半段（载 transcript），漏掉"工作区随会话"矫正（WorkspaceSet/
+        // fs_watcher 迁移）⇒ workspace 的 jail 根停在缺省（data 目录），启动即
+        // 工作区/会话错位，须切走再切回才对齐（踩过）。后置原因有二：poster 领取
+        // 在后（switch_to_ 经 poster defer 广播）；开 transcript 的副作用由
+        // switch_to_ 统一做，双份是纯浪费。
         session_ = act;
-        if (!session_.empty()) {
-            index_["active"] = session_;
-            save_index_();
-            load_transcript_();  // 容忍损坏尾行（崩溃安全）
-            open_transcript_();
-        }
-        // session_ 为空 = 无会话态（首装/全删）：不落任何盘，前端经
-        // /api/session 空 id 进草稿态，首条消息时才创建会话
     }
     // LlmTable 在 activate 时解析一次（桥在；service 走 TLS，select 线程上为空）
     llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
@@ -98,6 +96,11 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         host_.log(4, "ithaca.webui: 领取 poster 失败");
         return NOSTOS_ERR_FAILED;
     }
+
+    // 启动恢复 = 正经的会话切换：工作区随会话矫正 host_workspace_ + WorkspaceSet
+    // + transcript 装载全走同一事实路径。广播在 server_ 建立前是 no-op（broadcast_
+    // 判空），SSE 客户端连上后由 /api/transcript 重放补齐——不丢事实。
+    if (!session_.empty()) switch_to_(session_);
 
     subscribe_();
     // 供应商两层配置：providers 数组——
@@ -159,8 +162,10 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     // 休眠 ⇒ LLM 不可用）
     post_llm_set_active_();
     // 直连/便携启动（桌面壳直发宿主，不经启动器注入 env）：按 config 工作区
-    // 热切——空 = hero 引导（首次 assign 再切）；有 env 时 env 优先，不动。
-    if (std::getenv("ITHACA_WORKSPACE_DIR") == nullptr &&
+    // 热切——仅限 hero 态（无活跃会话）做引导；有活跃会话时工作区已随会话
+    // switch_to_ 矫正，此处再发会把会话工作区盖成 config 残留（踩过：启动恢复
+    // 会话后 config 旧工作区反向覆盖）。空 = hero 引导（首次 assign 再切）。
+    if (session_.empty() && std::getenv("ITHACA_WORKSPACE_DIR") == nullptr &&
         config_.value("workspace", "") != "") {
         const std::string ws0 = config_.value("workspace", "");
         nostos::kit::poster_submit(poster_, [this, ws0] {

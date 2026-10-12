@@ -137,6 +137,10 @@ private:
     void ensure_session_(const std::string& id, const std::string& workspace);
     void sweep_uninitialized_();
     void switch_to_(const std::string& id);
+    // 工作区补发（tool_register 兜底）：workspace 工具表后到 ⇒ 启动恢复时
+    // switch_to_ 发出的 WorkspaceSet 可能先于其订阅被丢（事件总线无保留语义），
+    // 按当前活跃会话重发一次（同值热切幂等）
+    void backfill_workspace_();
     http::Response api_sessions_();
     http::Response api_session_new_(const std::string& body);
     http::Response api_session_open_(const std::string& body);
@@ -185,6 +189,7 @@ private:
     long long token_total_ = 0;
     json index_ = json::object();          // 会话注册表（工作区分组，
     std::string host_workspace_;           // 宿主工作目录（新会话归属）
+    bool ws_backfilled_ = false;           // 工作区补发一次性标志（tool_register 兜底）
 
     // ---- 文件树 watcher 状态（见 start_fs_watcher_）---------------------------
     HANDLE fs_watch_handle_ = nullptr;     // 主线程开/关；线程只持它调 ReadDirectoryChangesW

@@ -22,7 +22,10 @@ void WebuiPlugin::subscribe_() {
             std::string_view(e->svc_name) != vcws::kToolSvcName || tools_ != nullptr)
             return;
         tools_ = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-        if (tools_ != nullptr) host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
+        if (tools_ != nullptr) {
+            host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
+            backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
+        }
     }));
     subs_.push_back(host_.on(vc_api::llm_delta, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
@@ -137,6 +140,21 @@ void WebuiPlugin::subscribe_() {
             {"label", e->label != nullptr ? std::string(e->label) : std::string(e->plugin)},
             {"schema", std::move(schema)}};
     }));
+}
+
+// 工作区补发（tool_register 兜底）：workspace 工具表后于 webui 装载时，启动恢复
+// 的 switch_to_ 发出的 WorkspaceSet（defer 到宿主线程）可能先于 workspace 的订阅
+// 被丢——事件总线无保留语义（与 vc.ui.register 的 query 握手同款动机）。按当前
+// 活跃会话重发一次：同值热切幂等（早到没丢的场景重复 emit 无害）；一次性标志防
+// tool_register 多次触发叠发。host_workspace_ 已在 switch_to_ 同步段被矫正为会话
+// 工作区，此处直接取用。
+void WebuiPlugin::backfill_workspace_() {
+    if (ws_backfilled_ || session_.empty() || host_workspace_.empty()) return;
+    ws_backfilled_ = true;
+    nostos::kit::poster_submit(poster_, [this] {
+        const vc_api::WorkspaceSet e{host_workspace_.c_str()};
+        host_.emit(vc_api::workspace_set, &e);
+    });
 }
 
 }  // namespace vc_webui
