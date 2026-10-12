@@ -103,22 +103,9 @@ struct ChildPipes {
 
 // ---- 沙箱（full-auto 模式：AppContainer 进程）--------------------------------
 //   · 断网：容器默认无 INTERNET_CLIENT 能力 ⇒ 出站网络（含回环）内核级拒绝
-//   · 文件系统「读宽写窄」（业界共识：Codex 写受限令牌 / Claude Code Seatbelt
-//     同款哲学——读被默认拒绝会咬死用户目录下的工具链，如 per-user 安装的
-//     python.exe 连启动都失败）：
-//       系统+PATH 工具目录 ⇒ 只读可执行（系统目录是 ALL APPLICATION PACKAGES
-//         默认 ACL；PATH 条目在首次拉起沙箱时逐一授予容器 SID 只读+执行 ACE——
-//         锚定宿主环境事实而非 agent 请求的路径，杜绝"请求驱动授权"注入面）；
-//       工作区根 ⇒ 可继承读写 ACE（传播到既有子树，新文件随建随继承）；
-//       其余（用户文档/凭据等）保持默认拒绝
+
 //   · 注册表/用户配置：仅容器自己的 profile 可写（个别工具可能受限——文档明示）
 //   · profile 进程级缓存一份（CreateAppContainerProfile 幂等开销大）
-// NOTE: PATH 里的 App Execution Alias（WindowsApps 商店 stub）授权无效——
-// reparse 点的 CreateProcess 失败走逃生舱（plugin.cpp 访问拒绝结构化回灌）。
-// NOTE: SECURITY_CAPABILITIES 可能被整机构拒（实测 Windows Insider 26200：
-// 任意 SID 形态/属性数一律 87，其余属性类型正常——OS 回归，社区同 build 大量
-// AppContainer 应用损坏可佐证）。此时降级为非沙箱 spawn 并置 degraded 标记，
-// 由调用方显式告警——降级是"听得见的裸奔"，不是静默放行。
 
 struct SandboxProfile {
     PSID sid = nullptr;         // LocalFree 归还（缓存持有，进程退出统一释放）
@@ -308,12 +295,62 @@ inline bool sandbox_env_block(const std::wstring& temp_dir, std::wstring& out,
     return true;
 }
 
+// 沙箱 v2：令牌先行——NtCreateLowBoxToken 直造低盒令牌（AppContainer 令牌本体），
+// 后续 CreateProcessAsUserW 用它拉起，完全绕开 CreateProcessW 内部的
+// SECURITY_CAPABILITIES 属性装配（该路径在本机 Insider 26200 上回归，见探针记录）。
+// 零能力（capability 数 0）= 读宽写窄策略的断网 + 默认拒绝由令牌天然保证；工作区/
+// PATH 的 ACE 授权仍按容器 SID 落盘，与此令牌同一 SID，全部照用。
+// NtCreateLowBoxToken 是 ntdll 非 SDK 符号（Win8 起稳定存在，Chrome 系沙箱同款
+// 依赖）：GetProcAddress 动态加载，缺口 ⇒ false，由 spawn 走 v1 属性路径/降级。
+inline bool sandbox_lowbox_token(PSID sid, HANDLE& out, std::string& err) {
+    // 参数形态照 ntdll 原型，但全用 void*——OBJECT_ATTRIBUTES 等内核类型不在
+    // SDK 公开头（winternl.h 才有），指针宽度兼容即可安全调用
+    using NtCreateLowBoxToken_fn = LONG(NTAPI*)(void**, void*, unsigned long, void*,
+                                                void*, unsigned long, void*, unsigned long,
+                                                void*);
+    static NtCreateLowBoxToken_fn fn = []() -> NtCreateLowBoxToken_fn {
+        const HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+        return ntdll != nullptr
+                   ? reinterpret_cast<NtCreateLowBoxToken_fn>(
+                         ::GetProcAddress(ntdll, "NtCreateLowBoxToken"))
+                   : nullptr;
+    }();
+    if (fn == nullptr) {
+        err = "NtCreateLowBoxToken 不可用（ntdll 缺口）";
+        return false;
+    }
+    HANDLE tok = nullptr;
+    if (!::OpenProcessToken(::GetCurrentProcess(),
+                            TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &tok)) {
+        err = "OpenProcessToken 失败 (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    HANDLE primary = nullptr;
+    const bool dup = ::DuplicateTokenEx(tok, MAXIMUM_ALLOWED, nullptr,
+                                        SecurityImpersonation, TokenPrimary, &primary);
+    ::CloseHandle(tok);
+    if (!dup) {
+        err = "DuplicateTokenEx 失败 (" + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    // NT_SUCCESS = >= 0；capability 与继承句柄参数均为 0/空（读宽写窄 + 管道继承）
+    const LONG rc = fn(&out, primary, MAXIMUM_ALLOWED, nullptr, sid, 0, nullptr, 0, nullptr);
+    ::CloseHandle(primary);
+    if (rc < 0) {
+        char b[16];
+        std::snprintf(b, sizeof b, "%lx", static_cast<unsigned long>(rc));
+        err = "NtCreateLowBoxToken 失败 (0x" + std::string(b) + ")";
+        return false;
+    }
+    return true;
+}
+
 inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPipes& out,
                   std::string& err, bool sandboxed = false, bool* degraded = nullptr) {
     PipePair so, se;
     if (!make_pipe(so, err) || !make_pipe(se, err)) return false;
 
-    bool degraded_now = false;   // SECURITY_CAPABILITIES 被整机构拒 ⇒ 本次非沙箱（调用方告警）
+    bool degraded_now = false;   // 两层沙箱路径都不可用 ⇒ 本次非沙箱（调用方告警）
     SandboxProfile prof;
     std::wstring env_block;
     STARTUPINFOEXW siex{};
@@ -325,6 +362,8 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
     LPPROC_THREAD_ATTRIBUTE_LIST attr_list = nullptr;
     SIZE_T attr_size = 0;
     DWORD flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+    HANDLE lowbox = nullptr;     // v2 低盒令牌（子进程持副本后父侧即关）
+    bool have_lowbox = false;
 
     std::wstring cwd_w = cwd;
     if (sandboxed) {
@@ -334,45 +373,62 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
                                prof.sid, err))
             return false;
         if (!sandbox_env_block(prof.temp_dir, env_block, err)) return false;
-        ::InitializeProcThreadAttributeList(nullptr, 2, 0, &attr_size);
-        attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
-            ::HeapAlloc(::GetProcessHeap(), 0, attr_size));
-        if (attr_list == nullptr ||
-            !::InitializeProcThreadAttributeList(attr_list, 2, 0, &attr_size)) {
-            if (attr_list) ::HeapFree(::GetProcessHeap(), 0, attr_list);
-            err = "InitializeProcThreadAttributeList 失败";
-            return false;
-        }
-        SID_AND_ATTRIBUTES sa{prof.sid, 0};
-        if (!::UpdateProcThreadAttribute(attr_list, 0,
-                                         PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &sa,
-                                         sizeof(sa), nullptr, nullptr)) {
-            const DWORD gle = ::GetLastError();
-            ::DeleteProcThreadAttributeList(attr_list);
-            ::HeapFree(::GetProcessHeap(), 0, attr_list);
-            attr_list = nullptr;
-            // 探针实测：build 26200 任意 SID 形态/属性数均 87，其余属性类型正常
-            // ——沙箱不可用 ≠ 任务不可跑：降级非沙箱，degraded 交调用方显式告警
-            if (gle == ERROR_INVALID_PARAMETER && degraded != nullptr) {
-                *degraded = true;
-                degraded_now = true;
-                siex.lpAttributeList = nullptr;
-            } else {
-                err = "UpdateProcThreadAttribute 失败 (" + std::to_string(gle) + ")";
+
+        // ---- v2 令牌先行：绕开 SECURITY_CAPABILITIES 属性路径 ----
+        std::string tok_err;
+        if (sandbox_lowbox_token(prof.sid, lowbox, tok_err)) {
+            have_lowbox = true;
+            flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;   // 无属性列表
+        } else {
+            // v2 缺口静默——v1 属性路径接棒（探针记录两层的可用面不同）
+            // ---- v1 属性路径：SECURITY_CAPABILITIES（本机 Insider 26200 上为 87）----
+            ::InitializeProcThreadAttributeList(nullptr, 2, 0, &attr_size);
+            attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+                ::HeapAlloc(::GetProcessHeap(), 0, attr_size));
+            if (attr_list == nullptr ||
+                !::InitializeProcThreadAttributeList(attr_list, 2, 0, &attr_size)) {
+                if (attr_list) ::HeapFree(::GetProcessHeap(), 0, attr_list);
+                err = "InitializeProcThreadAttributeList 失败";
                 return false;
             }
-        } else {
-            flags |= CREATE_UNICODE_ENVIRONMENT;
-            siex.lpAttributeList = attr_list;
+            SID_AND_ATTRIBUTES sa{prof.sid, 0};
+            if (!::UpdateProcThreadAttribute(attr_list, 0,
+                                             PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                                             &sa, sizeof(sa), nullptr, nullptr)) {
+                const DWORD gle = ::GetLastError();
+                ::DeleteProcThreadAttributeList(attr_list);
+                ::HeapFree(::GetProcessHeap(), 0, attr_list);
+                attr_list = nullptr;
+                // 探针实测：build 26200 任意 SID 形态/属性数均 87——沙箱不可用 ≠
+                // 任务不可跑：降级非沙箱，degraded 交调用方显式告警
+                if (gle == ERROR_INVALID_PARAMETER && degraded != nullptr) {
+                    *degraded = true;
+                    degraded_now = true;
+                    siex.lpAttributeList = nullptr;
+                } else {
+                    err = "UpdateProcThreadAttribute 失败 (" + std::to_string(gle) + ")";
+                    return false;
+                }
+            } else {
+                flags |= CREATE_UNICODE_ENVIRONMENT;
+                siex.lpAttributeList = attr_list;
+            }
         }
     }
 
     PROCESS_INFORMATION pi{};
-    std::wstring cmd = cmdline;  // CreateProcessW 可能改写缓冲 ⇒ 传可写副本
-    const BOOL ok = ::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, flags,
-                                     (sandboxed && !degraded_now) ? env_block.data() : nullptr,
+    std::wstring cmd = cmdline;  // CreateProcess* 可能改写缓冲 ⇒ 传可写副本
+    const BOOL ok =
+        have_lowbox
+            ? ::CreateProcessAsUserW(lowbox, nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                                     flags, env_block.data(),
                                      cwd_w.empty() ? nullptr : cwd_w.c_str(),
-                                     &siex.StartupInfo, &pi);
+                                     &siex.StartupInfo, &pi)
+            : ::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, flags,
+                               (sandboxed && !degraded_now) ? env_block.data() : nullptr,
+                               cwd_w.empty() ? nullptr : cwd_w.c_str(),
+                               &siex.StartupInfo, &pi);
+    if (lowbox != nullptr) ::CloseHandle(lowbox);  // 子进程持令牌副本，父侧即关
     CloseHandle(so.write_end);  // 父进程写端用完即关（EOF 的前提）
     CloseHandle(se.write_end);
     if (!ok) {
