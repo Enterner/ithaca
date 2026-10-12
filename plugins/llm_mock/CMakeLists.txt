@@ -18,7 +18,14 @@ if(NOT TARGET nostos::core)
 endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
-nostos_plugin_module(llm_mock_plugin plugin.cpp)
+# 多翻译单元：入口/配置（plugin）· 请求登记（request）· 回放与回流（replay）；
+# 类声明在 include/llm_mock_plugin.hpp
+nostos_plugin_module(llm_mock_plugin
+    src/plugin.cpp
+    src/request.cpp
+    src/replay.cpp)
 # kit：nlohmann/json（turn 剧本的编解码，M3 起）
 target_link_libraries(llm_mock_plugin PRIVATE nostos::kit)
-target_include_directories(llm_mock_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+target_include_directories(llm_mock_plugin PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")

@@ -18,10 +18,19 @@ if(NOT TARGET nostos::core)
 endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
-nostos_plugin_module(llm_cloud_plugin plugin.cpp)
+# 多翻译单元：入口/配置（plugin）· 请求登记（request）· 请求线程/SSE（stream）·
+# 产物回流（events）；类声明在 include/llm_cloud_plugin.hpp，sse.hpp 留插件根
+# （tests/unit/test_sse.cpp 直接引用）
+nostos_plugin_module(llm_cloud_plugin
+    src/plugin.cpp
+    src/request.cpp
+    src/stream.cpp
+    src/events.cpp)
 # kit：nlohmann/json（请求体/响应块编解码）；winhttp：系统 TLS 客户端（Tier 2，零第三方）
 target_link_libraries(llm_cloud_plugin PRIVATE nostos::kit)
 if(WIN32)
     target_link_libraries(llm_cloud_plugin PRIVATE winhttp)
 endif()
-target_include_directories(llm_cloud_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+target_include_directories(llm_cloud_plugin PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
