@@ -1,3 +1,7 @@
 [submodule "external/nostos"]
 	path = external/nostos
-	url = https://github.com/Enterner/nostos.git
+	# 镜像（gh-proxy）
+	url = https://gh-proxy.org/https://github.com/Enterner/nostos.git 
+	# 原始
+	# url = https://github.com/Enterner/nostos.git 
+	
