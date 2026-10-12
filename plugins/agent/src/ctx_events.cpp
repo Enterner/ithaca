@@ -21,6 +21,10 @@ void AgentCtx::on_input(const char* text) {
 }
 
 void AgentCtx::on_done(const vc_api::LlmDone& e) {
+    // 摘要请求回包分流（阶段二）：与 turn 请求共用 chat_ex 通道，按 request_id
+    // 区分——摘要在途时 turn 请求不可能在途（摘要只在 turn 收口后发起）。
+    if (compress_inflight_ && e.request_id == compress_seq_)
+        return on_compress_done_(e);
     if (e.request_id != inflight_) return;  // 非在途请求的迟到事件：忽略
     json assistant = json::parse(e.assistant_json != nullptr ? e.assistant_json : "{}",
                                  nullptr, /*allow_exceptions=*/false);
@@ -36,6 +40,15 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
             usage_completion_ += u.value("completion_tokens", 0LL);
             usage_total_ += u.value("total_tokens", 0LL);
             last_prompt_tokens_ = u.value("prompt_tokens", 0LL);  // 压缩判定的确定性信号
+        }
+    }
+    // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升
+    if (compress_verify_) {
+        compress_verify_ = false;
+        if (session_threshold_ > 0 && last_prompt_tokens_ >= session_threshold_) {
+            session_threshold_ = session_threshold_ / 4 * 5;
+            notice("上下文仍紧张——压缩阈值已上调至 " +
+                   std::to_string(session_threshold_) + " tokens，建议开新会话");
         }
     }
 
@@ -63,6 +76,9 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
 }
 
 void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
+    // 摘要请求失败分流（阶段二）：回退机械 digest——压缩永不卡死 turn 流
+    if (compress_inflight_ && e.request_id == compress_seq_)
+        return on_compress_error_(e);
     if (e.request_id != inflight_) return;  // 迟到错误 / agent 自发收口（rid=0）：忽略
     if (state_ == State::Idle) return;
     // provider 的 llm_error 已由 webui 落错误卡并清 in_flight——agent 只复位

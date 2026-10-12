@@ -281,24 +281,7 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
     // base_url——尾部追加）——即时生效，无需重启。
     // NOTE: mock 模式恒发 mock（同 activate 对齐——config 的 provider 可能是
     // 另一模式遗留值，跨模式热切会把本模式插件休眠掉）
-    const std::string provider = llm_mode_ == "mock"
-                                     ? std::string("mock")
-                                     : config_.value("provider", "mock");
-    const std::string key = config_.value("api_key", "");
-    const std::string cur = config_.value("current_provider", "");
-    std::string cur_key = key, cur_burl;
-    for (const auto& p : config_.value("providers", json::array()))
-        if (p.is_object() && p.value("name", "") == cur) {
-            cur_key = p.value("api_key", key);
-            cur_burl = p.value("base_url", "");
-            break;
-        }
-    nostos::kit::poster_submit(poster_, [this, provider, cur_key, cur_burl] {
-        const vc_api::LlmSetActive la{provider.c_str(), cur_key.c_str(),
-                                      cur_burl.empty() ? nullptr : cur_burl.c_str()};
-        host_.emit(vc_api::llm_set_active, &la);
-        // 工作区归会话管：配置保存不热切工作区
-    });
+    post_llm_set_active_();
     host_.log(2, "ithaca.webui: 配置已保存（供应商「" + config_.value("current_provider", "") +
                      "」已热切）");
     return json_resp({{"ok", true}, {"note", "已保存；当前供应商即时生效"}});
@@ -314,6 +297,39 @@ http::Response WebuiPlugin::api_ui_registry_() {
                            {"label", ui.value("label", name)},
                            {"schema", ui.value("schema", json::array())}});
     return json_resp({{"ok", true}, {"plugins", std::move(arr)}});
+}
+
+// 组装并投递 vc.llm.set_active（阶段二追加 context_window：当前供应商、当前启用
+// 模型的 context——agent 据此做 0.9×W 动态压缩阈值；mock/未知 = 0，agent 回退
+// 兜底阈值）。activate 对齐、配置保存热切、模型热切补发共用本出口（单点维护）。
+// NOTE: mock 模式不发（无凭据/窗口，阶段一起的行为）——跨模式热切会把本模式
+// 插件休眠掉（踩过）。
+void WebuiPlugin::post_llm_set_active_() {
+    if (llm_mode_ == "mock") return;
+    const std::string provider = config_.value("provider", "cloud");
+    const std::string key = config_.value("api_key", "");
+    const std::string cur = config_.value("current_provider", "");
+    std::string cur_key = key, cur_burl;
+    int window = 0;
+    for (const auto& p : config_.value("providers", json::array()))
+        if (p.is_object() && p.value("name", "") == cur) {
+            cur_key = p.value("api_key", key);
+            cur_burl = p.value("base_url", "");
+            for (const auto& m : p.value("models", json::array()))
+                if (m.is_object() && m.value("id", "") == config_.value("model", "") &&
+                    m.value("enabled", true)) {
+                    window = m.value("context", 0);
+                    break;
+                }
+            break;
+        }
+    nostos::kit::poster_submit(poster_, [this, provider, cur_key, cur_burl, window] {
+        const vc_api::LlmSetActive e{provider.c_str(), cur_key.c_str(),
+                                     cur_burl.empty() ? nullptr : cur_burl.c_str(),
+                                     window};
+        host_.emit(vc_api::llm_set_active, &e);
+        // 工作区归会话管：配置保存不热切工作区
+    });
 }
 
 }  // namespace vc_webui

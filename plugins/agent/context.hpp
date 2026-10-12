@@ -253,4 +253,30 @@ inline CompressPlan plan_compress(const json& messages) {
     return plan;
 }
 
+// ---- 阶段二：LLM 自总结折叠（docs/上下文压缩-阶段二-LLM自总结-方案.md）--------
+// 摘要请求的 system 指令：锚点逐字 / ref 全量保留 / 结构固定——机械 digest 仍是
+// 兜底产物，摘要只是换掉折叠的实现，纪律（§一~四）不放松。
+inline constexpr const char* kSummarySystem =
+    "你是上下文压缩摘要器。把给定的历史 turn 记录折叠为一份供后续对话使用的摘要。"
+    "纪律：1) 文件路径、命令、参数值、符号名逐字节保留，不得改写或省略；"
+    "2) 记录中出现的每个 \"ref\" 外置锚点必须原样逐条保留在最后的【外置索引】小节"
+    "（后续对话会用 context.recall 按 ref 回查原文，丢一个就断一条回查链）；"
+    "3) 按以下小节输出，不要额外寒暄：【任务主线】【关键决策】【文件与命令】"
+    "【未决问题】【外置索引】；4) 除 ref 外尽量精炼。";
+
+// 从机械 digest 文本收集 ref 锚点（"ref":"xxx" 字面形态——segment_calls 产物保证
+// 该形态存在；llm 摘要回包据此校验 ref 是否齐全）。
+inline std::vector<std::string> collect_refs(const std::string& digest_text) {
+    std::vector<std::string> out;
+    const std::string key = "\"ref\":\"";
+    for (std::size_t p = digest_text.find(key); p != std::string::npos;
+         p = digest_text.find(key, p + key.size())) {
+        const std::size_t b = p + key.size();
+        const std::size_t e = digest_text.find('"', b);
+        if (e == std::string::npos) break;
+        if (e > b) out.push_back(digest_text.substr(b, e - b));
+    }
+    return out;
+}
+
 }  // namespace vcagent

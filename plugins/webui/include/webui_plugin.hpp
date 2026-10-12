@@ -124,6 +124,9 @@ private:
     bool persist_config_();
     json config_public_();
     http::Response api_config_save_(const std::string& body);
+    // 组装并投递 vc.llm.set_active（provider/key/base_url + 当前模型窗口）——
+    // activate 对齐、配置保存热切、模型热切补发共用一个出口（窗口字段单点维护）。
+    void post_llm_set_active_();
 
     // ---- 会话注册表（src/sessions.cpp）------------------------------------------
 

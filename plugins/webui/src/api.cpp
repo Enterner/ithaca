@@ -124,6 +124,9 @@ http::Response WebuiPlugin::api_model_(const std::string& body) {
             break;
         }
     persist_config_();
+    // 模型热切成功 ⇒ 补发 set_active：窗口随新模型更新（agent 0.9×W 动态压缩
+    // 阈值的窗口源，阶段二）。缺槽/失败不补发——模型没真切，窗口不能跟。
+    if (live) post_llm_set_active_();
     // 热切成功完全静默（下拉已反映，通告只会刷屏——用户要求"其他操作一律不显示"）；
     // 非实时生效（缺槽/失败）才落盘通告——这是必须可见的状态偏差
     if (!live) {

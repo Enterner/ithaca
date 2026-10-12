@@ -134,6 +134,21 @@ struct AgentCtx {
     // Idle + 清工具现场 + 排队输入依次开新 turn（栈深有界）。
     void cleanup_turn_();
 
+    // ---- 上下文压缩阶段二（docs/上下文压缩-阶段二-LLM自总结-方案.md）------------
+
+    // 阈值命中后的异步摘要请求：冻结折叠区间（机械 digest 为兜底产物），发无
+    // tools 的单轮 chat_ex；失败（服务缺失/未受理）就地回退机械应用。
+    void request_digest_();
+    // 折叠应用（LLM 摘要或机械 digest 共用出口）：区间替换 + 旧 digest 并入 +
+    // 持久化 + 通告 + 回 Idle + flush 排队输入；置 compress_verify_ 退避校验。
+    void apply_digest_(const json& digest_msg, bool via_llm);
+    // 摘要回包处理（on_done/on_llm_error 按 compress_seq_ 分流到这）：校验/补
+    // ref/截断后应用；摘要失败一律回退 pending_plan_.digest。
+    void on_compress_done_(const vc_api::LlmDone& e);
+    void on_compress_error_(const vc_api::LlmError& e);
+    // 生效阈值重算：W 已知 ⇒ 0.9×W；未知 ⇒ 兜底阈值（compress_threshold_）。
+    void set_context_window_(long long w);
+
     // ---- 会话持久化与 mission 卡（src/ctx_session.cpp）--------------------------
 
     // M6 session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
@@ -203,7 +218,15 @@ struct AgentCtx {
 
     // 上下文压缩
     long long last_prompt_tokens_ = 0;  // provider 回报的最近 prompt_tokens（判定信号）
-    long long compress_threshold_ = 32000;
+    long long compress_threshold_ = 32000;  // W 未知时的兜底阈值（阶段一语义）
+    long long ctx_window_ = 0;          // 当前模型上下文窗口（0 = 未知；env > set_active）
+    bool ctx_window_env_ = false;       // env ITHACA_CONTEXT_WINDOW 已设 ⇒ 事件不再覆写
+    long long session_threshold_ = 32000;  // 生效阈值（set_context_window_ 重算 / 退避抬升）
+    bool summary_enabled_ = true;       // ITHACA_CONTEXT_SUMMARY=off ⇒ 永远机械折叠
+    int compress_seq_ = -1;             // 摘要请求的 request_id（-1 = 无在途摘要）
+    bool compress_inflight_ = false;    // 摘要在途：排队输入挂起，on_done/error 分流
+    bool compress_verify_ = false;      // 压缩后首 turn 校验：仍超阈值 ⇒ 阈值 ×1.25 退避
+    vcagent::CompressPlan pending_plan_{};  // 冻结的折叠计划（机械 digest = 兜底产物）
     std::string raw_dir_;  // 外置存储目录（会话文件旁 raw/；空 = 未启用）
     int raw_seq_ = 0;
 
@@ -256,6 +279,7 @@ private:
     nostos::abi::Host::Subscription sub_run_exit_{};
     nostos::abi::Host::Subscription sub_session_{};
     nostos::abi::Host::Subscription sub_mode_{};
+    nostos::abi::Host::Subscription sub_llm_set_{};   // 模型窗口事件（阶段二动态阈值）
 };
 
 }  // namespace vc_agent

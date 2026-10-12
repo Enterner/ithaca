@@ -252,35 +252,113 @@ void AgentCtx::finish_turn() {
     host_.log(2, "ithaca.agent: turn #" + std::to_string(turn_no_) + " 完成（tokens total " +
                      std::to_string(usage_total_) + "）");
     persist_session_();
-    // 上下文压缩（迟滞批量执行，方案 §3.4B）：判定实时、执行只在 turn 边界；
-    // 折叠区间 = 除最末段外的全部连续历史（含旧 digest 并入新 digest），执行后
-    // 立即落盘。阶段三的覆盖规则/锚点白名单细化等测量后再上。
-    if (vcagent::should_compress(last_prompt_tokens_, compress_threshold_)) {
+    // 上下文压缩（阶段二，docs/上下文压缩-阶段二-LLM自总结-方案.md）：判定实时
+    // （provider 回报 prompt_tokens ≥ 0.9×W；W 未知回退兜底阈值——阶段一语义）、
+    // 执行只在 turn 边界。折叠两态：LLM 自总结（异步摘要请求）→ 机械 digest 兜底。
+    if (vcagent::should_compress(last_prompt_tokens_, session_threshold_)) {
         const vcagent::CompressPlan plan = vcagent::plan_compress(messages_);
         if (plan.valid) {
-            const std::size_t before = messages_.size();
-            json nm = json::array();
-            bool digest_placed = false;
-            for (std::size_t k = 0; k < messages_.size(); ++k) {
-                // 先插 digest（到末段起点处——紧贴 mission 之后），再做跳过判断：
-                // 跳过分支先 continue 会漏掉插入（踩过：digest 整条丢失）
-                if (!digest_placed && k == plan.cut_begin) {
-                    nm.push_back(plan.digest);
-                    digest_placed = true;
-                }
-                if (k >= plan.cut_begin && k < plan.cut_end) continue;
-                if (k < plan.cut_begin && k > 0 && vcagent::is_digest(messages_[k]))
-                    continue;  // 旧 digest 已并入新 digest
-                nm.push_back(messages_[k]);
+            // 硬保护：≥0.95×W 不再等摘要（摘要输出量也不可控），直接机械折叠
+            const bool hard = ctx_window_ > 0 &&
+                              last_prompt_tokens_ * 20 >= ctx_window_ * 19;
+            if (!hard && summary_enabled_) {
+                pending_plan_ = plan;
+                request_digest_();
+                return;   // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
             }
-            if (!digest_placed) nm.push_back(plan.digest);
-            messages_ = nm;
-            notice("上下文已压缩：折叠 " + std::to_string(plan.segments_folded) +
-                   " 段历史（消息 " + std::to_string(before) + " → " +
-                   std::to_string(messages_.size()) + "；原始结果在 raw/ 可 recall）");
-            persist_session_();
+            apply_digest_(plan.digest, false);
+            return;       // apply_digest_ 内收口（回 Idle + flush 排队）
         }
     }
+    state_ = State::Idle;
+    if (!queued_.empty()) {
+        const std::string next = queued_.front();
+        queued_.pop_front();
+        begin_turn(next);  // 排队的输入依次开新 turn（栈深有界）
+    }
+}
+
+// ---- 上下文压缩阶段二（docs/上下文压缩-阶段二-LLM自总结-方案.md）--------------
+
+void AgentCtx::set_context_window_(long long w) {
+    ctx_window_ = w;
+    // 生效阈值 = 0.9×W；W 未知 ⇒ 兜底阈值（阶段一语义）。模型/供应商切换会
+    // 重置退避（窗口变了，旧退避基数失效）。
+    session_threshold_ = w > 0 ? w / 10 * 9 : compress_threshold_;
+}
+
+// 摘要请求：无 tools 的单轮 chat_ex；素材 = 机械 digest 渲染（request 逐字 +
+// calls 最小记录 + 全部 ref）——与兜底产物同源，摘要失败可直接落它。
+void AgentCtx::request_digest_() {
+    llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
+    if (llm_ == nullptr || llm_->chat_ex == nullptr)
+        return apply_digest_(pending_plan_.digest, false);
+    compress_seq_ = next_chat_seq();
+    compress_inflight_ = true;
+    json body = {{"messages", json::array({
+                                  json{{"role", "system"},
+                                       {"content", std::string(vcagent::kSummarySystem)}},
+                                  json{{"role", "user"},
+                                       {"content", pending_plan_.digest.value("content", "")}}})}};
+    body_buf_ = body.dump();   // turn 不活跃，复用缓冲安全
+    if (llm_->chat_ex(llm_->self, compress_seq_, body_buf_.c_str()) != NOSTOS_OK)
+        apply_digest_(pending_plan_.digest, false);   // 未受理 ⇒ 机械兜底
+}
+
+void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
+    json a = json::parse(e.assistant_json != nullptr ? e.assistant_json : "{}", nullptr,
+                         /*allow_exceptions=*/false);
+    std::string s = a.is_object() && a.contains("content") && a["content"].is_string()
+                        ? a["content"].get<std::string>() : std::string();
+    if (s.empty()) return apply_digest_(pending_plan_.digest, false);
+    // ref 齐全性校验：机械 digest 里的锚点缺一个补一个（recall 链不能断）
+    std::string tail;
+    for (const auto& r : vcagent::collect_refs(pending_plan_.digest.value("content", "")))
+        if (s.find(r) == std::string::npos) tail += "\n- ref=" + r;
+    // 超长截断（伤散文不伤锚点——ref 补齐在截断之后做）
+    if (s.size() > 4096) s = vcws::trim_utf8(s, 4096) + "…";
+    if (!tail.empty()) s += "\n【外置索引补齐】" + tail;
+    json digest = json{
+        {"role", "system"},
+        {"content", std::string(vcagent::kDigestMarker) +
+                        "（历史 turn 已压缩：LLM 自总结；工具原始结果外置于 raw/，"
+                        "可用 context.recall 回查）\n" + s}};
+    apply_digest_(digest, true);
+}
+
+void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
+    apply_digest_(pending_plan_.digest, false);   // 摘要失败 ⇒ 机械兜底（计划里已备好）
+}
+
+// 折叠应用共用出口（LLM 摘要 / 机械 digest）：区间替换 + 旧 digest 并入 + 持久化
+// + 通告 + 回 Idle + flush 排队输入。先插 digest 再跳过的顺序纪律见阶段一。
+void AgentCtx::apply_digest_(const json& digest_msg, bool via_llm) {
+    const std::size_t before = messages_.size();
+    json nm = json::array();
+    bool digest_placed = false;
+    for (std::size_t k = 0; k < messages_.size(); ++k) {
+        // 先插 digest（到末段起点处——紧贴 mission 之后），再做跳过判断：
+        // 跳过分支先 continue 会漏掉插入（踩过：digest 整条丢失）
+        if (!digest_placed && k == pending_plan_.cut_begin) {
+            nm.push_back(digest_msg);
+            digest_placed = true;
+        }
+        if (k >= pending_plan_.cut_begin && k < pending_plan_.cut_end) continue;
+        if (k < pending_plan_.cut_begin && k > 0 && vcagent::is_digest(messages_[k]))
+            continue;  // 旧 digest 已并入新 digest
+        nm.push_back(messages_[k]);
+    }
+    if (!digest_placed) nm.push_back(digest_msg);
+    messages_ = nm;
+    notice(std::string("上下文已压缩（") + (via_llm ? "LLM 自总结" : "机械") +
+           "折叠：" + std::to_string(pending_plan_.segments_folded) + " 段历史，消息 " +
+           std::to_string(before) + " → " + std::to_string(messages_.size()) +
+           "；原始结果在 raw/ 可 recall）");
+    persist_session_();
+    compress_inflight_ = false;
+    compress_seq_ = -1;
+    pending_plan_ = {};
+    compress_verify_ = true;   // 下一 turn done 时校验是否压到位（没压下 ⇒ 阈值退避）
     state_ = State::Idle;
     if (!queued_.empty()) {
         const std::string next = queued_.front();

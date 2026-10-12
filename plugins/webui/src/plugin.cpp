@@ -152,30 +152,12 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
                  json{{"id", "deepseek-v4-pro"}, {"context", 128000}, {"enabled", true}},
                  json{{"id", "deepseek-reasoner"}, {"context", 128000}, {"enabled", true}}});
     }
-    // 启动对齐：当前使用供应商的 key/base_url 热切给 llm 插件（poster 异步）。
+    // 启动对齐：当前使用供应商的 key/base_url/窗口 热切给 llm 插件（poster 异步）。
     // NOTE: 载荷以 llm_mode_ 为准（mock 模式恒发 mock）——config 的
     // current_provider 可能是另一模式的（共享 config 跨模式留存），对齐成
     // 另一模式会把本模式的插件休眠掉（踩过：mock 宿主启动即被对齐成 cloud
     // 休眠 ⇒ LLM 不可用）
-    {
-        const std::string cur = llm_mode_ == "mock"
-                                    ? std::string("mock")
-                                    : config_.value("current_provider", "");
-        for (const auto& p : config_["providers"]) {
-            if (!p.is_object() || p.value("name", "") != cur) continue;
-            const std::string type = llm_mode_ == "mock"
-                                         ? std::string("mock")
-                                         : p.value("type", "cloud");
-            const std::string key = p.value("api_key", "");
-            const std::string burl = p.value("base_url", "");
-            nostos::kit::poster_submit(poster_, [this, type, key, burl] {
-                const vc_api::LlmSetActive e{type.c_str(), key.c_str(),
-                                             burl.empty() ? nullptr : burl.c_str()};
-                host_.emit(vc_api::llm_set_active, &e);
-            });
-            break;
-        }
-    }
+    post_llm_set_active_();
     // 直连/便携启动（桌面壳直发宿主，不经启动器注入 env）：按 config 工作区
     // 热切——空 = hero 引导（首次 assign 再切）；有 env 时 env 优先，不动。
     if (std::getenv("ITHACA_WORKSPACE_DIR") == nullptr &&

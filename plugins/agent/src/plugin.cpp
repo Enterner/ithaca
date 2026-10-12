@@ -82,6 +82,20 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         ctx_.rebuild_confirm_();
     });
 
+    // 上下文压缩阶段二：动态阈值 0.9×W——env ITHACA_CONTEXT_WINDOW 显式覆盖
+    // （测试/便携）> set_active 事件携带的窗口；ITHACA_CONTEXT_SUMMARY=off 关闭
+    // LLM 摘要（永远机械折叠，阶段一行为）。
+    if (const char* v = std::getenv("ITHACA_CONTEXT_WINDOW"); v != nullptr && *v != '\0') {
+        ctx_.ctx_window_env_ = true;
+        ctx_.set_context_window_(std::atoll(v));
+    }
+    if (const char* v = std::getenv("ITHACA_CONTEXT_SUMMARY"))
+        ctx_.summary_enabled_ = std::string_view(v) != "off";
+    sub_llm_set_ = host.on(vc_api::llm_set_active, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
+        if (!ctx_.ctx_window_env_) ctx_.set_context_window_(e->context_window);
+    });
+
     // M6/session 持久化：ITHACA_SESSION_FILE ⇒ 恢复历史与用量（load 与切换共用）
     if (const char* v = std::getenv("ITHACA_SESSION_FILE"); v != nullptr && *v != '\0')
         ctx_.load_session_state_(v);
@@ -112,6 +126,7 @@ void AgentPlugin::deactivate() noexcept {
     sub_run_exit_ = {};
     sub_session_ = {};
     sub_mode_ = {};
+    sub_llm_set_ = {};
     ctx_.host_.log(2, "ithaca.agent: 已停用");
 }
 

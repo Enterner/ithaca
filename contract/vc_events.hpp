@@ -181,6 +181,10 @@ struct LlmSetActive {
     const char* key = nullptr;
     // 尾部追加（M-W8）：Base URL（UTF-8）；空 = 保持现值。调用期有效，要留存必须拷贝。
     const char* base_url = nullptr;
+    // 尾部追加（上下文压缩阶段二，docs/上下文压缩-阶段二-LLM自总结-方案.md）：
+    // 当前模型上下文窗口（tokens；0 = 未知）——agent 据此做 0.9×W 动态压缩阈值。
+    // 旧生产者组合下为 0（消费方回退兜底阈值）。
+    int context_window = 0;
 };
 
 inline constexpr std::uint64_t turn_input = nostos::event_id<TurnInput>;
