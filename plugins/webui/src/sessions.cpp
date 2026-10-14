@@ -211,7 +211,7 @@ http::Response WebuiPlugin::api_session_new_(const std::string& body) {
 /// id 不存在被拒。副作用：SSE session 广播、vc.session.load、工作区随会话热切。
 http::Response WebuiPlugin::api_session_open_(const std::string& body) {
     if (in_flight_.load())
-        return json_resp({{"ok", false}, {"error", "turn 进行中，稍后再试"}});
+        return json_resp({{"ok", false}, {"error", "轮次进行中，稍后再试"}});
     json in = parse_body_(body);
     const std::string id = in.value("id", "");
     if (session_entry_(id) == nullptr)
