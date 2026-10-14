@@ -51,7 +51,7 @@ async function onDelete(s) {
   <div class="sess-list">
     <div v-for="g in groups" :key="g.ws" class="wsGroup">
       <div class="wsHead" :title="g.ws" @click="toggleGroup(g.ws)">
-        <span class="chev">{{ collapsed.has(g.ws) ? '▸' : '▾' }}</span> {{ short(g.ws) }}
+        <span class="chev">{{ collapsed.has(g.ws) ? '▸' : '▾' }}</span> {{ g.ws }}
         <span class="add" title="在此工作区新建会话" @click.stop="newSession(g.ws === '(未设置)' ? '' : g.ws)">＋</span>
       </div>
       <div v-show="!collapsed.has(g.ws)" class="wsBody">

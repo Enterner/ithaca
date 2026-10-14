@@ -2,19 +2,20 @@
 // 布局：会话栏 + 主区（顶栏 / 对话流或 hero / 输入栏）。Naive UI 只做暗色主题基座。
 // 会话栏 VSCode 化：拖拽调宽（180–420，localStorage 记忆）、折叠成 44px 图标条
 // （头部按钮或 Ctrl+B），全屏/缩小时栏宽不变、内容区自适应。
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { NConfigProvider, NTooltip, darkTheme } from 'naive-ui'
-import { S, boot, pickFolder, newSession } from './store'
+import { S, boot, pickFolder, newSession, api } from './store'
 import Sidebar from './components/Sidebar.vue'
 import Stream from './components/Stream.vue'
 import InputBar from './components/InputBar.vue'
 import Settings from './components/Settings.vue'
 import FileTree from './components/FileTree.vue'
+import CodeViewer from './components/CodeViewer.vue'
 
 const settingsRef = ref(null)
 const fileTreeRef = ref(null)
 onMounted(() => { boot() })
-const shortWs = computed(() => S.curWs ? (S.curWs.split('\\').pop() || S.curWs) : '(未设置)')
+const curWs = computed(() => S.curWs ? S.curWs : '(未设置)')
 const overrides = {
   common: {
     primaryColor: '#6366F1', primaryColorHover: '#7B83F5', primaryColorPressed: '#5257E0',
@@ -59,7 +60,7 @@ const filesW = ref(232)
 const filesOpen = ref(false)   // 默认收起（用户拍板）；localStorage 显式存 true 才展开
 try {
   const saved = JSON.parse(localStorage.getItem('vcFiles') || '{}')
-  if (saved.w >= 200 && saved.w <= 420) filesW.value = saved.w
+  if (saved.w >= 200 && saved.w <= 1000) filesW.value = saved.w
   filesOpen.value = !!saved.open
 } catch (e) {}
 function persistFiles() {
@@ -68,7 +69,7 @@ function persistFiles() {
 function toggleFiles() { filesOpen.value = !filesOpen.value; persistFiles() }
 function startFilesDrag(e) {   // 拖左缘调宽（栏在右侧：宽 = 窗口宽 - 指针 x）
   e.preventDefault()
-  const move = (ev) => { filesW.value = Math.min(420, Math.max(200, window.innerWidth - ev.clientX)) }
+  const move = (ev) => { filesW.value = Math.min(1000, Math.max(200, window.innerWidth - ev.clientX)) }
   const up = () => {
     window.removeEventListener('mousemove', move)
     window.removeEventListener('mouseup', up)
@@ -77,6 +78,21 @@ function startFilesDrag(e) {   // 拖左缘调宽（栏在右侧：宽 = 窗口�
   window.addEventListener('mousemove', move)
   window.addEventListener('mouseup', up)
 }
+
+// ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
+function openFile(path) {   // 内容经 /api/fs/read 代理 workspace read；纯展示态不经 actions 层
+  S.viewer = { path, content: '', truncated: false, loading: true, error: '' }
+  api('/api/fs/read?path=' + encodeURIComponent(path)).then((r) => {
+    if (!S.viewer || S.viewer.path !== path) return   // 已返回树/已换文件：丢弃迟到响应
+    S.viewer.loading = false
+    if (!r.ok) { S.viewer.error = r.error || '读取失败'; return }
+    S.viewer.content = r.content || ''
+    S.viewer.truncated = !!r.truncated
+  }).catch(() => {
+    if (S.viewer && S.viewer.path === path) { S.viewer.loading = false; S.viewer.error = '网络错误' }
+  })
+}
+watch(() => S.curWs, () => { S.viewer = null })   // 切工作区不留上一工作区的文件内容
 onMounted(() => window.addEventListener('keydown', onWinKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 </script>
@@ -120,7 +136,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
     <!-- 主区 -->
     <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
       <div class="topbar">
-        <span class="kv">工作区 <b>{{ shortWs }}</b></span>
+        <span class="kv">工作区 <b>{{ curWs }}</b></span>
         <span class="spacer"></span>
         <span id="conn" :class="{ off: S.conn !== 'on' }">{{ S.conn === 'on' ? '已连接' : '连接中' }}</span>
         <button class="mini-btn" :title="filesOpen ? '收起文件树' : '展开文件树'" @click="toggleFiles">🗂</button>
@@ -131,7 +147,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <div class="hero">
           <div class="hero-title">Ithaca<span class="beta">预览版</span></div>
           <button class="hero-ws" title="选择工作文件夹" @click="pickFolder">
-            📂 {{ S.curWs ? shortWs : '选择工作文件夹' }} ▾
+            📂 {{ S.curWs ? curWs : '选择工作文件夹' }} ▾
           </button>
           <div class="inbar" style="width:min(var(--content-w), 92%); padding:0;">
             <InputBar />
@@ -154,7 +170,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <button class="fs-btn" title="刷新" @click="fileTreeRef && fileTreeRef.refresh()">⟳</button>
         <button class="fs-btn" title="收起文件树" @click="toggleFiles">⟩</button>
       </div>
-      <FileTree ref="fileTreeRef" />
+      <!-- 文件态 ⇄ 查看态切换：树用 v-show 保展开态；查看器 v-if（退出即释放 Monaco 实例） -->
+      <FileTree v-show="!S.viewer" ref="fileTreeRef" @open-file="openFile" />
+      <CodeViewer v-if="S.viewer" />
       <div class="filedrag" title="拖拽调宽" @mousedown="startFilesDrag"></div>
     </aside>
 

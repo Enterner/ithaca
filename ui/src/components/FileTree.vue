@@ -9,6 +9,8 @@ import { S, api } from '../store'
 const root = reactive({ children: [], truncated: false, error: '', loading: false })
 const expanded = reactive({})   // 目录路径 → {children, truncated, error, loading}
 
+const emit = defineEmits(['open-file'])   // 文件点击交父层开查看器（树不持有查看态）
+
 function slotOf(path) {
   return { children: [], truncated: false, error: '', loading: false }
 }
@@ -31,11 +33,25 @@ async function fetchDir(path, slot) {
 }
 
 async function toggle(e) {
-  if (e.type !== 'dir') return
-  if (expanded[e.path]) { delete expanded[e.path]; return }
+  if (e.type !== 'dir') { emit('open-file', e.path); return }
+  if (expanded[e.path]) { delete expanded[e.path]; saveExpanded(); return }
   const slot = reactive(slotOf())
   expanded[e.path] = slot
+  saveExpanded()
   await fetchDir(e.path, slot)
+}
+
+// 展开目录记忆：重启/刷新后沿用上次展开到哪层。按工作区隔离——换工作区不沿用
+// （路径不属于这个 jail，展开只会拉一堆错误）。折叠态本身由 App.vue 的 vcFiles/vcSidebar 管。
+function loadExpanded() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('vcExpanded') || 'null')
+    if (saved && saved.ws === S.curWs) return saved.paths || []
+  } catch (e) {}
+  return []
+}
+function saveExpanded() {
+  localStorage.setItem('vcExpanded', JSON.stringify({ ws: S.curWs, paths: Object.keys(expanded) }))
 }
 
 async function refresh() {
@@ -47,7 +63,16 @@ async function refresh() {
 function reset() {
   for (const k of Object.keys(expanded)) delete expanded[k]
   root.children = []; root.error = ''; root.truncated = false
-  if (S.curWs) fetchDir('', root)
+  if (S.curWs) {
+    // 根就绪后恢复上次展开的目录（逐个重拉；目录已消失的会显示加载错误，不致命）
+    fetchDir('', root).then(() => {
+      for (const p of loadExpanded()) {
+        const slot = reactive(slotOf())
+        expanded[p] = slot
+        fetchDir(p, slot)
+      }
+    })
+  }
 }
 
 watch(() => S.curWs, reset, { immediate: true })

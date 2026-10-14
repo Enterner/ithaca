@@ -277,6 +277,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     // 用），带参 API 从原始 target 自行解析。踩过: 传剥完的 t ⇒ 参数永远解析
     // 不到（transcript 的 after= 曾因此静默失效，靠前端按 id 去重掩住）
     if (m == "GET" && t.rfind("/api/fs/list", 0) == 0) return api_fs_list_(req.target);
+    if (m == "GET" && t.rfind("/api/fs/read", 0) == 0) return api_fs_read_(req.target);
     if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_();
     if (m == "GET" && t == "/api/mcp/status") return api_mcp_status_();
     if (m == "GET" && t == "/api/ui/registry") return api_ui_registry_();

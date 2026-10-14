@@ -33,8 +33,6 @@ std::string wide_to_utf8(const wchar_t* text) {
     return out;
 }
 
-namespace {
-
 // 机制与踩坑说明见头文件声明处注释（宿主无主对话框的四个系统默认行为纠正）。
 std::string pick_folder_dialog(const std::string& title, const std::string& initial_dir) {
     IFileDialog* fd = nullptr;

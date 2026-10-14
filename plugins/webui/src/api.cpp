@@ -1,7 +1,7 @@
 // HTTP API 端点（plugin/webui 的输入/裁决/模型/选目录/文件树切片）。
 // /api/input、/api/decision、/api/permission-mode、/api/model、/api/pick-folder、
-// /api/fs/list、/api/mcp/status。全部跑在 select 线程（必须快）：持久化/广播
-// 经 poster defer，不等待排水。
+// /api/fs/list、/api/fs/read、/api/mcp/status。全部跑在 select 线程（必须快）：
+// 持久化/广播经 poster defer，不等待排水。
 
 #include "webui_plugin.hpp"
 
@@ -169,35 +169,38 @@ http::Response WebuiPlugin::api_pick_folder_() {
 /// query 的 %XX 解码。NOTE: handle 在 select 线程上且 kit 持内部锁——禁止在
 /// 此等待 poster 排水（其他任务体里的 broadcast 会跟内部锁成 ABBA 死锁），
 /// 故直调工具表，跨线程安全由 workspace 的全工具串行锁保证。
-http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
-    auto qval = [&target](const char* key) -> std::string {
-        const std::size_t q = target.find(std::string(key) + "=");
-        if (q == std::string::npos) return "";
-        std::size_t e = target.find('&', q);
-        if (e == std::string::npos) e = target.size();
-        std::string raw = target.substr(q + std::string(key).length() + 1, e - q - std::string(key).length() - 1);
-        std::string out;                     // %XX 解码（encodeURIComponent 形态；
-        for (std::size_t i = 0; i < raw.size(); ++i) {  // '+' 保留——文件名可含加号）
-            if (raw[i] == '%' && i + 2 < raw.size()) {
-                auto hex = [](char c) -> int {
-                    if (c >= '0' && c <= '9') return c - '0';
-                    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                    return -1;
-                };
-                const int hi = hex(raw[i + 1]), lo = hex(raw[i + 2]);
-                if (hi >= 0 && lo >= 0) {
-                    out.push_back(static_cast<char>(hi * 16 + lo));
-                    i += 2;
-                    continue;
-                }
+// query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含加号）。
+// /api/fs/list 与 /api/fs/read 共用：同一解码规则写两份必然漂移。
+static std::string query_val(const std::string& target, const char* key) {
+    const std::size_t q = target.find(std::string(key) + "=");
+    if (q == std::string::npos) return "";
+    std::size_t e = target.find('&', q);
+    if (e == std::string::npos) e = target.size();
+    std::string raw = target.substr(q + std::string(key).length() + 1, e - q - std::string(key).length() - 1);
+    std::string out;
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        if (raw[i] == '%' && i + 2 < raw.size()) {
+            auto hex = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            const int hi = hex(raw[i + 1]), lo = hex(raw[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out.push_back(static_cast<char>(hi * 16 + lo));
+                i += 2;
+                continue;
             }
-            out.push_back(raw[i]);
         }
-        return out;
-    };
-    const std::string rel = qval("path");
-    const std::string depth_s = qval("depth");
+        out.push_back(raw[i]);
+    }
+    return out;
+}
+
+http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
+    const std::string rel = query_val(target, "path");
+    const std::string depth_s = query_val(target, "depth");
     if (tools_ == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
     const json args = json{{"path", rel},
                            {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)}};
@@ -226,6 +229,25 @@ http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
         }
         r["entries"] = std::move(kept);
     }
+    return json_resp(std::move(r));
+}
+
+/// GET /api/fs/read?path=<相对路径> → 右栏代码查看器的文件内容。
+/// 代理 workspace 的 read 工具并原样透传：jail 越界防护、NUL 拒二进制、UTF-8
+/// 校验、256KB 封顶（truncated 标记）全在提供方。副作用：无（纯读）。
+/// 线程纪律同 api_fs_list_（见上）。
+http::Response WebuiPlugin::api_fs_read_(const std::string& target) {
+    if (tools_ == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
+    const json args = json{{"path", query_val(target, "path")}};
+    const char* out_json = nullptr;
+    const nostos_status st = tools_->execute(tools_->self, "read", args.dump().c_str(), 0,
+                                             &out_json);
+    json r = st == NOSTOS_OK && out_json != nullptr
+                 ? json::parse(out_json, nullptr, false)
+                 : json{{"ok", false}, {"error", "workspace execute 失败 (" +
+                                              std::to_string(static_cast<int>(st)) + ")"}};
+    if (r.is_discarded() || !r.is_object())
+        r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
     return json_resp(std::move(r));
 }
 // GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，

@@ -342,6 +342,23 @@ div.li { line-height: 1.55; }
 .side-drag:hover, .side-drag:active { background: rgba(124,140,248,.30); }
 .mini-btn { width: 30px; height: 30px; font-size: 15px; }
 
+/* 代码查看器（右栏文件态 ⇄ 查看态；Monaco 只读，主题底色在 CodeViewer.vue 内对齐 --panel） */
+.cv { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cv-bar { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 4px;
+          border-bottom: 1px solid var(--line); min-width: 0; flex: none; }
+.cv-name { font-weight: 600; color: var(--text); font-size: 12.5px; min-width: 0;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-lang { flex: none; font-size: 10px; color: var(--acc);
+           border: 1px solid color-mix(in srgb, var(--acc) 55%, transparent);
+           border-radius: 3px; padding: 0 5px; }
+.cv-trunc { flex: none; font-size: 10px; color: var(--dim); }
+.cv-wrap { flex: 1; min-height: 0; position: relative; }
+.cv-host { position: absolute; inset: 0; }
+.cv-state { position: absolute; inset: 0; display: flex; align-items: center;
+            justify-content: center; color: var(--dim); font-size: 12.5px;
+            background: var(--panel); z-index: 2; }
+.cv-err { color: var(--red); padding: 0 16px; text-align: center; }
+
 /* 整卡被覆盖的旧「本轮修改」：收成一行暗色小字 */
 .sum-super { color: var(--dim); font-size: 12px; margin: 10px 0 2px; }
 

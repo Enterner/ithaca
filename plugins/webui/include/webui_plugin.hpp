@@ -159,6 +159,7 @@ private:
     http::Response api_pick_folder_();
     http::Response api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
     http::Response api_fs_list_(const std::string& target);
+    http::Response api_fs_read_(const std::string& target);   // 代码查看器的文件内容
     http::Response api_mcp_status_();
     http::Response api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
 

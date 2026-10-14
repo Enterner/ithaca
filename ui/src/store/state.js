@@ -19,6 +19,9 @@ export const S = reactive({
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fTurns: 0, fTokens: 0,
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
+  // 代码查看器（右栏文件态 ⇄ 查看态）：{path, content, truncated, loading, error}；
+  // null = 右栏显示文件树。纯展示态——内容由 App.vue 经 /api/fs/read 拉取，不经 actions 层
+  viewer: null,
   // 待裁决提案（ZCode 式决策坞：只在实时提案上出现，重放的历史提案不阻塞输入）
   pending: null,
   inputText: '',
