@@ -79,3 +79,78 @@ export function diffHtml(diffText) {
   }
   return html
 }
+
+// ---- 查看器对照模式（docs/查看器diff模式-方案.md §2/§3/§7）------------------------
+// 自绘管线 = 现盘全文 + hunk 标记，经 diffHtml 渲染（与会话卡同管线同样式）：
+// 未修改行即纯源码（仅行号 gutter），修改行红绿底 + 词级加重。CodeViewer.vue 按
+// 新鲜度路由（§7.1）：新鲜态走 Monaco diff editor（语法高亮），这里服务陈旧降级
+// 分支（文件已再次变更 / read 截断）。
+
+/** diff 文本 → 结构化 hunk。rows 保留 hunk 内原始行序（ctx/del/add 交错），
+ *  fullTextDiff 展开全文用；oldLines/newLines 是按侧视图，reverseApply 校验用。 */
+export function parseHunks(diffText) {
+  const hunks = []; let cur = null
+  for (const l of diffText.split('\n')) {
+    const h = l.match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@/)
+    if (h) {
+      cur = { a: +h[1], n: +h[2], b: +h[3], m: +h[4], oldLines: [], newLines: [], rows: [] }
+      hunks.push(cur)
+      continue
+    }
+    if (!cur || !l || l.startsWith('──') || l.startsWith('（')) continue
+    // 行格式：行号 + 3 空格 = ctx；行号 + " - " / " + " = del/add（regex 首个 \d++空格
+    // 吃掉一个分隔空格后，ctx 还剩 2 空格、del/add 剩标记）
+    const r = l.match(/^\s*(\d+) (- |\+ |  )(.*)$/)
+    if (!r) continue
+    if (r[2] === '- ') {
+      cur.oldLines.push(r[3]); cur.rows.push({ t: 'del', text: r[3], oldNo: +r[1] })
+    } else if (r[2] === '+ ') {
+      cur.newLines.push(r[3]); cur.rows.push({ t: 'add', text: r[3], newNo: +r[1] })
+    } else {
+      cur.oldLines.push(r[3]); cur.newLines.push(r[3])
+      cur.rows.push({ t: 'ctx', text: r[3], newNo: +r[1] })
+    }
+  }
+  return hunks
+}
+
+/** 现盘内容 + hunk（逆序）→ 编辑前全文。任一 hunk 的 modified 侧对不上现盘 ⇒
+ *  {error}（文件在 diff 之后又被改过 / read 截断）。查看器对照的新鲜度裁决：
+ *  成功 ⇒ original 全文喂 Monaco diff editor；失败 ⇒ 降级自绘管线。 */
+export function reverseApply(modified, hunks) {
+  const lines = modified.split('\n')
+  for (let k = hunks.length - 1; k >= 0; k--) {
+    const h = hunks[k]
+    const seg = lines.slice(h.b - 1, h.b - 1 + h.m)
+    if (seg.length !== h.m || h.newLines.length !== h.m ||
+        seg.some((l, t) => l !== h.newLines[t]))
+      return { error: 'diff 与现盘不一致（文件可能已再次变更）' }
+    lines.splice(h.b - 1, h.m, ...h.oldLines)
+  }
+  return { original: lines.join('\n') }
+}
+
+const p4 = (n) => String(n).padStart(4, ' ')
+
+/** hunk 展开 → 全文 Ithaca diff 行序列（喂 diffHtml 渲染对照）。
+ *  hunk 外 = 现盘源码行（ctx，仅行号 gutter 无底色）；hunk 内 = rows 原序
+ *  （del/add/ctx，内容是 diff 记录的历史事实）。hunk 间现盘行按行号游标补齐；
+ *  旧 diff 的行号与现盘错位时（文件已再次变更）渲染可能重复或偏移——调用方
+ *  以 reverseApply 的校验结果提示用户。 */
+export function fullTextDiff(modified, hunks) {
+  const modLines = modified.split('\n')
+  const out = []
+  let cur = 1   // 现盘 1-based 行游标
+  for (const h of hunks) {
+    const b = Math.max(cur, Math.min(h.b, modLines.length + 1))
+    for (; cur < b && cur <= modLines.length; cur++)
+      out.push(p4(cur) + '   ' + modLines[cur - 1])
+    for (const row of h.rows)
+      out.push(row.t === 'del' ? p4(row.oldNo ?? cur) + ' - ' + row.text
+             : row.t === 'add' ? p4(row.newNo ?? cur) + ' + ' + row.text
+             : p4(row.newNo ?? cur) + '   ' + row.text)
+    cur = h.b + h.m
+  }
+  for (; cur <= modLines.length; cur++) out.push(p4(cur) + '   ' + modLines[cur - 1])
+  return out.join('\n')
+}
