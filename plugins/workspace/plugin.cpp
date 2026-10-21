@@ -1,4 +1,4 @@
-// plugin/workspace —— 文件事务插件（方案 §5.2）。
+// plugin/workspace —— 文件事务插件。
 //
 // 发布统一 ToolTable（契约 vc_tool.hpp；svc 名 vc.tool.workspace）：
 //   read / list / search —— 只读工具，同步返回
@@ -70,7 +70,7 @@ public:
             return NOSTOS_ERR_FAILED;
         }
 
-        // 热接入提示（发现的主通道是 agent 的配置清单——方案 §4.1；这是给面板/日志看的）
+        // 热接入提示（发现的主通道是 agent 的配置清单；这是给面板/日志看的）
         const vc_api::ToolRegister note{vcws::kToolSvcName};
         host_.emit(vc_api::tool_register, &note);
         host.log(2, "ithaca.workspace: 就绪，jail 根 = " +
@@ -362,13 +362,18 @@ private:
                 snaps.push_back(vcws::FileSnap{e.path, e.full, e.before, e.after, e.is_new});
             snaps_.add(turn_id, std::move(snaps));
             j["snapshot_depth"] = snaps_.depth();
-            // vc.edit.applied：真实落盘后广播（edit-diff 方案：修改即事实，diff 是报告）。
+            // vc.edit.applied：真实落盘后广播（修改即事实，diff 是报告）。
             // diff_text 拼装含 "── path（N 处编辑）" 文件头 + hunk 集；载荷必须用**具名
             // 缓冲**——emit 同步派发，paths.dump() 这类语句级临时一悬垂就是 UAF
             json paths = json::array();
+            json files_meta = json::array();   // 每文件结构化统计（随事件下发，前端免反解展示文本）
             std::string diff_text;
             for (const auto& e : r.edits) {
                 paths.push_back(e.path);  // UTF-8 相对路径；push e.full（wstring）会变码元数组
+                files_meta.push_back(json{{"path", e.path},
+                                          {"add", e.add},
+                                          {"rem", e.rem},
+                                          {"is_new", e.is_new}});
                 std::string d = e.diff;
                 if (d.size() > kDiffShowCap) d = vcws::trim_utf8(d, kDiffShowCap) + "\n（diff 截断）";
                 diff_text += "── " + e.path;
@@ -376,7 +381,9 @@ private:
                 diff_text += "\n" + d;
             }
             const std::string paths_json = paths.dump();
-            const vc_api::EditApplied ap{turn_id, paths_json.c_str(), diff_text.c_str()};
+            const std::string files_json = files_meta.dump();
+            const vc_api::EditApplied ap{turn_id, paths_json.c_str(), diff_text.c_str(),
+                                         files_json.c_str()};
             host_.emit(vc_api::edit_applied, &ap);
         }
         return j;
@@ -412,7 +419,8 @@ private:
         }
         if (has_turn) snaps_.pop_turn(turn_id);
         else snaps_.pop_latest();
-        // 撤销结果广播（此前契约事件无生产者，tui/webui 的"已撤销"来源）
+        // 撤销结果必须广播——EditUndone 是 tui/webui「已撤销」卡的唯一事件源
+        // （踩过：契约事件曾长期无生产者，撤销后 UI 无终态）
         const vc_api::EditUndone ev{turn_id, static_cast<int>(snaps_.depth())};
         host_.emit(vc_api::edit_undone, &ev);
         return json{{"ok", true},

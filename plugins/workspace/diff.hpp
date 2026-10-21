@@ -1,7 +1,7 @@
 #pragma once
 // 行级 diff（展示用）：从 before/after 生成 hunk 集——修改邻域 + 上下文 3 行 + 行号
-// （edit-diff 方案 §5，展示形态对齐 ZCode 的工具 diff）。
-// 方案 §4.4：LLM 不产出 diff（行号补丁是实测重灾区）——展示与生成分离，格式可独立演进。
+// （展示形态对齐 ZCode 的工具 diff）。
+// LLM 不产出 diff（行号补丁是实测重灾区）——展示与生成分离，格式可独立演进。
 //
 // 对齐策略（对齐 ZCode/git diff 的 Myers 家族）：
 //   1. 行级切分（容忍 CRLF）；空串按"零行"处理（新建文件 = 全 +，不产幻影行）；
@@ -200,7 +200,9 @@ inline void myers_rec(MyersCtx& c, std::size_t alo, std::size_t ahi, std::size_t
 
 }  // namespace diff_detail
 
-inline std::string make_diff(const std::string& before, const std::string& after) {
+inline std::string make_diff(const std::string& before, const std::string& after,
+                             std::size_t* out_added = nullptr,
+                             std::size_t* out_removed = nullptr) {
     using namespace diff_detail;
     // 空串 = 零行（新建/清空不产幻影空行；split_lines 的末尾空串只对"有内容"成立）
     std::vector<std::string> a =
@@ -224,7 +226,11 @@ inline std::string make_diff(const std::string& before, const std::string& after
     while (sfx < n - p && sfx < m - p && a[n - 1 - sfx] == b[m - 1 - sfx]) ++sfx;
     const std::size_t na = n - p - sfx, nb = m - p - sfx;
 
-    if (na == 0 && nb == 0) return "（无变化）\n";
+    if (na == 0 && nb == 0) {
+        if (out_added) *out_added = 0;
+        if (out_removed) *out_removed = 0;
+        return "（无变化）\n";
+    }
 
     // 中段规模闸门：小走 DP，大走 Myers（线性空间）；超过 Myers 上限（远超任何
     // 真实编辑的整文件重写）才退化为统计摘要
@@ -232,6 +238,10 @@ inline std::string make_diff(const std::string& before, const std::string& after
     constexpr std::size_t kDiffMyersSum = 25000; // 中段总行数上限
     const bool dp_small = na <= kDiffDpSide && nb <= kDiffDpSide;
     if (!dp_small && na + nb > kDiffMyersSum) {
+        // 计数退化：hunk 没算，给不出 +/− 明细——给净变化近似（统计行本身就是
+        // "仅统计"口径），不让消费方拿到默认 0 当真值
+        if (out_added) *out_added = m > n ? m - n : 0;
+        if (out_removed) *out_removed = n > m ? n - m : 0;
         return "（超出比较上限（中段 " + std::to_string(na) + "+" + std::to_string(nb) +
                " 行），仅统计：共 " + std::to_string(n) + " 行 → " + std::to_string(m) +
                " 行）\n";
@@ -343,6 +353,8 @@ inline std::string make_diff(const std::string& before, const std::string& after
         if (in_hunk && k == hunks[h].hi) ++h;
     }
     out += "（+" + std::to_string(added) + " −" + std::to_string(removed) + " 行）\n";
+    if (out_added) *out_added = added;
+    if (out_removed) *out_removed = removed;
     return out;
 }
 

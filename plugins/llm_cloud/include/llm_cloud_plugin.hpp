@@ -1,6 +1,6 @@
-// plugin/llm_cloud —— OpenAI 兼容流式 provider（方案 §5.2）。
+// plugin/llm_cloud —— OpenAI 兼容流式 provider。
 //
-// 职责地图（拆分自单文件，格式对齐 mcp）：
+// 职责地图（格式对齐 mcp）：
 //   src/plugin.cpp   入口与配置面：activate/deactivate、表装配、set_model/info、
 //                    provider 热切（vc.llm.set_active 订阅）、env 装载、NOSTOS_PLUGIN
 //   src/request.cpp  请求登记面：chat/chat_ex/cancel 的 thunk 与实现、start_ 的
@@ -19,8 +19,7 @@
 //   ITHACA_API_BASE   默认 https://api.deepseek.com（OpenAI 兼容端均可）
 //   ITHACA_MODEL      默认 deepseek-flash
 //
-// 线程纪律：chat() 起请求线程（标签制：多请求可并发在途，各自独立线程/连接/拼装态，
-// docs/llm并发请求-方案.md）；线程内只做 WinHTTP 读写 + kit::poster_submit——一切
+// 线程纪律：chat() 起请求线程（标签制：多请求可并发在途，各自独立线程/连接/拼装态）；线程内只做 WinHTTP 读写 + kit::poster_submit——一切
 // 宿主 API（emit/log）都在 poster 任务（宿主线程带桥）里发生。cancel：按 rid 置停止
 // 位 + 跨线程关请求句柄（WinHTTP 的阻塞读写会立即带错误返回），请求线程随后以
 // 「已取消」的 error 事件收尾——没有悬空请求，没有悬空线程。
@@ -68,14 +67,15 @@ public:
     void deactivate() noexcept;
 
 private:
-    // ---- 请求级类型（标签制，docs/llm并发请求-方案.md；先于使用点声明）----------
+    // ---- 请求级类型（标签制；先于使用点声明）----------
 
     struct TcAcc {
         std::string id;
         std::string name;
         std::string args;
     };
-    struct StreamState {  // 每请求一份的流式拼装态（随 worker 走，不再进插件成员）
+    struct StreamState {  // 每请求一份的流式拼装态，随 worker 走——插件成员不持有
+                          // 任何"当前请求"态（并发请求各写各的，无共享可变面）
         std::string content;
         std::map<int, TcAcc> tc;
         std::map<std::string, std::string> name_back;  // 净化名 → 原始点分名（请求期有效）
@@ -152,7 +152,7 @@ private:
     std::map<int, RequestWorker> requests_;  // request_id → 在途请求
     std::mutex requests_mu_;
 
-    std::vector<nostos::abi::Host::Subscription> subs_;  // provider hot-switch subscription
+    std::vector<nostos::abi::Host::Subscription> subs_;  // provider 热切订阅（vc.llm.set_active）
     std::mutex model_mu_;
     bool published_ = false;  // 是否已发布 vc.llm.v1（provider 热切）
 };

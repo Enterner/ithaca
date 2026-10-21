@@ -32,21 +32,34 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
         assistant = json{{"role", "assistant"}, {"content", ""}};
     messages_.push_back(assistant);  // 完整消息（含 tool_calls）进历史
 
-    // M6 token 统计：provider 的 usage（JSON 文本）累计进会话总量
+    // token 计量与判定信号：usage 真实回报 ⇒ 累计（含缓存命中计量）+ 信号取真值；未回报 ⇒ 信号按请求体粗估兜底（宁高勿低）——
+    // 粗估不进用量累计。两种来源都写入 last_prompt_tokens_，压缩判定不再失明。
+    bool usage_real = false;
     if (e.usage != nullptr) {
         json u = json::parse(e.usage, nullptr, false);
         if (u.is_object()) {
             usage_prompt_ += u.value("prompt_tokens", 0LL);
             usage_completion_ += u.value("completion_tokens", 0LL);
             usage_total_ += u.value("total_tokens", 0LL);
+            usage_cache_ += u.value("cache_tokens", 0LL);   // 缓存命中计量
             last_prompt_tokens_ = u.value("prompt_tokens", 0LL);  // 压缩判定的确定性信号
+            usage_real = true;
         }
     }
-    // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升
+    if (!usage_real) last_prompt_tokens_ = estimate_prompt_tokens(body_buf_);
+    // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升；封顶
+    // 0.95×W——越过即由硬保护接管判定，阈值不再虚高（阈值一旦
+    // 越过 W，should_compress 永不命中，压缩停摆回到爆窗）。仅真实 usage 参与
+    // 比较——拿粗估信号退避 = 用垃圾调阈值。
     if (compress_verify_) {
         compress_verify_ = false;
-        if (session_threshold_ > 0 && last_prompt_tokens_ >= session_threshold_) {
+        if (usage_real && session_threshold_ > 0 &&
+            last_prompt_tokens_ >= session_threshold_) {
             session_threshold_ = session_threshold_ / 4 * 5;
+            if (ctx_window_ > 0) {
+                const long long cap = ctx_window_ / 20 * 19;
+                if (session_threshold_ > cap) session_threshold_ = cap;
+            }
             notice("上下文仍紧张——压缩阈值已上调至 " +
                    std::to_string(session_threshold_) + " tokens，建议开新会话");
         }
@@ -63,7 +76,7 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
             c.call_id = tc.value("id", std::string{});
             if (tc.contains("function") && tc["function"].is_object()) {
                 c.full_name = tc["function"].value("name", std::string{});
-                c.tool = tool_last(c.full_name);  // "workspace.read" → "read"（此前漏设 ⇒ 空工具名）
+                c.tool = tool_last(c.full_name);  // "workspace.read" → "read"（踩过：漏设 ⇒ 空工具名）
                 const std::string a = tc["function"].value("arguments", std::string{});
                 json parsed = json::parse(a, nullptr, false);
                 if (parsed.is_object()) c.args = parsed;
@@ -81,6 +94,21 @@ void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
         return on_compress_error_(e);
     if (e.request_id != inflight_) return;  // 迟到错误 / agent 自发收口（rid=0）：忽略
     if (state_ == State::Idle) return;
+    // 超窗自救：provider 报上下文超长 ⇒ 机械折叠后重发当前请求，
+    // 而非报废 turn。仅 TurnActive 且无异步任务在途（错误对应的正是刚发出的
+    // send_chat）；重发有 kMaxOverwindowResend 上界——折叠不够再超窗时最终仍走
+    // 报废路径，不会打转。provider 文案归一（待办 15）后可收窄这里的匹配面。
+    if (state_ == State::TurnActive && runs_.empty() &&
+        compress_retries_ < kMaxOverwindowResend &&
+        vcagent::is_context_overflow_error(e.message != nullptr ? e.message : "")) {
+        const vcagent::CompressPlan plan = vcagent::plan_compress(messages_);
+        if (plan.valid) {
+            ++compress_retries_;
+            pending_plan_ = plan;
+            forced_fold_resend_();
+            return;
+        }
+    }
     // provider 的 llm_error 已由 webui 落错误卡并清 in_flight——agent 只复位
     // 状态机，不重发（重发 = 双重错误卡）
     cleanup_turn_();

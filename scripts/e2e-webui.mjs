@@ -1,4 +1,4 @@
-// webui 插件的端到端验收（原 tests/e2e_webui.ps1）。
+// webui 插件的端到端验收。
 // 覆盖：health / 配置往返（key 掩码）/ 输入→直接落盘→applied 携带 diff→撤销回退 /
 //       transcript 持久化 / 重启重放一致 / 会话注册表 / 权限模式 API / SSE 长连接存活。
 // 用法：node scripts/e2e-webui.mjs [--preset debug]
@@ -82,7 +82,7 @@ function startHost(mode) {
 }
 function stopHost() {
     // NOTE: 树杀必须在 proc.kill() 之前——先杀 cmd 会让树断裂，宿主孤儿化存活
-    // （占着端口与 vc.llm.v1 发布位 ⇒ 后续实例 publish 失败 ⇒ LLM 不可用，实锤）
+    // （占着端口与 vc.llm.v1 发布位 ⇒ 后续实例 publish 失败 ⇒ LLM 不可用，踩过）
     if (proc) spawnSync("taskkill", ["/F", "/T", "/PID", String(proc.pid)], { stdio: "ignore" });
     if (proc && proc.exitCode === null) proc.kill();
     proc = null;
@@ -224,7 +224,7 @@ const after = fs.readFileSync(tf, "utf8").split("\n").filter((l) => l.trim() !==
 assert(after === before, `重启后文件未变（${after} = ${before}）`);
 
 // ---- 5. 会话注册表（工作区分组数据源）+ 工作区随会话----------------------
-// 方案 B：工作区归属 = 组合端点带 workspace（assign 端点已随草稿态退役）
+// 方案 B：工作区归属 = 组合端点显式带 workspace（无独立 assign 端点）
 const wsSession = await postJson(`${base}/api/session/new`, {
     message: "第二个会话",
     workspace: ws.replaceAll("\\", "/"),

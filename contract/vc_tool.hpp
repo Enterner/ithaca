@@ -1,5 +1,5 @@
 #pragma once
-// ithaca 契约 —— 统一工具表（方案 v1.1 §4.1）。
+// ithaca 契约 —— 统一工具表。
 //
 // 任何插件都能成为"工具提供者"：svc 名自选（vc.tool.workspace / vc.tool.runner / …），
 // 表形状相同 ⇒ agent 泛型桥接，新增工具插件零 agent 改动。

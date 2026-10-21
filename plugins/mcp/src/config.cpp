@@ -39,7 +39,7 @@ void McpPlugin::load_config_and_start_() {
             cfg["mcp"].contains("servers") && cfg["mcp"]["servers"].is_array())
             servers = cfg["mcp"]["servers"];
     }
-    // 插件 UI 贡献的值域（方案 A）：webui 设置面板写 plugins.mcp，此处读出
+    // 插件 UI 贡献的值域：webui 设置面板写 plugins.mcp，此处读出
     // （未配置 = 契约级默认；非法值由 value() 类型守卫兜底）。
     if (cfg.contains("plugins") && cfg["plugins"].is_object() &&
         cfg["plugins"].contains("mcp") && cfg["plugins"]["mcp"].is_object()) {

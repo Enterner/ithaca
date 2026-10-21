@@ -7,7 +7,7 @@
 //   full-auto  —— 确认清单为空：runner 在 AppContainer 沙箱内执行
 //                  （文件系统限工作区 + 断网；把关责任从人移到沙箱）
 //
-// 保留偏置（上下文压缩方案 §3.2C 同款）：宁可多问，不可错放。
+// 保留偏置：宁可多问，不可错放。
 #include <algorithm>
 #include <string>
 #include <vector>

@@ -1,4 +1,4 @@
-// 会话创建生命周期 · API 层用例（方案 docs/会话生命周期-测试方案.md）。
+// 会话创建生命周期 · API 层用例。
 // SC1（新口径）+ SC2a–d 的服务端镜像不变式：注册表只含已初始化会话。
 import fs from "node:fs";
 import path from "node:path";

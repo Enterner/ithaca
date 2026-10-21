@@ -1,5 +1,4 @@
-// 记录状态机：SSE/重放的统一入口 render——流式合并、汇总卡聚合（edit-diff
-// 批次语义）、去重只认数字 id（NOTE: session 字符串 id 会污染 lastId——踩过）；
+// 记录状态机：SSE/重放的统一入口 render——流式合并、汇总卡聚合（同批同文件多次编辑折叠为一条）、去重只认数字 id（NOTE: session 字符串 id 会污染 lastId——踩过）；
 // 附 HTTP 重放 pollOnce（重放与补洞共用）与输出速率窗口。
 // 视图重置/草稿态进出场属会话域（./sessions），session 事件在此分发到它。
 import { S, X } from './state'
@@ -9,6 +8,7 @@ import { diffFiles } from '../diff'
 import { loadSessions, enterDraft, resetView } from './sessions'
 
 function push(rec) { S.records.push(rec) }
+/** 本地伪记录：只进视图、不经宿主（发送链的前端提示，如创建失败回退）。 */
 export function pushLocal(text) { push({ type: 'local', text }) }
 
 // ---- 汇总卡聚合（edit-diff 批次语义）-----------------------------------------
@@ -17,17 +17,50 @@ function parseStats(diff) {
   const m = diff.match(/（\+(\d+) −(\d+) 行）/)
   return m ? { add: +m[1], rem: +m[2] } : null
 }
+// applied 的 diff_text = 每文件一段「── path（N 处编辑）\n<diff>」；按段头切开，
+// 段序与 paths/files 一致，段体 = 该文件的 hunk diff（不含段头）。
+function splitAppliedDiff(diffText) {
+  const segs = []
+  let cur = null
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('── ')) { if (cur) segs.push(cur); cur = [] }
+    else if (cur) cur.push(line)
+  }
+  if (cur) segs.push(cur)
+  return segs.map((g) => g.join('\n'))
+}
 function accumulateApplied(rec) {
-  const st = parseStats(rec.diff) || { add: 0, rem: 0 }
-  const paths = rec.paths || []
-  const m = rec.diff.match(/^── (.+)$/m)
-  const p = paths.length === 1 ? paths[0] : (m ? m[1].replace(/（[^）]*）\s*$/, '').trim() : '?')
-  const isNew = rec.diff.includes('@@ -0,0 +')
+  // 统计与 is_new 以事件的结构化字段为准（EditApplied.files_json）——diff_text 是
+  // 展示文本且可能被 8KB 护栏截断（截断砍掉的是文本尾行统计，从它反解会让大
+  // diff 的修改卡恒 +0−0，踩过）；旧记录（历史 transcript 重放，无 files 字段）
+  // 回退展示文本反解。
+  const structured = Array.isArray(rec.files) && rec.files.length ? rec.files : null
+  const bodies = splitAppliedDiff(rec.diff || '')
+  if (structured) {
+    structured.forEach((f, i) => {
+      const e = X.turnEdits.get(f.path) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
+      e.applies.push(bodies[i] ?? '')
+      e.n++
+      e.add += f.add || 0
+      e.rem += f.rem || 0
+      e.isNew = e.isNew || !!f.is_new
+      X.turnEdits.set(f.path, e)
+    })
+  } else {
+    const st = parseStats(rec.diff) || { add: 0, rem: 0 }
+    const m = (rec.diff || '').match(/^── (.+)$/m)
+    const paths = rec.paths || []
+    const p = paths.length === 1 ? paths[0] : (m ? m[1].replace(/（[^）]*）\s*$/, '').trim() : '?')
+    const isNew = (rec.diff || '').includes('@@ -0,0 +')
+    const e = X.turnEdits.get(p) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
+    e.applies.push(bodies[0] ?? (rec.diff || ''))
+    e.n++
+    e.add += st.add
+    e.rem += st.rem
+    e.isNew = e.isNew || isNew
+    X.turnEdits.set(p, e)
+  }
   if (rec.turn_id) X.turnEditsTurn = rec.turn_id
-  const e = X.turnEdits.get(p) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
-  e.applies.push(rec.diff)
-  e.n++; e.add += st.add; e.rem += st.rem; e.isNew = e.isNew || isNew
-  X.turnEdits.set(p, e)
 }
 /** 结算当前轮的编辑汇总卡（记录流内伪记录，落位到当前位置）。 */
 export function flushTurnEdits() {

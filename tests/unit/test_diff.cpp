@@ -1,4 +1,4 @@
-// hunk diff 的单测（edit-diff 方案 §5）：新文件全 +、行号正确性、hunk 合并与切分、
+// hunk diff 的单测：新文件全 +、行号正确性、hunk 合并与切分、
 // 前缀/后缀剥离与比较上限退化、无变化、清空、CRLF 容忍、统计尾行。
 // 注：公共前缀/后缀只进 '=' op（供上下文延伸），hunk 头行号 = 绝对行号（1-based）。
 #include "ithaca_test_framework.hpp"

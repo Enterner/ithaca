@@ -10,7 +10,7 @@
 // 失败一律经 err 出参点名原因，由调用方回灌给模型自我纠正。
 //
 // 与内核 video_stream 插件的 stream.hpp 路径安全同族——第二份独立实现
-// （内核收编门槛达成），已记入 docs/nostos-开发观察.md 当前发现。
+// （内核收编门槛达成）。
 
 #include <nostos/kit/win.hpp>
 

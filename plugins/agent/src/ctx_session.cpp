@@ -30,6 +30,8 @@ void AgentCtx::load_session_state_(const std::string& path) {
         usage_prompt_ = usage.value("prompt_tokens", 0LL);
         usage_completion_ = usage.value("completion_tokens", 0LL);
         usage_total_ = usage.value("total_tokens", 0LL);
+        // 判定信号随会话恢复：恢复后首轮压缩判定不再失明
+        last_prompt_tokens_ = doc.value("last_prompt_tokens", 0LL);
         if (doc.contains("messages") && doc["messages"].is_array())
             messages_ = doc["messages"];
         host_.log(2, "ithaca.agent: 会话已加载（turns=" + std::to_string(turn_no_) +
@@ -48,7 +50,10 @@ void AgentCtx::persist_session_() {
         json usage = {{"prompt_tokens", usage_prompt_},
                       {"completion_tokens", usage_completion_},
                       {"total_tokens", usage_total_}};
-        json doc = {{"turns", turn_no_}, {"usage", usage}, {"messages", messages_}};
+        json doc = {{"turns", turn_no_},
+                    {"usage", usage},
+                    {"last_prompt_tokens", last_prompt_tokens_},
+                    {"messages", messages_}};
         std::error_code ec;
         fs::create_directories(fs::path(session_path_).parent_path(), ec);
         std::ofstream out(session_path_, std::ios::binary | std::ios::trunc);

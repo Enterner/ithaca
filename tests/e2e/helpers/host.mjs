@@ -1,5 +1,5 @@
-// tests/e2e/helpers/host.mjs —— 宿主启停 + 隔离环境（从 scripts/e2e-webui.mjs 抽出的
-// 共用基建），叠加 @playwright/test fixture：每个用例独立的宿主生命周期与隔离 home。
+// tests/e2e/helpers/host.mjs —— 宿主启停 + 隔离环境（共用基建），
+// 叠加 @playwright/test fixture：每个用例独立的宿主生命周期与隔离 home。
 // 端口按 workerIndex 分配（worker 内串行、worker 间错开），不用全局 taskkill。
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";

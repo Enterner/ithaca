@@ -1,6 +1,6 @@
 <script setup>
 // 对话流：记录列表 + 流式块。提案卡（逐文件批准）/「本轮修改」汇总卡内联实现，
-// diff 着色走 diff.js 的 v-html（内容全部经 esc，与旧版同信任级别）。
+// diff 着色走 diff.js 的 v-html（内容全部经 esc——信任级别与正文一致）。
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { S } from '../store'
 import { mdHtml, esc } from '../md'

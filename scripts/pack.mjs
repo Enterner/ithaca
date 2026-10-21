@@ -1,4 +1,4 @@
-// 便携包打包（原 scripts/package.ps1）：release 产物 + 前端 dist 组装为解压即用的 zip。
+// 便携包打包：release 产物 + 前端 dist 组装为解压即用的 zip。
 // zip 由系统自带 bsdtar（C:\Windows\System32\tar.exe，-a 按后缀出 zip）生成，零外部依赖。
 // 用法：node scripts/pack.mjs [--version 0.1.0] [--preset release] [--with-redist]
 import { createHash } from "node:crypto";

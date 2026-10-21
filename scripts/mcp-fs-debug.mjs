@@ -1,4 +1,5 @@
-// 临时：真实开源 MCP server（@modelcontextprotocol/server-filesystem）接入调试（用后即删）
+// 真实开源 MCP server（@modelcontextprotocol/server-filesystem）的接入调试入口。
+// TODO: 调试结束后删除。
 import path from "node:path";
 import fs from "node:fs";
 import { spawn, spawnSync } from "node:child_process";

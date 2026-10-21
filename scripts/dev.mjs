@@ -1,6 +1,6 @@
-// Web UI 启动器（原 ithacaweb.ps1 + ithacaweb.bat）：
+// Web UI 启动器：
 // 清理残留宿主 → 数据目录准备（含旧位置一次性迁移）→ 配置引导 → 设 env → 宿主前台运行 → 开浏览器。
-// 会话/配置落在 <仓库>/.ithaca-data/——宿主/浏览器开关均不影响数据（方案 §3）。
+// 会话/配置落在 <仓库>/.ithaca-data/——宿主/浏览器开关均不影响数据。
 // 用法：npm run dev [-- --provider mock] [-- --data-home D:\path] [-- --no-browser] [-- --preset release]
 //       默认 cloud；mock 仅供开发测试（显式指定）。
 import { spawn, spawnSync } from "node:child_process";
@@ -15,7 +15,8 @@ function flag(name) {
 }
 const has = (name) => process.argv.includes(name);
 
-// 旧版启动器（隐藏窗口后台跑）会残留不可见宿主：抢 8790 端口、并发写同一 state 文件
+// 启动前清场：隐藏窗口启动的宿主不可见、易残留——抢 8790 端口、并发写同一
+// state 文件（踩过：残留宿主让 dev 起不来/状态互踩）
 spawnSync("taskkill", ["/F", "/IM", "ithaca_host.exe"], { stdio: "ignore" });
 
 const preset = flag("--preset") ?? "debug";

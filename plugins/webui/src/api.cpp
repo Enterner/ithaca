@@ -250,7 +250,7 @@ http::Response WebuiPlugin::api_fs_read_(const std::string& target) {
         r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
     return json_resp(std::move(r));
 }
-// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
+/// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
 // 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。
 http::Response WebuiPlugin::api_mcp_status_() {
     json fallback = {{"ok", true}, {"servers", json::array()}};

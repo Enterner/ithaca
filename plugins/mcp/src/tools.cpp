@@ -1,6 +1,6 @@
 // 统一工具表（plugin/mcp 的 agent 契约切片）。
 // list_thunk：按全名 mcp.<server>__<tool> 自述全部工具；exec_thunk/execute：
-// tools/call 同步转发 + 结果映射（方案「结果映射」表）；附会话查找原语。
+// tools/call 同步转发 + 结果映射；附会话查找原语。
 
 #include "mcp_plugin.hpp"
 
@@ -42,7 +42,7 @@ nostos_status McpPlugin::exec_thunk(void* self, const char* name, const char* ar
     return NOSTOS_OK;
 }
 
-// execute 转发：server__tool 拆分 → tools/call → 结果映射（方案「结果映射」表）
+// execute 转发：server__tool 拆分 → tools/call → 结果映射
 std::string McpPlugin::execute(const std::string& name, const std::string& args_json) {
     const auto us = name.find("__");
     if (us == std::string::npos)

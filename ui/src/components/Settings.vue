@@ -3,7 +3,7 @@
 // 模型接入 = 供应商两层配置（第一层=供应商列表/详情，第二层=模型编辑对话框）。
 // 语义对齐后端 /api/config：api_key 不回显（留空=按名保留）、内置供应商名称只读不可删。
 // MCP 工具页 = McpSettings 组件（server 两层配置，保存 → mcp 插件热重载）。
-// 插件贡献页 = PluginSettings（方案 A：各插件 vc.ui.register 的 schema 动态生成，
+// 插件贡献页 = PluginSettings（各插件 vc.ui.register 的 schema 动态生成，
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
 import { ref, reactive } from 'vue'
 import { NModal } from 'naive-ui'
@@ -179,7 +179,7 @@ function parseCtx(s) {
     <div class="nbset" v-else-if="tab === 'mcp'">
       <McpSettings :active="tab === 'mcp' && show" @close="tab = 'model'" />
     </div>
-    <!-- 插件贡献页（方案 A）：schema 动态渲染，各插件设置即插即现 -->
+    <!-- 插件贡献页：schema 动态渲染，各插件设置即插即现 -->
     <PluginSettings v-else-if="tab === 'plug'" />
 
     <!-- 第二层：模型编辑对话框（同样可拖动、默认居中） -->

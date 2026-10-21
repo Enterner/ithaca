@@ -1,4 +1,4 @@
-// 构建 + 单元测试编排（原 build.ps1）。
+// 构建 + 单元测试编排。
 // 代理防御：MSBuild 遇到仅大小写不同的重名代理变量会抛 MSB6001，
 // 构建前把成对的代理环境变量整组清掉（cmd 层防御的 Node 等价物）。
 // 用法：node scripts/build.mjs [--preset debug|release|asan] [--test-only]

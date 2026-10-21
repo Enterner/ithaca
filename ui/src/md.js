@@ -1,5 +1,5 @@
 // 受限 markdown：转义优先，只认 加粗/行内代码/代码块/列表（禁 raw HTML）。
-// 逐字移植旧 index.html md()——返回 HTML 串，配合 v-html（内容全部经 esc）。
+// 返回 HTML 串，配合 v-html（内容全部经 esc）。
 function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
           .replace(/"/g, '&quot;').replace(/'/g, '&#39;')

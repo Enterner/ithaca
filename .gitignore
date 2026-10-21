@@ -4,6 +4,7 @@ shell/build-*/
 .*/
 node_modules/
 playwright-report/
+test-results/
 AGENTS.md
 docs/
 ui/dist/

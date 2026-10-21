@@ -1,4 +1,4 @@
-// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入（方案 docs/mcp-插件-方案.md）。
+// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入。
 //
 // 职责：按 config.json 的 mcp.servers 拉起 MCP server 子进程（JSON-RPC 2.0 /
 // stdio 换行分帧），initialize + tools/list 发现工具，以统一工具表
@@ -489,7 +489,7 @@ private:
         return NOSTOS_OK;
     }
 
-    // execute 转发：server__tool 拆分 → tools/call → 结果映射（方案「结果映射」表）
+    // execute 转发：server__tool 拆分 → tools/call → 结果映射
     std::string execute(const std::string& name, const std::string& args_json) {
         const auto us = name.find("__");
         if (us == std::string::npos)

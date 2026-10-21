@@ -1,15 +1,15 @@
-// plugin/runner —— 命令执行插件（方案 §5.2）。
+// plugin/runner —— 命令执行插件。
 //
 // 发布统一 ToolTable（svc 名 vc.tool.runner），唯一工具 "run"：
 //   execute("run", {"command_line":..., "cwd":?, "timeout_ms":?, "dry_run":?})
 //   ⇒ 立即返回 {"ok":true,"run_id":N}；输出经 vc.run.line、结束经 vc.run.exit
 //   事件回（都在宿主线程，携带 run_id 归流——并发 run 互不串线）。
 //
-// 执行口把关（职责矩阵 §5.1：安全边界在执行者，agent 只转发）：
+// 执行口把关（安全边界在执行者，agent 只转发）：
 //   · 权限把关：三档权限模式——suggest/auto-edit 由 agent 确认清单把关
 //     （提案→decision），full-auto 在 AppContainer 沙箱内执行（读宽写窄：系统+
 //     PATH 工具目录只读、工作区可写、断网——机制详见 proc.hpp 沙箱段）；
-//     "cmake,ctest,ninja"）——这是缓解而非沙箱（方案 §6 明示）；
+//     "cmake,ctest,ninja"）——这是缓解而非沙箱）；
 //   · cwd 限定 jail 内；dry_run=true 只解析并回显 would_run（批准门素材）；
 //   · 超时（默认 600s，上限 1h）⇒ TerminateProcess + 截断通告。
 //
@@ -24,6 +24,7 @@
 #include "vc_tool.hpp"
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/piped_process.hpp>
 #include <nostos/kit/poster.hpp>
 #include <nostos/kit/win.hpp>
 
@@ -309,10 +310,10 @@ private:
         const auto reader = [this, entry](HANDLE h, int stream) {
             // 读取线程：只读 + 缓冲（mu 保护）——poster 投递集中在 poster 线程，
             // 消除并发投递竞态崩溃根因：两个读取线程并发过 poster 边界）。
-            vcrun::LineSplitter splitter;
+            nostos::kit::LineSplitter splitter;
             for (;;) {
                 std::string chunk;
-                if (!vcrun::read_chunk(h, chunk)) break;
+                if (!nostos::kit::PipedProcess::read_chunk(h, chunk)) break;
                 splitter.feed(chunk.data(), chunk.size(), [&](const std::string& line) {
                     std::lock_guard<std::mutex> lock(entry->mu);
                     entry->buffered.emplace_back(stream, line);

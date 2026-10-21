@@ -29,7 +29,7 @@ void WebuiPlugin::load_config_() {
 // 共享文件（ITHACA_WEBUI_CONFIG，未设 = home/config.json 即单实例原行为）存
 // providers/Key 等凭据；实例差异项（当前供应商/模型/权限模式）落 home 的
 // config-local.json 覆盖层。唯一写者是设置面板 UI（用户驱动、低频），运行中
-// 的实例只读共享文件——结构上无写竞争（多宿主方案 §3.1）。
+// 的实例只读共享文件——结构上无写竞争。
 fs::path WebuiPlugin::config_path_() const {
     if (const char* v = std::getenv("ITHACA_WEBUI_CONFIG"); v != nullptr && *v != '\0')
         return fs::path(v);
@@ -53,7 +53,7 @@ void WebuiPlugin::merge_local_overlay_() {
 bool WebuiPlugin::persist_config_() {
     // 单实例模式 = 原 home/config.json 全量行为不变。共享模式下：providers/
     // Key 等凭据写共享文件，但**实例差异项（当前供应商/模型/权限模式）不进
-    // 共享文件**——方案 §3.1「实例对差异项只读」，否则 A 实例切模型会把 B
+    // 共享文件**（实例对差异项只读）——否则 A 实例切模型会把 B
     // 实例的重启默认值污染掉；差异项只落本实例覆盖层
     const fs::path f = config_path_();
     std::ofstream out(f, std::ios::binary | std::ios::trunc);
@@ -217,7 +217,7 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
                     merged.push_back(p);   // 非 cloud 类型项保全（磁盘跨模式数据不丢）
             // NOTE: 不可 move——合并块之后的 provider/model 同步循环还要遍历
             // cleaned，move 会把元素搬成 null 令该循环静默失效 + 响应路径抛
-            // type_error（500，实锤）
+            // type_error（500，踩过）
             for (const auto& c : cleaned) merged.push_back(c);
             config_["providers"] = std::move(merged);
         }
@@ -255,16 +255,16 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
         config_["mcp"] = in["mcp"];
         mcp_changed = true;
     }
-    // 插件 UI 贡献的值域（方案 A）：plugins.<名> 整节透传（各插件 schema 的表单
+    // 插件 UI 贡献的值域：plugins.<名> 整节透传（各插件 schema 的表单
     // 值，插件启动/reload 时读取）。
     bool plugins_changed = false;
     if (in.contains("plugins") && in["plugins"].is_object()) {
         config_["plugins"] = in["plugins"];
         plugins_changed = true;
     }
-    // NOTE: McpReload 此前只有 mcp_changed 置位却从未发射（死机制，实锤：设置面
-    // 板保存 server 清单后热重载从未生效）——接活：mcp/plugins 任一变化即发，
-    // mcp 插件收到后重读 config（超时类值随 reload 生效）。
+    // NOTE: mcp/plugins 任一变化即发 McpReload——mcp 插件收到后重读 config
+    //（超时类值随 reload 生效）。踩过：只置 mcp_changed 不发射，设置面板保存
+    // server 清单后热重载从未生效（死机制）。
     if (mcp_changed || plugins_changed) {
         nostos::kit::poster_submit(poster_, [this] {
             const vc_api::McpReload r{};

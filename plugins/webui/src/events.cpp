@@ -100,12 +100,19 @@ void WebuiPlugin::subscribe_() {
             json pa = json::parse(e->paths_json, nullptr, false);
             if (pa.is_array()) paths = pa;
         }
-        // edit-diff 方案 v1.1：applied 携带 hunk diff——落盘完成后前端立即渲染；
-        // diff_text 为 null = 旧生产者组合（前端退化为路径列表）
+        // 每文件结构化统计（path/add/rem/is_new）：数字以它为准——diff_text 是展示
+        // 文本且可能被 8KB 护栏截断（截断砍掉文本尾行统计，消费方不得反解）；旧
+        // 生产者组合无此字段 ⇒ 空数组，前端回退展示文本反解
+        json files = json::array();
+        if (e->files_json != nullptr && *e->files_json != '\0') {
+            files = json::parse(e->files_json, nullptr, false);
+            if (!files.is_array()) files = json::array();
+        }
         record_({{"type", "applied"},
                  {"turn_id", e->turn_id},
                  {"paths", paths},
-                 {"diff", e->diff_text != nullptr ? std::string(e->diff_text) : ""}});
+                 {"diff", e->diff_text != nullptr ? std::string(e->diff_text) : ""},
+                 {"files", files}});
     }));
     subs_.push_back(host_.on(vc_api::edit_undone, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditUndone*>(p);
@@ -129,7 +136,7 @@ void WebuiPlugin::subscribe_() {
                  {"text", e->text != nullptr ? std::string(e->text) : ""},
                  {"sys", e->sys}});
     }));
-    // 插件 UI 贡献（方案 A）：schema 是"界面长什么样"，值在 config 的 plugins 节。
+    // 插件 UI 贡献：schema 是"界面长什么样"，值在 config 的 plugins 节。
     // 载荷三串均调用期有效——立即拷贝。map 插入在宿主线程串行化，无锁。
     subs_.push_back(host_.on(vc_api::ui_register, [this](const void* p) {
         const auto* e = static_cast<const vc_api::UiRegister*>(p);

@@ -47,8 +47,9 @@ nostos_status CloudPlugin::chat_ex_(int request_id, const char* body_json) {
 }
 
 nostos_status CloudPlugin::start_(int request_id, json messages, json tools) {
-    // 凭据/端点/模型快照进 worker 闭包：provider 热切只影响后续请求（顺手了结
-    // key/base 跨线程读的既有取舍竞态——并发下"切换时无在途请求"不再成立）
+    // 凭据/端点/模型快照进 worker 闭包：provider 热切只影响后续请求。快照在锁内
+    // 一次取齐——并发在途与热切并存时，worker 手里的凭据/端点/模型是自洽的一份，
+    // 不存在跨线程读竞态。
     std::string model, key_utf8, base_utf8;
     std::wstring key_wide, base_wide;
     {

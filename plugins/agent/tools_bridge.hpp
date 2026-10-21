@@ -1,7 +1,7 @@
 #pragma once
 // agent 的纯逻辑件：工具名映射 / tools JSON 拼装 / 审批策略。与宿主事件零耦合，可单测。
 //
-// 工具命名约定（方案 §5.2）：LLM 看到的工具名 = "<工具集>.<工具>"，其中工具集 =
+// 工具命名约定：LLM 看到的工具名 = "<工具集>.<工具>"，其中工具集 =
 // 工具表 svc 名去掉 "ithaca.tool." 前缀（vc.tool.workspace → workspace）。
 // agent 因此对任意新工具插件零硬编码：拿到表就能拼 tools，拿到 tool_call 就能回表。
 #include <nlohmann/json.hpp>

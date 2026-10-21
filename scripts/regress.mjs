@@ -1,4 +1,4 @@
-// 回归编排（原 tests/regress/regress.ps1）：确定性验收（mock 剧本驱动全链路，离线可复现）。
+// 回归编排：确定性验收（mock 剧本驱动全链路，离线可复现）。
 //   · 连续两次 selftest 输出完全一致（timing 归一化后）
 //   · 输出与 golden 文件一致（--update-golden 重录）
 //   · session 持久化断言（turns 计数落盘）
@@ -72,7 +72,7 @@ if (updateGolden || !fs.existsSync(golden)) {
     fs.writeFileSync(golden, r1);
     console.log(`✓ golden 已录制（${golden}）`);
 } else {
-    const expected = fs.readFileSync(golden, "utf8").trim();
+    const expected = fs.readFileSync(golden, "utf8").replaceAll("\r\n", "\n").trim();
     if (r1.trim() !== expected) {
         console.error("✗ 与 golden 不一致——行为回归！");
         console.error(r1.slice(0, 600));

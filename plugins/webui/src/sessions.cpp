@@ -6,7 +6,7 @@
 
 #include "vc_events.hpp"  // vc_api::SessionLoad/WorkspaceSet：会话切换的上下文加载/工作区热切
 
-#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断（F15 收敛点）
+#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断（收敛点）
 
 namespace vc_webui {
 
@@ -179,7 +179,7 @@ http::Response WebuiPlugin::api_session_new_(const std::string& body) {
     if (in_flight_.load())
         return json_resp({{"ok", false}, {"error", "turn 进行中，稍后再试"}});
     json in = parse_body_(body);
-    // 创建即初始化（方案 B：前端草稿态的唯一出口）——必须携带首条消息，裸调用
+    // 创建即初始化（前端草稿态的唯一出口）——必须携带首条消息，裸调用
     // 400 ⇒ 服务端结构上不可能产生未初始化会话（无撤回/清扫逻辑可写）。
     const std::string msg = in.contains("message") && in["message"].is_string()
                                 ? in["message"].get<std::string>() : "";

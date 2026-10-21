@@ -1,4 +1,4 @@
-// plugin/webui —— Web 前端插件（正式 UI，方案 docs/webui-方案.md）。
+// plugin/webui —— Web 前端插件（正式 UI）。
 //
 // 本翻译单元：插件生命周期（activate/deactivate）、HTTP 路由 handle（select
 // 线程入口）、通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）与
@@ -9,7 +9,7 @@
 //   · transcript.jsonl（本插件写，展示事件流，每条 flush）
 //   · state.json（agent 写，LLM 上下文；路径由启动器按活跃会话给定）
 //
-// 线程纪律（方案 §5）：Handler::handle 在 select 线程（必须快——poster_submit/
+// 线程纪律：Handler::handle 在 select 线程（必须快——poster_submit/
 // 小文件写都非阻塞）；事件回调在宿主线程（drain_posted 串行化）；broadcast
 // 内核注明线程安全。锁：无（各线程只触碰自己的数据面）。
 
@@ -68,9 +68,9 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
                 if (best < 0) act = "";
             }
         }
-        // 只选不切：会话激活统一走下方 switch_to_——旧实现在此手工复刻 switch_to_
-        // 的前半段（载 transcript），漏掉"工作区随会话"矫正（WorkspaceSet/
-        // fs_watcher 迁移）⇒ workspace 的 jail 根停在缺省（data 目录），启动即
+        // 只选不切：会话激活统一走下方 switch_to_——工作区矫正（WorkspaceSet/
+        // fs_watcher 迁移）与 transcript 装载都只在那条路径上，此处手工复刻
+        // 前半段会漏掉矫正 ⇒ workspace 的 jail 根停在缺省（data 目录），启动即
         // 工作区/会话错位，须切走再切回才对齐（踩过）。后置原因有二：poster 领取
         // 在后（switch_to_ 经 poster defer 广播）；开 transcript 的副作用由
         // switch_to_ 统一做，双份是纯浪费。
@@ -182,7 +182,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
             host_.emit(vc_api::permission_mode, &e);
         });
     }
-    // 插件 UI 贡献补拉（方案 A）：先于本插件激活的带 UI 插件已订阅本事件，
+    // 插件 UI 贡献补拉：先于本插件激活的带 UI 插件已订阅本事件，
     // 收到后重发 vc.ui.register——两个方向合起来对装载顺序不敏感。
     {
         const vc_api::UiQuery q{};
@@ -286,9 +286,9 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/shutdown") {
         // 不落「宿主停止」通告：每次关窗写一条，重启重放必现纯噪音
         // （踩过：开关 10 次攒 10 条）
-        std::exit(0);  // 每条记录/每 turn 已落盘，立即退出是安全的（方案 §10）
+        std::exit(0);  // 每条记录/每 turn 已落盘，立即退出是安全的
     }
-    host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // 临时诊断
+    host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // TODO: 404 诊断日志，路由稳定后删除
     return http::Response::status_page(404, "not found");
 }
 

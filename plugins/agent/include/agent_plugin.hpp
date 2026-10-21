@@ -11,10 +11,10 @@
 // 即返回，decision 事件驱动状态机恢复；turn 进行中的输入入队。单线程事件环里
 // 一处同步等待 = 整个宿主死锁回归用例专门覆盖）。
 //
-// 职责边界（方案 §5.1）：编排/上下文/审批策略执行在本插件；不碰文件、不起进程、
+// 职责边界：编排/上下文/审批策略执行在本插件；不碰文件、不起进程、
 // 不解析工具语义（工具自述经 list() 反射透传给 LLM）。
 //
-// 工具发现（方案 §4.4）：env ITHACA_AGENT_TOOLS（svc 名清单，默认
+// 工具发现：env ITHACA_AGENT_TOOLS（svc 名清单，默认
 // "vc.tool.workspace,vc.tool.runner"），每次 turn 开始按清单取表。
 // 审批策略：suggest 逐条问 / auto-edit 编辑免批、命令逐条问 /
 // full-auto 全自动（沙箱由 runner 负责）。确认清单 = 模式映射（rebuild_confirm_），
@@ -38,7 +38,7 @@
 #include "vc_llm.hpp"
 #include "vc_tool.hpp"
 
-#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断（F15 收敛点，勿再按字节切）
+#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/scratch.hpp>  // Scratch：emit 载荷稳定缓冲（调用期有效）
@@ -58,7 +58,27 @@ namespace fs = std::filesystem;
 
 namespace vc_agent {
 
+// provider 未回报 usage 时的压缩判定信号粗估（批次二-6/四-19；中英混合经验系数，
+// 宁高勿低）：CJK 字 ≈ 1 token/字；其余按 3 字节 ≈ 1 token（英文实际 ≈4B/token，
+// 分母取小即偏高）；再加 1/16 的 JSON 结构与转义开销。只服务压缩判定——估算值
+// 不进用量累计（计量以 provider usage 为准）。
+inline long long estimate_prompt_tokens(const std::string& body) {
+    std::size_t cjk = 0, other = 0;
+    for (std::size_t i = 0; i < body.size();) {
+        const unsigned char c = static_cast<unsigned char>(body[i]);
+        if (c >= 0xE0) { ++cjk; i += 3; }          // 三字节起的多字节首字节（CJK 居多）
+        else if (c >= 0xC0) { ++other; i += 2; }   // 两字节首字节（拉丁扩展等）
+        else { ++other; i += 1; }
+    }
+    return static_cast<long long>(cjk + other / 3 + (cjk + other) / 16);
+}
+
 using nlohmann::json;
+
+// 超窗强制折叠重发的次数上界。自然链 ≤2
+// （多段折叠 → 单段折叠 → 无可折叠），上界防未知消息形态下「折叠不够 → 仍超窗」
+// 无限打转。
+inline constexpr int kMaxOverwindowResend = 2;
 
 // ---- AgentCtx：一个会话槽的全部状态与方法 ----------------------------------
 // M2 对象化：把写死在插件单例里的会话状态机抽成可实例化结构。子代理（父 turn
@@ -134,7 +154,7 @@ struct AgentCtx {
     // Idle + 清工具现场 + 排队输入依次开新 turn（栈深有界）。
     void cleanup_turn_();
 
-    // ---- 上下文压缩阶段二（docs/上下文压缩-阶段二-LLM自总结-方案.md）------------
+    // ---- 上下文压缩阶段二 ------------
 
     // 阈值命中后的异步摘要请求：冻结折叠区间（机械 digest 为兜底产物），发无
     // tools 的单轮 chat_ex；失败（服务缺失/未受理）就地回退机械应用。
@@ -146,8 +166,31 @@ struct AgentCtx {
     // ref/截断后应用；摘要失败一律回退 pending_plan_.digest。
     void on_compress_done_(const vc_api::LlmDone& e);
     void on_compress_error_(const vc_api::LlmError& e);
-    // 生效阈值重算：W 已知 ⇒ 0.9×W；未知 ⇒ 兜底阈值（compress_threshold_）。
+    // 生效阈值重算：W 已知 ⇒ 按输出预留重算；未知 ⇒ 兜底阈值（compress_threshold_）。
     void set_context_window_(long long w);
+    // 生效阈值（批次四-19）：W − max_output（输出预留），下限 W/4；仅 W ⇒ 0.9×W；
+    // 都未知 ⇒ 兜底阈值。
+    void recompute_threshold_();
+
+    // ---- 上下文压缩批次一 ---------------------------
+
+    // 硬保护判定：last_prompt_tokens_ ≥ 0.95×W（*20/19 整数式，宁早勿晚）。独立于
+    // 会话阈值——退避封顶或阈值失灵时仍兜底；命中强制机械折叠（不等摘要）。
+    bool hard_window_() const;
+    // 压缩判定共用入口（finish_turn 与 cleanup_turn_——失败/取消收口同样过判定，
+    // 否则反复取消/失败的长会话上下文只增不减）：硬保护或会话阈值命中 ⇒ 产出
+    // 折叠计划——非硬保护且摘要开 → 异步 LLM 摘要（request_digest_，收口在摘要
+    // 回包/失败分流）；否则机械折叠（apply_digest_ 内收口）。计划不可折叠（单段
+    // 且轮数不足）⇒ 返回 false，调用方走原收口路径。
+    bool maybe_compress_();
+    // 折叠应用核心（LLM 摘要 / 机械 digest / 超窗强制三路共用）：区间替换 + 旧
+    // digest 并入 + 持久化 + 通告。先插 digest 再跳过的顺序纪律见阶段一。
+    void replace_with_digest_(const json& digest_msg, const char* via);
+    // 超窗就地自救：应用 pending_plan_ 冻结的机械折叠后重发当前请求
+    // ——turn 保持在途：不置 compress_verify_、不动排队、不回 Idle。
+    void forced_fold_resend_();
+    // 排队输入 flush：队首开新 turn（栈深有界——一次一条，其余等该 turn 收口再取）。
+    void flush_queued_inputs_();
 
     // ---- 会话持久化与 mission 卡（src/ctx_session.cpp）--------------------------
 
@@ -203,6 +246,8 @@ struct AgentCtx {
     nostos::abi::Host::Subscription sub_mode_{};
 
     const vc_api::LlmTable* llm_ = nullptr;  // 每次 send_chat 前解析（provider 可被竞争顶掉）
+    const vc_api::LlmTable* window_probed_llm_ = nullptr;  // 已向 info() 探过窗口的 provider 实例
+    long long ctx_max_output_ = 0;      // provider 自述的输出上限（info()；消费方 = 发送前输出预留）
 
     State state_ = State::Idle;
     int turn_no_ = 0;
@@ -215,18 +260,22 @@ struct AgentCtx {
     long long usage_completion_ = 0;
     long long usage_total_ = 0;
     std::string session_path_;
+    long long usage_cache_ = 0;         // 缓存命中 token 累计（provider 可选回报）
 
     // 上下文压缩
     long long last_prompt_tokens_ = 0;  // provider 回报的最近 prompt_tokens（判定信号）
     long long compress_threshold_ = 32000;  // W 未知时的兜底阈值（阶段一语义）
     long long ctx_window_ = 0;          // 当前模型上下文窗口（0 = 未知；env > set_active）
-    bool ctx_window_env_ = false;       // env ITHACA_CONTEXT_WINDOW 已设 ⇒ 事件不再覆写
+    bool ctx_window_env_ = false;       // env ITHACA_CONTEXT_WINDOW 已设 ⇒ set_active 事件不覆写
     long long session_threshold_ = 32000;  // 生效阈值（set_context_window_ 重算 / 退避抬升）
     bool summary_enabled_ = true;       // ITHACA_CONTEXT_SUMMARY=off ⇒ 永远机械折叠
     int compress_seq_ = -1;             // 摘要请求的 request_id（-1 = 无在途摘要）
     bool compress_inflight_ = false;    // 摘要在途：排队输入挂起，on_done/error 分流
     bool compress_verify_ = false;      // 压缩后首 turn 校验：仍超阈值 ⇒ 阈值 ×1.25 退避
+    int compress_retries_ = 0;          // 本 turn 超窗强制重发计数（begin_turn 重置；
+                                        // kMaxOverwindowResend 封顶，防折叠打转）
     vcagent::CompressPlan pending_plan_{};  // 冻结的折叠计划（机械 digest = 兜底产物）
+    std::string tools_snapshot_;        // 上一轮工具表快照（字节级稳定观测）
     std::string raw_dir_;  // 外置存储目录（会话文件旁 raw/；空 = 未启用）
     int raw_seq_ = 0;
 
@@ -255,7 +304,7 @@ struct AgentCtx {
 };  // AgentCtx
 
 // AgentPlugin：薄壳——订阅分发到 ctx_（M2 对象化后 v1 单槽；多会话槽/子代理
-// 只是 AgentCtx 的多实例，见多宿主方案 §4.1）
+// 只是 AgentCtx 的多实例）
 class AgentPlugin {
 public:
     static constexpr std::string_view name = "vc.agent";

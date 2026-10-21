@@ -32,6 +32,10 @@ export function parseCtx(s) {
   return t >= 1024 ? t : null
 }
 
+/**
+ * /api/config 的服务端形状 → S 的前端形状。防御旧启动器压坏的 models（字符串化
+ * 的数组按空处理）；当前模型不在启用列表时回落第一个启用模型。
+ */
 export function cfgFromServer(cfg) {
   S.providers = (cfg.providers || []).map(p => ({
     name: p.name || '', type: p.type || 'cloud', builtin: !!p.builtin,
@@ -45,8 +49,8 @@ export function cfgFromServer(cfg) {
   S.providerType = cfg.provider || 'mock'
   S.model = cfg.model || 'deepseek-flash'
   S.pmode = cfg.permission_mode || 'auto-edit'
-  S.pluginVals = cfg.plugins || {}   // 各插件 schema 的值域（方案 A，编辑在设置面板）
-  // 当前模型不在当前供应商启用列表 ⇒ 回落第一个启用模型（与旧 select 行为一致）
+  S.pluginVals = cfg.plugins || {}   // 各插件 schema 的值域（编辑在设置面板）
+  // 当前模型不在当前供应商启用列表 ⇒ 回落第一个启用模型
   const en = curProvModels().filter(m => m.enabled !== false)
   if (en.length && !en.some(m => m.id === S.model)) S.model = en[0].id
 }

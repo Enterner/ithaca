@@ -44,6 +44,11 @@ export async function send(text) {
   if (line.startsWith('/')) {   // 本地命令映射为裁决（草稿态无 turn，不拦）
     if (line === '/undo') return decide(3)
     if (line === '/cancel') return decide(4)
+    if (line === '/help') {   // 本地伪记录应答：命令一览，不走 agent（发键即收口）
+      pushLocal('/undo 撤销上一 turn\n/cancel 取消当前 turn\n/help 显示本帮助')
+      S.inFlight = false
+      return
+    }
   }
   await api('/api/input', { line })
 }
@@ -98,7 +103,7 @@ export async function pickFolder() {
   await api('/api/pick-folder', {})
 }
 
-// ---- 插件 UI 贡献（方案 A）----------------------------------------------------
+// ---- 插件 UI 贡献----------------------------------------------------
 
 /** 拉各插件的 UI 贡献清单（schema，"界面长什么样"）；设置面板打开时调用。 */
 export async function loadPluginUi() {

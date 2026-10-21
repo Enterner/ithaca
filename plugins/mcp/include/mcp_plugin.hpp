@@ -1,4 +1,4 @@
-// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入（方案 docs/mcp-插件-方案.md）。
+// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入。
 //
 // 翻译单元职责地图（按功能切片，数据结构与类声明为本文件）：
 //   src/plugin.cpp   —— 生命周期（activate/reload_async_/deactivate）、状态回发
@@ -132,7 +132,7 @@ private:
     void start_server_(const std::string& name, const std::string& command,
                        const std::vector<std::string>& args, const json& env,
                        const std::string& cwd);
-    // 插件 UI 贡献（方案 A）：向 webui 声明本插件设置 schema（握手/调用超时）
+    // 插件 UI 贡献：向 webui 声明本插件设置 schema（握手/调用超时）
     void emit_ui_register_();
 
     // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；宿主线程独占）---

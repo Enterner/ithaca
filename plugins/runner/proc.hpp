@@ -1,13 +1,13 @@
 #pragma once
-// 管道化子进程：CreateProcessW + stdout/stderr 匿名管道 + 行分割。
-// 与 kit::process（生命周期）互补——这里专注"输出捕获"，即 proposal-kit §5.6
-// 规划的行事件形态。runner 自建（第二份实现出现前暂不收编 kit，见观察文档）。
+// 沙箱化子进程 spawn（plugin/runner 的安全策略切片）。
+// 职责分工：非沙箱的"输出捕获"原语（管道 + Job 树杀 + 行分割）已上收内核
+// kit（nostos::kit::PipedProcess / LineSplitter）——本头只剩 kit 表达不了的部分：
+// AppContainer 沙箱（低盒令牌 / SECURITY_CAPABILITIES 两层路径 + ACL 授权 +
+// 环境重定向）。沙箱是宿主的安全策略（读宽写窄），不进 kit。
 //
-// 设计约束（经典坑，逐条处理）：
-//   · 父进程的管道写端在 spawn 后**立即关闭**——否则读端永远等不到 EOF；
-//   · 读端不可被子进程继承（SetHandleInformation 去继承位）；
-//   · 子进程退出后读端到达 EOF，读取线程自然结束。
-// 输出按字节流读取、经 LineSplitter 分行（网络分块/管道块边界不保证对齐）。
+// 沙箱路径的管道坑与 kit 同源（父写端即关 / 读端去继承位），已按同款纪律处理。
+// 输出按字节流读取、经 kit::LineSplitter 分行（分块边界不保证对齐）。
+#include <nostos/kit/piped_process.hpp>
 #include <nostos/kit/win.hpp>
 
 #include <objbase.h>
@@ -35,37 +35,6 @@
 #endif
 
 namespace vcrun {
-
-// 行分割器：任意分块喂入，按 \n 分行（剥 \r），残余冲刷。
-class LineSplitter {
-public:
-    template <typename F>
-    void feed(const char* data, std::size_t n, F&& on_line) {
-        buf_.append(data, n);
-        std::size_t pos = 0;
-        for (;;) {
-            const std::size_t eol = buf_.find('\n', pos);
-            if (eol == std::string::npos) break;
-            std::string line = buf_.substr(pos, eol - pos);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            on_line(line);
-            pos = eol + 1;
-        }
-        buf_.erase(0, pos);
-    }
-
-    template <typename F>
-    void flush(F&& on_line) {
-        if (buf_.empty()) return;
-        std::string line = std::move(buf_);
-        buf_.clear();
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        on_line(line);
-    }
-
-private:
-    std::string buf_;
-};
 
 struct PipePair {
     HANDLE read_end = nullptr;
@@ -347,6 +316,19 @@ inline bool sandbox_lowbox_token(PSID sid, HANDLE& out, std::string& err) {
 
 inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPipes& out,
                   std::string& err, bool sandboxed = false, bool* degraded = nullptr) {
+    if (!sandboxed) {
+        // 非沙箱 = kit 原语直通（管道/Job 树杀/EOF 纪律都在 kit::PipedProcess）
+        nostos::kit::PipedProcess p;
+        nostos::kit::PipedSpawnOptions o;
+        o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd.c_str());
+        if (!p.start(nostos::kit::win::wide_to_utf8(cmdline.c_str()), o, err)) return false;
+        const nostos::kit::PipedHandles h = p.release_handles();
+        out.process = static_cast<HANDLE>(h.process);
+        out.stdout_read = static_cast<HANDLE>(h.stdout_read);
+        out.stderr_read = static_cast<HANDLE>(h.stderr_read);
+        out.job = static_cast<HANDLE>(h.job);
+        return true;
+    }
     PipePair so, se;
     if (!make_pipe(so, err) || !make_pipe(se, err)) return false;
 
@@ -459,25 +441,6 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
                                   sizeof jli);
         ::AssignProcessToJobObject(out.job, pi.hProcess);
     }
-    return true;
-}
-
-// 终止进程树（超时/停用路径）：Job 句柄在则 TerminateJobObject（含孙进程），
-// 否则退回 TerminateProcess 直接子进程。
-inline void terminate_tree(ChildPipes& out) {
-    if (out.job != nullptr) {
-        ::TerminateJobObject(out.job, 1);
-        return;
-    }
-    if (out.process != nullptr) ::TerminateProcess(out.process, 1);
-}
-
-// 阻塞读一段输出（EOF/错误 ⇒ false）。供读取线程循环调用。
-inline bool read_chunk(HANDLE read_end, std::string& out) {
-    char buf[4096];
-    DWORD got = 0;
-    if (!ReadFile(read_end, buf, sizeof buf, &got, nullptr) || got == 0) return false;
-    out.append(buf, got);
     return true;
 }
 

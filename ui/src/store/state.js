@@ -15,7 +15,7 @@ export const S = reactive({
   model: '', pmode: 'auto-edit', providerType: 'mock',
   // 会话
   sessions: [], curSession: '', curWs: '', sessTitle: '', sessRecords: 0,
-  draft: null,   // 草稿态（方案 B）：{workspace} ——＋新建到首条消息之间纯前端状态，
+  draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fTurns: 0, fTokens: 0,
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
@@ -27,7 +27,7 @@ export const S = reactive({
   inputText: '',
   booted: false,
   shell: false,   // 多实例壳模式：会话清单来自 /api/shell/sessions，切换 = 整页导航
-  // 插件 UI 贡献（方案 A）：registry = 各插件 schema（/api/ui/registry，设置面板
+  // 插件 UI 贡献：registry = 各插件 schema（/api/ui/registry，设置面板
   // 打开时拉取）；pluginVals = 各插件设置值（/api/config 的 plugins 节）。
   pluginUi: [], pluginVals: {},
 })

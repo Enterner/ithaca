@@ -1,6 +1,6 @@
 // ithaca —— 桌面壳（Win32 + WebView2）：多宿主实例管理器（导航中继形态）。
 //
-// 职责（多宿主方案 §3.2，界面形态按用户拍板修订：无壳自绘 UI——真实界面 =
+// 职责（界面形态按用户拍板修订：无壳自绘 UI——真实界面 =
 // webui 前端，壳只做窗口与生命周期）：
 //   1. 会话 = 实例：每个会话一个 ithaca_host.exe（独立 ITHACA_WEBUI_HOME 数据
 //      目录、独立端口、经 cmd.exe 受信父进程链拉起、归入 Job Object——壳退出
@@ -15,7 +15,7 @@
 //      home；孤儿实例（壳崩溃残留）启动时凭 port 文件探测附着。
 //   4. 凭据共享：实例以 ITHACA_WEBUI_CONFIG 指向共享 config.json（唯一写者是
 //      设置面板 UI，运行期实例只读；实例差异项在各自 config-local.json 覆盖层
-//      ——webui 侧实现，见多宿主方案 §3.1）。
+//      ——webui 侧实现）。
 //
 // 两种布局（自动识别：exe 旁有没有 ithaca_host.exe）：
 //   便携模式 —— 发布包布局：宿主/插件/前端/数据全在 exe 旁，数据目录 = data\；
@@ -327,7 +327,7 @@ std::wstring BuildEnvBlock(const std::vector<std::pair<std::wstring, std::wstrin
         if (!hit) kv.push_back(o);
     }
     // Unicode 环境块必须按名排序（GetEnvironmentStringsW 本就有序，覆盖合并会
-    // 打乱 ⇒ CreateProcessW 报 gle=87 参数无效，实锤过）
+    // 打乱 ⇒ CreateProcessW 报 gle=87 参数无效，踩过）
     std::sort(kv.begin(), kv.end(), [](const auto& a, const auto& b) {
         return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
     });
@@ -340,11 +340,11 @@ std::wstring BuildEnvBlock(const std::vector<std::pair<std::wstring, std::wstrin
 // 旧会话懒迁移：中央库的 transcript 搬进实例 home，实例自己的 index.json 由中央
 // index 的该条目原文本构成（首次拉起该会话时执行一次）
 void MigrateLegacySession(const Inst& it) {
-    if (PathExists(it.home + L"\\index.json")) return;   // 已迁移/已初始化（残留 sessions 目录不可作判据——实锤）
+    if (PathExists(it.home + L"\\index.json")) return;   // 已迁移/已初始化（踩过：残留 sessions 目录不可作判据）
     const std::wstring src = g_data + L"\\sessions\\" + it.key + L".transcript.jsonl";
     if (!PathExists(src)) return;
     // NOTE: CreateDirectoryW 不建中间目录——home 整个不存在时（首次迁移）逐级建，
-    // 否则 MoveFile/写 index 全部静默失败（实锤：rm 掉 home 后迁移"成功"却零产物）
+    // 否则 MoveFile/写 index 全部静默失败（踩过：rm 掉 home 后迁移"成功"却零产物）
     CreateDirectoryW((g_data + L"\\hosts").c_str(), nullptr);
     CreateDirectoryW(it.home.c_str(), nullptr);
     CreateDirectoryW((it.home + L"\\sessions").c_str(), nullptr);
@@ -352,7 +352,7 @@ void MigrateLegacySession(const Inst& it) {
     std::wstring block = ExtractSessionBlock(ReadSmallFile(g_data + L"\\index.json"), it.key);
     if (block.empty()) {
         // 工作区路径含裸反斜杠，必须 JSON 转义（\C 非法转义 ⇒ 整个 index 解析
-        // 失败被丢弃 ⇒ 实例永远空会话，实锤）
+        // 失败被丢弃 ⇒ 实例永远空会话，踩过）
         std::wstring wse;
         for (wchar_t c : it.ws) {
             if (c == L'\\') wse += L"\\\\";
@@ -371,7 +371,7 @@ void SpawnInstance(size_t idx) {
     Inst& it = g_insts[idx];
     it.state = ST_STARTING;
     // 残留 port 文件必是 stale（新宿主会写新端口）——不删则 STARTING 轮询读到旧值
-    // 假 ready ⇒ 导航死端口 ⇒ 自愈又误删新宿主的真 port 文件（实锤竞态）
+    // 假 ready ⇒ 导航死端口 ⇒ 自愈又误删新宿主的真 port 文件（踩过的竞态）
     DeleteFileW((it.home + L"\\port").c_str());
     MigrateLegacySession(it);
     CreateDirectoryW((g_data + L"\\hosts").c_str(), nullptr);
@@ -473,9 +473,10 @@ RECT ViewRect() {
     return rc;
 }
 
-UINT g_deferred_port = 0;
-UINT g_last_good_port = 0;   // 最后一次导航成功的实例端口（导航失败自愈的回退目标）   // controller 就绪前请求的导航（完成回调里补偿，实锤：
-                            // 孤儿附着/快速就绪时 NavigatePage 撞 g_web==null 静默丢失 ⇒ 黑屏）
+UINT g_deferred_port = 0;   // controller 就绪前请求的导航挂起在这（完成回调里补偿，
+                            // 踩过：孤儿附着/快速就绪时 NavigatePage 撞 g_web==null
+                            // 静默丢失 ⇒ 黑屏）
+UINT g_last_good_port = 0;   // 最后一次导航成功的实例端口（导航失败自愈的回退目标）
 
 void NavigatePage(UINT port) {
     if (port == 0) return;
@@ -484,8 +485,8 @@ void NavigatePage(UINT port) {
         LogLine(L"page nav deferred -> " + std::to_wstring(port));
         return;
     }
-    // ?v= 缓存穿透：webview 对 index.html/bundle 的强缓存曾让页面跑旧 JS（实锤：
-    // 新前端功能全静默），bundle 名带 hash 但 html 本身被缓存依旧指向旧 hash
+    // ?v= 缓存穿透：bundle 名带 hash，但 index.html 本身被 webview 强缓存、依旧
+    // 指向旧 hash——导航 URL 必须带每次变化的 ?v=（踩过：页面跑旧 JS，新前端功能全静默）
     const std::wstring url = L"http://127.0.0.1:" + std::to_wstring(port) +
                              L"/?v=" + std::to_wstring(GetTickCount64());
     g_web->Navigate(url.c_str());

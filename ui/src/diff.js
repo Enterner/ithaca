@@ -1,6 +1,6 @@
-// diff 文本 → 着色 HTML（提案卡与汇总卡共用；格式见 docs/edit-diff-方案.md §5）。
-// 逐字移植旧 diffSpan/diffChangeRow/diffBodyHtml：行号 gutter、不输出 +/- 记号、
-// 连续变更区按位置配对做行内高亮（UTF-16 代理对对齐防劈字）、单 hunk 隐藏 @@ 头。
+// diff 文本 → 着色 HTML（提案卡与汇总卡共用）。
+// 行号 gutter、不输出 +/- 记号、连续变更区按位置配对做行内高亮（UTF-16 代理对
+// 对齐防劈字）、单 hunk 隐藏 @@ 头。
 import { esc } from './md'
 
 function diffSpan(a, b) {
@@ -80,7 +80,7 @@ export function diffHtml(diffText) {
   return html
 }
 
-// ---- 查看器对照模式（docs/查看器diff模式-方案.md §2/§3/§7）------------------------
+// ---- 查看器对照模式------------------------
 // 自绘管线 = 现盘全文 + hunk 标记，经 diffHtml 渲染（与会话卡同管线同样式）：
 // 未修改行即纯源码（仅行号 gutter），修改行红绿底 + 词级加重。CodeViewer.vue 按
 // 新鲜度路由（§7.1）：新鲜态走 Monaco diff editor（语法高亮），这里服务陈旧降级

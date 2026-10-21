@@ -102,6 +102,22 @@ inline json usage_obj_of(const json& chunk) {
         if (it != usage->end() && it->is_number_unsigned())
             out[key] = it->get<std::uint64_t>();
     }
+    // 缓存命中（可选，归一口径 = prompt 中命中缓存的部分）：DeepSeek
+    // prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens——
+    // 缓存收益度量（待办 12）与输出预留（19）的数据源；无则不报
+    long long cache = 0;
+    if (const auto it = usage->find("prompt_cache_hit_tokens");
+        it != usage->end() && it->is_number_unsigned())
+        cache = static_cast<long long>(it->get<std::uint64_t>());
+    if (cache == 0) {
+        const auto det = usage->find("prompt_tokens_details");
+        if (det != usage->end() && det->is_object()) {
+            const auto it = det->find("cached_tokens");
+            if (it != det->end() && it->is_number_unsigned())
+                cache = static_cast<long long>(it->get<std::uint64_t>());
+        }
+    }
+    if (cache > 0) out["cache_tokens"] = cache;
     return out;
 }
 

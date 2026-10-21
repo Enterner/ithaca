@@ -1,5 +1,5 @@
 // 会话区域交互 · 与 agent 对话 UI 用例（对话闭环 / 决策坞 / 停止生成 / 命令）。
-// 方案：docs/对话交互-测试方案.md；mock 剧本（fixture 默认）每轮重放
+// mock 剧本（fixture 默认）每轮重放
 // workspace.apply 写 hello.txt → assistant 收口。
 import fs from "node:fs";
 import path from "node:path";
@@ -83,8 +83,9 @@ test.describe("CONV5 停止生成", () => {
         await expect(stop).toBeVisible();
         await stop.click();
 
-        // 取消通告渲染（notice：turn #N 失败: 已被用户取消）+ 按钮回到发送态
-        await expect(page.locator(".msg", { hasText: "已被用户取消" })).toBeVisible({ timeout: 15000 });
+        // 取消通告渲染（llm_error ⇒ error 记录 → 错误卡：turn #N 已被用户取消）
+        // + 按钮回到发送态
+        await expect(page.locator(".errcard", { hasText: "已被用户取消" })).toBeVisible({ timeout: 15000 });
         await expect(page.locator(".send-btn.stop")).toHaveCount(0);
         await expect(page.locator(".send-btn")).toBeVisible();
     });
@@ -112,8 +113,8 @@ test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, 
 });
 
 test.fixme("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件回退删除", async ({ host, page }) => {
-    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，见方案附录），修复后转正
-    test.skip(true, "undo 带工作区会话不回退文件——见 docs/对话交互-测试方案.md 附录");
+    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，挂账），修复后转正
+    test.skip(true, "undo 带工作区会话不回退文件（挂账产品问题）");
     await page.goto(host.base);
     await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
     await page.locator(".hero-ws").click();

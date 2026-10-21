@@ -1,4 +1,4 @@
-// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入（方案 docs/mcp-插件-方案.md）。
+// plugin/mcp —— MCP 客户端插件：通用 MCP 工具接入。
 //
 // 本翻译单元：插件生命周期（activate/reload_async_/deactivate）与状态可见性
 // （emit_status_：vc.mcp.status 回发 + mcp-status.json 落盘）+ NOSTOS_PLUGIN
@@ -32,7 +32,7 @@ nostos_status McpPlugin::activate(const nostos::abi::Host& host) {
     }
     // 配置热重载（设置面板保存 → webui 发 vc.mcp.reload）
     subs_.push_back(host_.on(vc_api::mcp_reload, [this](const void*) { reload_async_(); }));
-    // 插件 UI 贡献（方案 A）：activate 时声明设置 schema；webui 后启动的场景由
+    // 插件 UI 贡献：activate 时声明设置 schema；webui 后启动的场景由
     // vc.ui.query 补拉（收到即重发）。载荷为静态串，调用期有效纪律天然满足。
     subs_.push_back(host_.on(vc_api::ui_query, [this](const void*) { emit_ui_register_(); }));
     emit_ui_register_();
@@ -62,7 +62,7 @@ void McpPlugin::deactivate() noexcept {
     host_.log(2, "ithaca.mcp: 已停用");
 }
 
-// 插件 UI 贡献（方案 A）：本插件设置 schema——握手/调用超时（ms）。webui 据此
+// 插件 UI 贡献：本插件设置 schema——握手/调用超时（ms）。webui 据此
 // 动态生成设置节，值存 config.json 的 plugins.mcp（本插件启动/reload 时读取）。
 void McpPlugin::emit_ui_register_() {
     static constexpr const char* kSchema =

@@ -1,4 +1,4 @@
-// plugin/webui —— Web 前端插件（正式 UI，方案 docs/webui-方案.md）。
+// plugin/webui —— Web 前端插件（正式 UI）。
 //
 // 翻译单元职责地图（按功能切片，类声明为本文件）：
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
@@ -16,7 +16,7 @@
 //   · transcript.jsonl（本插件写，展示事件流，每条 flush）
 //   · state.json（agent 写，LLM 上下文；路径由启动器按活跃会话给定）
 //
-// 线程纪律（方案 §5）：Handler::handle 在 select 线程（必须快——poster_submit/
+// 线程纪律：Handler::handle 在 select 线程（必须快——poster_submit/
 // 小文件写都非阻塞）；事件回调在宿主线程（drain_posted 串行化）；broadcast
 // 内核注明线程安全。锁：无（各线程只触碰自己的数据面）。
 

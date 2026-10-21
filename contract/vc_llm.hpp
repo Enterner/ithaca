@@ -18,13 +18,17 @@ struct LlmTable {
     // 非阻塞提交一轮对话。
     //   messages_json：[{"role":"user","content":"..."}]（OpenAI 兼容子集，调用期有效）
     //   增量以 vc.llm.delta、结束以 vc.llm.done / vc.llm.error 事件回（都在宿主线程）。
+    //   NOTE: messages 可含多条 role=system（任务目标卡/压缩摘要垫在历史中间）——
+    //   provider 必须归一为各家 API 的实际形态（拼接/映射），不得假设单 system。
     // 返回 NOSTOS_OK 表示已受理；忙/参数错等用 NOSTOS_ERR_* 点名。
     nostos_status (*chat)(void* self, int request_id, const char* messages_json);
 
     // 取消在途请求；已完成的请求返回 NOSTOS_ERR_BAD_STATE。
     nostos_status (*cancel)(void* self, int request_id);
 
-    // 能力自述：{"provider":"mock","model":"mock-1"}（调用期有效）。
+    // 能力自述（调用期有效）：{"provider":"mock","model":"mock-1"} 必填；可选
+    // 元数据 context_window / max_output_tokens（模型窗口/输出上限——已知模型
+    // 查表，未知不报），消费方（agent 压缩阈值 / 输出预留）以非零为有效。
     nostos_status (*info)(void* self, const char** out_json);
 
     // 尾部追加：带工具定义的对话提交（function calling）。body_json =

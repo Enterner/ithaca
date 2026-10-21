@@ -6,7 +6,8 @@ import { api, shellMsg } from './api'
 
 // ---- 视图重置与草稿态 --------------------------------------------------------
 
-export function resetView() {   // 会话切换 / 进草稿共用的视图重置（对齐 session 广播的清空面）
+/** 会话切换 / 进草稿共用的视图重置（对齐 session 广播的清空面）。 */
+export function resetView() {
   S.records = []; S.live = null; S.pending = null
   S.since = 0; S.lastId = -1; S.inFlight = false
   X.turnEdits = new Map(); X.turnEditsTurn = 0; X.lastTurnId = null

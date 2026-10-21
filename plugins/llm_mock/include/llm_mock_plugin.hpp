@@ -1,6 +1,6 @@
 // plugin/llm_mock —— 确定性假 provider（vc.llm.v1 的第二份实现）。
 //
-// 职责地图（拆分自单文件，格式对齐 mcp/llm_cloud）：
+// 职责地图（格式对齐 mcp/llm_cloud）：
 //   src/plugin.cpp   入口与配置面：activate（表装配/发布门槛/set_active 订阅）、
 //                    deactivate（全停全收）、set_model/info、剧本装载、NOSTOS_PLUGIN
 //   src/request.cpp  请求登记面：chat/chat_ex/cancel 的 thunk、注册表登记与回收
@@ -12,12 +12,12 @@
 //   2) turn 剧本（M3 起）：env ITHACA_MOCK_TURNS 指向 JSON 数组文件，每个元素是
 //      一条完整的 assistant 消息（可含 tool_calls）；chat() 依序弹出，content 按
 //      行流式成 delta，done 携带完整 assistant_json；剧本耗尽 ⇒ "剧本已尽"。
-//      agent 的离线确定性回归就靠它（方案 §8 M3）。
+//      agent 的离线确定性回归就靠它。
 //
 // 片间隔：ITHACA_MOCK_DELAY_MS（默认 120ms）。取消 = 停止当前 turn（不发 done）。
 //
 // 线程纪律：chat() 在宿主线程被调（有桥），只做"起线程"（标签制：请求态随线程
-// 走，多会话槽可并发在途，docs/llm并发请求-方案.md）；回放线程只经
+// 走，多会话槽可并发在途）；回放线程只经
 // kit::poster_submit 把事件投回宿主线程，绝不直接碰宿主 API。
 #pragma once
 
@@ -61,7 +61,7 @@ public:
     void deactivate() noexcept;
 
 private:
-    // ---- 并发请求注册表（标签制，docs/llm并发请求-方案.md）------------------------
+    // ---- 并发请求注册表（标签制）------------------------
 
     struct MockWorker {
         std::thread th;

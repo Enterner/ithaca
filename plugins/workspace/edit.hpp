@@ -1,12 +1,12 @@
 #pragma once
-// 编辑事务：LLM 只产出两种 op（方案 §4.4）——write（整文件重写）与 replace（精确
+// 编辑事务：LLM 只产出两种 op——write（整文件重写）与 replace（精确
 // search/replace 块，不产出行号补丁）。事务语义与内核"激活即事务"同构：
 //   · 校验阶段全部通过才动手——任一失败（路径越界 / replace 0 或多命中 / 目标缺失）
 //     ⇒ 整批拒绝，零写盘；错误点名到 op 序号与路径，回灌给模型自我纠正；
 //   · 写盘阶段任一步失败 ⇒ 按 LIFO 用批前原状恢复已写文件（本批新写的删除），
 //     rolled_back = true。
-// dry_run ⇒ 只校验 + 生成 diff，不落盘——错误在批准门之前暴露（方案 v1.1 §4.4）。
-// 回滚原语：内核 Scope（经 plugin_scope.hpp 门面——观察 F9 已落地），defer +
+// dry_run ⇒ 只校验 + 生成 diff，不落盘——错误在批准门之前暴露。
+// 回滚原语：内核 Scope（经 plugin_scope.hpp 门面），defer +
 // committed 标志实现"成功路径零副作用、失败路径 LIFO 全量还原"。
 #include "diff.hpp"
 #include "fs.hpp"
@@ -29,7 +29,7 @@ struct EditOp {
     std::string path;
     std::string content;   // write
     std::string find;      // replace
-    std::string replace;   // replace（新文本；键名与方案 §4.1 一致）
+    std::string replace;   // replace（新文本）
     bool replace_all = false;  // replace：命中多次时全部替换（缺省仍要求恰好 1 次）
 };
 
@@ -44,7 +44,9 @@ struct FileEdit {
     std::wstring full;     // jail 解析出的全路径（Store 的键）
     std::string before;    // 批前内容（新文件为空串，is_new = true）
     std::string after;     // 批内末次编辑的结果（同文件多 op 折叠后 = 最终态）
-    std::string diff;      // before → after 的 hunk diff（edit-diff 方案 §5）
+    std::string diff;      // before → after 的 hunk diff
+    std::size_t add = 0;   // diff 统计：新增行数（与统计尾行同源，随事件结构化下发）
+    std::size_t rem = 0;   // diff 统计：删除行数
     bool is_new = false;
     int ops_count = 1;     // 折叠进本项的 op 数（≥2 时展示标注「N 处编辑」）
 };
@@ -236,17 +238,17 @@ inline ApplyResult apply_ops(const Jail& jail, TextStore& store, const std::vect
         if (hit != static_cast<std::size_t>(-1)) {
             FileEdit& e = planned[hit];
             e.after = std::move(edit.after);
-            e.diff = make_diff(e.before, e.after);  // 折叠 diff：批前原状 → 末次结果
+            e.diff = make_diff(e.before, e.after, &e.add, &e.rem);  // 折叠 diff：批前原状 → 末次结果
             ++e.ops_count;
         } else {
-            edit.diff = make_diff(edit.before, edit.after);
+            edit.diff = make_diff(edit.before, edit.after, &edit.add, &edit.rem);
             slot.emplace_back(std::move(key), planned.size());
             planned.push_back(std::move(edit));
         }
     }
 
-    // 校验结论：errors 为空 ⇒ 校验通过（此前版本在这里被默认值 false 咬过——
-    // 早退守卫把"没有错误"误判成失败，写盘从未发生。ok 必须由证据显式赋值）。
+    // 校验结论：ok 必须由证据显式赋值 = errors.empty()（踩过：早退守卫把"没有
+    // 错误"误判成失败——默认值 false 直接当结论用，写盘从未发生）。
     r.ok = r.errors.empty();
     if (!r.ok || dry_run) {
         r.edits = std::move(planned);

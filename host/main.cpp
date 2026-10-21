@@ -6,7 +6,7 @@
 //     --selftest   ：M0 冒烟。装载后直接驱动 vc.llm.v1 跑一次回放，
 //                    校验「表调用 → 插件自有线程 → poster → 事件」全链路，收到 done/error 即退出。
 //
-// 设计要点（方案 §3）：
+// 设计要点：
 //   · 排水节奏：poster 唤醒接缝驱动（内核 F3 落地）——任何插件 post 入队即 SetEvent
 //     唤醒主循环排水，交互延迟 ≈0；空闲时最多等 250ms（接缝出现前，低延迟与省电
 //     不可兼得：16ms 轮询空转、拉长周期则延迟劣化——这个取舍已被消解）。
@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }));
         // M3 冒烟观测：自动批准全部提案；首个提案与 decision 之间注入一条"迟到的 done"
-        // （request_id 不匹配）——死锁回归：agent 必须忽略而非卡死/污染状态（方案 §8 M3）。
+        // （request_id 不匹配）——死锁回归：agent 必须忽略而非卡死/污染状态。
         subs.push_back(host.events().on<vc_api::EditProposed>(
             [&](const vc_api::EditProposed& e) {
                 ++proposals;

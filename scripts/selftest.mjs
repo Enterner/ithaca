@@ -1,4 +1,4 @@
-// selftest 冒烟：mock 全链路单次运行（原 ithaca.ps1 --selftest 的角色；回归见 npm run regress）。
+// selftest 冒烟：mock 全链路单次运行（回归见 npm run regress）。
 // 用法：node scripts/selftest.mjs [--preset debug]
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";

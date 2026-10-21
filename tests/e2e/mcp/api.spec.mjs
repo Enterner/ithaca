@@ -1,4 +1,4 @@
-// MCP 插件接入链路用例（方案 docs/mcp-插件-方案.md）：mock MCP server 经 mcp
+// MCP 插件接入链路用例：mock MCP server 经 mcp
 // 插件接入 agent 工具链，mock LLM 场景驱动真实工具调用，断言 transcript 全链路。
 import path from "node:path";
 import { test, expect, getJson, postJson, root } from "../helpers/host.mjs";

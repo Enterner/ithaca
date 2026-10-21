@@ -33,7 +33,7 @@ struct TurnDecision {
     const char* msg = nullptr;         // 调用期有效，要留存必须拷贝
 };
 
-// 工具插件后到接入的提示。MVP 的发现走 config 显式清单（方案 §4.1），
+// 工具插件后到接入的提示。MVP 的发现走 config 显式清单），
 // 这只是"有新工具上线"的通知，载荷是 svc 名。
 struct ToolRegister {
     static constexpr std::string_view name = "vc.tool.register";
@@ -60,7 +60,9 @@ struct LlmReasoning {
 //     "function":{"name":"workspace.read","arguments":"{...}"}}]}
 // provider 负责把流式片段拼装成完整消息（content 与 tool_calls 的 arguments 碎片）。
 // usage = 本轮 token 用量（JSON 文本，provider 尽力提供，可为 null）：
-//   {"prompt_tokens":N,"completion_tokens":N,"total_tokens":N}
+    //   {"prompt_tokens":N,"completion_tokens":N,"total_tokens":N
+    //    [,"cache_tokens":N]}——缓存命中为可选归一口径（DeepSeek
+    //    prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens）
 // 均为调用期有效，要留存必须拷贝。
 struct LlmDone {
     static constexpr std::string_view name = "vc.llm.done";
@@ -92,8 +94,8 @@ struct ToolResult {
     const char* result_brief = nullptr;
 };
 
-// 编辑提案 / 应用 / 撤销。diff 由 workspace 生成（方案 §4.4），agent 只转述。
-// 展示格式见 docs/edit-diff-方案.md §5："── path（N 处编辑）" 文件头 + "@@ -a,n +b,m @@"
+// 编辑提案 / 应用 / 撤销。diff 由 workspace 生成，agent 只转述。
+// 展示格式："── path（N 处编辑）" 文件头 + "@@ -a,n +b,m @@"
 // hunk 集 + 行号行（"NNNN + 内容"）+ 统计尾行；tui/webui 按行首特征解析着色。
 struct EditProposed {
     static constexpr std::string_view name = "vc.edit.proposed";
@@ -107,9 +109,14 @@ struct EditApplied {
     static constexpr std::string_view name = "vc.edit.applied";
     int turn_id = 0;
     const char* paths_json = nullptr;  // ["a","b"]（UTF-8 相对路径），转述用，调用期有效
-    // 尾部追加（edit-diff 方案 v1.1）：hunk diff 文本；旧生产者组合下为 null——
+    // 尾部追加：hunk diff 文本；旧生产者组合下为 null——
     // 消费方以非空探测。调用期有效，要留存必须拷贝。
     const char* diff_text = nullptr;
+    // 尾部追加：每文件结构化统计 [{"path","add","rem","is_new"}]（调用期有效，旧
+    // 生产者组合下为 null，消费方以非空探测）。diff_text 是给人看的展示文本且可能
+    // 被截断，统计以本字段为准——消费方不得从展示文本反解（截断砍掉的是文本尾行
+    // 的统计，踩过：大 diff 的「本轮修改」卡恒 +0−0）。
+    const char* files_json = nullptr;
 };
 struct EditUndone {
     static constexpr std::string_view name = "vc.edit.undone";
@@ -181,7 +188,7 @@ struct LlmSetActive {
     const char* key = nullptr;
     // 尾部追加（M-W8）：Base URL（UTF-8）；空 = 保持现值。调用期有效，要留存必须拷贝。
     const char* base_url = nullptr;
-    // 尾部追加（上下文压缩阶段二，docs/上下文压缩-阶段二-LLM自总结-方案.md）：
+    // 尾部追加（上下文压缩阶段二）：
     // 当前模型上下文窗口（tokens；0 = 未知）——agent 据此做 0.9×W 动态压缩阈值。
     // 旧生产者组合下为 0（消费方回退兜底阈值）。
     int context_window = 0;

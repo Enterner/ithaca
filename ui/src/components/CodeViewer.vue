@@ -1,5 +1,5 @@
 <script setup>
-// 右栏 · 代码查看器：Monaco 只读展示 + 编辑对照（docs/查看器diff模式-方案.md §3/§7）。
+// 右栏 · 代码查看器：Monaco 只读展示 + 编辑对照。
 // 查看态：现盘内容（App.vue 经 /api/fs/read 拉好放进 S.viewer，本组件不发请求）。
 // 对照态按新鲜度分档（§7.1）：reverseApply 校验通过（最新折叠 diff 的 after = 现盘）
 // ⇒ Monaco diff editor（inline 单栏）——与查看态同渲染器，语法高亮 + 自带词级加重；
@@ -115,7 +115,7 @@ function showView() {
   note.value = ''; noteWarn.value = false
 }
 
-// 对照态 diff editor 配置（方案 §7.2）：inline 单栏、不折叠（默认关）、严格比对、
+// 对照态 diff editor 配置：inline 单栏、不折叠（默认关）、严格比对、
 // 去 Δ 边条符号；readOnly 同时抑制 gutter 的 ↺ revert 图标；wordWrap 对齐查看态
 // （diffWordWrap 默认 inherit）
 // NOTE: hideOriginalLineNumbers ⇒ 行号单列（modified 侧，对齐对话流 gutter）——

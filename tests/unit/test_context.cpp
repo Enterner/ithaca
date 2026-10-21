@@ -1,4 +1,4 @@
-// 上下文压缩阶段一的单测（docs/上下文压缩.md）：mission 卡/最小充分记录模板/
+// 上下文压缩阶段一的单测：mission 卡/最小充分记录模板/
 // provenance 回查/压缩判定与折叠计划——纯逻辑层直接驱动。
 #include "ithaca_test_framework.hpp"
 
@@ -36,7 +36,7 @@ VC_TEST("context: mission 卡——当前任务逐字保留，历史任务截到
     const auto m = mission_message(tasks);
     CHECK(is_mission(m));
     CHECK(m["content"].get<std::string>().find(cur) != std::string::npos);
-    CHECK(m["content"].get<std::string>().find("←当前") != std::string::npos);
+    CHECK(m["content"].get<std::string>().find("◀ 逐字") != std::string::npos);
 }
 
 VC_TEST("context: compact read——内容丢弃只留锚点与 ref") {
@@ -78,10 +78,12 @@ VC_TEST("context: compact run——退出码与首行保留，输出外置") {
     CHECK(c.find("line3") == std::string::npos);               // 仅首行
 }
 
-VC_TEST("context: recall——provenance 不可信数据标记") {
-    const std::string c = recall_result("t1_1_read.json", "原文内容");
+VC_TEST("context: recall——provenance 不可信数据标记 + 分页元数据") {
+    const std::string c =
+        recall_result("t1_1_read.json", "原文内容", 12, 0, false, 0);
     CHECK(c.find(kRecallProvenance) != std::string::npos);
     CHECK(c.find("原文内容") != std::string::npos);
+    CHECK(c.find("\"has_more\":false") != std::string::npos);   // 分页元数据随包
 }
 
 VC_TEST("context: should_compress——阈值判定，0 = 关闭") {
@@ -133,7 +135,7 @@ VC_TEST("context: plan_compress——除最末段外折叠，请求锚点逐字�
     const std::string body = nm[1]["content"].get<std::string>();
     CHECK(body.find("任务一：修 a.cpp") != std::string::npos);   // 请求锚点逐字
     CHECK(body.find("a.cpp") != std::string::npos);              // 调用锚点保留
-    CHECK(body.find("\"outcome\":\"ok\"") != std::string::npos);
+    CHECK(body.find("workspace.apply:ok(files=a.cpp)") != std::string::npos);  // 紧凑调用链（批次三-10 人话渲染）
     CHECK(nm[2]["content"] == "任务二：跑测试");                  // 末段逐字保留
     CHECK(nm[3]["content"] == "全过");
 }

@@ -1,8 +1,8 @@
 #pragma once
-// 文本护栏（F15 收敛点）：UTF-8 校验 / 码点安全截断 / 宽字符小写折叠。
-// 此前本仓有三份互不一致的实现——workspace 的 trim_utf8（正确）、runner 的
-// sanitize_utf8（放行 overlong）、webui 的按字节截断——
-// 收敛到这里，runner/webui 经相对路径共用；内核 kit 收编后整体迁移（观察 F15）。
+// 文本护栏（收敛点）：UTF-8 校验 / 码点安全截断 / 宽字符小写折叠——本仓
+// 唯一实现，runner/webui 经相对路径共用（踩过：各自为政的年代里，runner 的
+// sanitize_utf8 放行 overlong、webui 的按字节截断劈码点）。
+// TODO: 内核 kit 收编后整体迁移。
 #include <cwctype>
 #include <string>
 

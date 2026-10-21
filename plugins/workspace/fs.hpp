@@ -9,7 +9,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "text.hpp"  // utf8_valid / trim_utf8（F15 收敛点，三插件共用）
+#include "text.hpp"  // utf8_valid / trim_utf8（收敛点，多插件共用）
 
 namespace vcws {
 
@@ -89,6 +89,6 @@ private:
     std::unordered_map<std::wstring, std::string> files_;
 };
 
-// ---- UTF-8 工具已收敛到 text.hpp（F15）：utf8_valid / trim_utf8 ----------------
+// ---- UTF-8 工具已收敛到 text.hpp：utf8_valid / trim_utf8 ----------------
 
 }  // namespace vcws

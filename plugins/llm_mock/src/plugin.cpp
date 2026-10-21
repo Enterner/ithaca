@@ -25,7 +25,7 @@ nostos_status MockPlugin::activate(const nostos::abi::Host& host) {
     table_.set_model = &MockPlugin::set_model_thunk;  // 热切（mock 仅记录，回放不变）
     // 发布门槛（产品拍板：mock 仅测试模式）——只在 ITHACA_LLM_ACTIVE=mock 时
     // 发布；缺省（cloud）休眠。启动器同时按模式互斥装载两 llm 插件，本判定
-    // 只防旧启动路径的双装载竞争（同名服务热切竞态，实锤过）
+    // 只防旧启动路径的双装载竞争（同名服务热切竞态，踩过）
     const char* llm_act = std::getenv("ITHACA_LLM_ACTIVE");
     published_ = (llm_act != nullptr && std::string_view(llm_act) == "mock");
     if (published_) {
@@ -118,7 +118,10 @@ nostos_status MockPlugin::set_model_thunk(void* self, const char* model) noexcep
 
 nostos_status MockPlugin::info_thunk(void* self, const char** out_json) noexcept {
     (void)self;
-    *out_json = R"({"provider":"mock","model":"mock-1"})";
+    // 元数据自述：mock 的窗口/输出上限是合成值——让消费方（agent 压缩阈值、批次四
+    // 输出预留）走真实链路，而非各自落入兜底分支
+    *out_json =
+        R"({"provider":"mock","model":"mock-1","context_window":128000,"max_output_tokens":8192})";
     return NOSTOS_OK;
 }
 

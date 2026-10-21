@@ -1,10 +1,10 @@
-// 会话创建生命周期 · UI 点击层用例（方案 docs/会话生命周期-测试方案.md）。
+// 会话创建生命周期 · UI 点击层用例。
 // 浏览器直达 webui 的 HTTP 页面（mock LLM 剧本驱动回复，pick-folder 走测试钩子），
 // 断言 API 层给不了的东西：真实渲染、点击链、草稿期零创建请求（网络监听）。
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { test, expect, getJson, postJson, root, loadSessions } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, root } from "../helpers/host.mjs";
 
 test.use({ hostCfg: { pickStub: true } });
 
@@ -58,6 +58,11 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
     const wsPath = path.join(host.ws, "real-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "原会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);
+    // 等创建 turn 收口（in_flight 原子真值）——不收口时点＋新建会被前端 inFlight
+    // 门卫吞掉（newSession 直接 return），hero 永不出现
+    await expect
+        .poll(async () => (await getJson(host.base, "/api/session")).body.in_flight, { timeout: 20000 })
+        .toBe(false);
 
     // 创建类请求监听（SC2 的正面断言：草稿期一个都不许发）
     const creating = [];
@@ -103,14 +108,16 @@ test("SC2d UI：草稿被丢弃后原会话记录与 active 分毫未动", async
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     expect(created.body.ok).toBe(true);
     const sid = created.body.id;
-    // 等 turn 收口，记录数稳定
-    let before = 0;
-    for (let i = 0; i < 30; i++) {
-        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
-        before = t.records.length;
-        if (t.records.some((x) => x.type === "assistant")) break;
-        await new Promise((res) => setTimeout(res, 400));
-    }
+    // 等 turn 真收口：多轮 mock 剧本的中间 llm_done 也落一条空 assistant
+    //（turn_done=false）——以带 turn_done 标记的收口记录为准（踩过：只认
+    // assistant/旗子会在中间轮误判，记录数差一条）
+    await expect
+        .poll(async () => {
+            const t = (await getJson(host.base, "/api/transcript?after=0")).body;
+            return t.records.some((x) => x.turn_done === true);
+        }, { timeout: 20000 })
+        .toBe(true);
+    const before = (await getJson(host.base, "/api/transcript?after=0")).body.records.length;
 
     await page.goto(host.base);
     await page.locator("button.new-chat").click();
@@ -130,7 +137,23 @@ test("SC2d UI：草稿被丢弃后原会话记录与 active 分毫未动", async
 //（真实切换），停止态实例点击 = 发激活意图（浏览器内以 postMessage 桩捕获）。
 test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换；停止态 = 激活意图", async ({ page }) => {
     test.setTimeout(90000);
-    spawnSync("taskkill", ["/F", "/IM", "ithaca_host.exe"], { stdio: "ignore" });
+    // 释放固定端口：上次运行的残留宿主会占住 8794/8795（webui 回退随机端口 ⇒
+    // baseA 失配）。测试规范禁 taskkill /IM 全局杀——会误杀并行 worker 的
+    // fixture 宿主（踩过：并发跑时对端用例的 turn 被腰斩）——按端口找
+    // LISTENING 的 PID 再按 PID 树杀。
+    const freePort = (port) => {
+        const out = spawnSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8" }).stdout ?? "";
+        const pids = new Set();
+        for (const line of out.split("\n"))
+            if (line.includes(`:${port} `) && line.includes("LISTENING")) {
+                const pid = line.trim().split(/\s+/).pop();
+                if (pid && pid !== "0") pids.add(pid);
+            }
+        for (const pid of pids)
+            spawnSync("taskkill", ["/F", "/T", "/PID", pid], { stdio: "ignore" });
+    };
+    freePort(8794);
+    freePort(8795);
     await new Promise((r) => setTimeout(r, 800));
 
     // 现场双实例共享 manifest（聚合端点按 manifest.parent/hosts/<key> 解析实例 home）
@@ -191,11 +214,18 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
         await waitReady(baseA);
         await waitReady(baseB);
 
-        // 捕获激活意图（停止态路径在无壳浏览器里只能验证意图）
+        // 捕获激活意图（停止态路径在无壳浏览器里只能验证意图）。桩面 = boot.js
+        // 依赖的最小 webview 外观：postMessage（激活意图出向）+ addEventListener/
+        // removeEventListener（boot 注册 navigate 监听用）——缺任一 boot 即抛
+        // TypeError，SSE 永不连接（踩过：只桩 postMessage ⇒ 页面停在「连接中」）
         await page.addInitScript(() => {
             window.__shellMsgs = [];
             window.chrome = window.chrome || {};
-            window.chrome.webview = { postMessage: (o) => window.__shellMsgs.push(o) };
+            window.chrome.webview = {
+                postMessage: (o) => window.__shellMsgs.push(o),
+                addEventListener: () => {},
+                removeEventListener: () => {},
+            };
         });
         page.on("console", (m) => {
             if (m.type() === "error" || m.type() === "warning")
@@ -239,7 +269,13 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
                 } catch { return "probe-failed"; }   // 探活失败 ≠ 已停止
             }, { timeout: 15000 })
             .toBe(false);
-        await loadSessions();   // 手动刷新：3s 轮询间隔内的旧 alive=true 会直航死端口（实锤）
+        // 页面侧数据只能靠它自己的 3s 轮询刷新（store 不暴露给测试进程）——等事实：
+        // 乙行渲染出「已停止」角标后，点击才会走激活意图而非直航死端口（踩过：
+        // 轮询间隔内旧 alive=true 会被整页导航到已杀实例）
+        await expect(
+            page.locator(".sess", { has: page.locator(".t", { hasText: "会话乙" }) })
+                .locator(".m", { hasText: "已停止" }),
+        ).toBeVisible({ timeout: 15000 });
         await page.locator(".sess .t", { hasText: "会话乙" }).click();
         const msgs = await page.evaluate(() => window.__shellMsgs);
         expect(msgs.some((m) => m.type === "activate" && m.key === "hB")).toBe(true);

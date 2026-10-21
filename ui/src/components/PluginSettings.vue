@@ -1,7 +1,7 @@
 <script setup>
-// 插件贡献设置（方案 A）：按 /api/ui/registry 的 schema 动态渲染各插件设置节。
+// 插件贡献设置：按 /api/ui/registry 的 schema 动态渲染各插件设置节。
 // 控件集 v1：text/number/bool/select（path 型 v1 按 text 渲染——原生选目录走
-// SSE folder_picked，那是会话语义，接进来会误触草稿/开新会话，方案 B 再解）。
+// SSE folder_picked，那是会话语义，接进来会误触草稿/开新会话）。
 // 编辑在本地副本（vals）进行，保存时整节写回 S.pluginVals → /api/config。
 import { reactive, watch, ref } from 'vue'
 import { S, savePluginVals } from '../store'
