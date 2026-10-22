@@ -53,7 +53,7 @@ export function makeHost({ name, port, preset = "debug" }) {
             });
         },
         stop() {
-            // NOTE: 树杀先行（同 e2e-webui：先 kill cmd 会断树 → 宿主孤儿化）
+            // NOTE: 树杀先行（/T）：先 kill cmd 会断树 → 宿主孤儿化
             if (proc)
                 spawnSync("taskkill", ["/F", "/T", "/PID", String(proc.pid)], { stdio: "ignore" });
             if (proc && proc.exitCode === null) {
@@ -75,7 +75,7 @@ export function makeHost({ name, port, preset = "debug" }) {
     };
 }
 
-// 默认 mock 剧本（同 e2e-webui）：提案（apply 写文件）→ 收口
+// 默认 mock 剧本：提案（apply 写文件）→ 收口
 const defaultScenario = [
     { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function",
         function: { name: "workspace.apply",
@@ -94,7 +94,7 @@ export const test = base.extend({
         h.fresh();
         // 默认种 Mock 供应商配置：全新 home 的配置迁移会把 Mock 置为 disabled、
         // current_provider 指向无 key 的云端 ⇒ turn 必然「LLM 不可用」。
-        // 会话生命周期用例不测配置迁移（e2e-webui 管），一律直用 mock 回放。
+        // 会话生命周期用例不测配置迁移，一律直用 mock 回放。
         // config 种子：mock 供应商 + 可选的 MCP server 清单（mcp 插件读取）
         const seedCfg = { provider: "mock" };
         if (hostCfg.mcpServers) seedCfg.mcp = { servers: hostCfg.mcpServers };
@@ -112,6 +112,13 @@ export const test = base.extend({
         await h.waitReady();
         await use(h);
         h.stop();
+        // 用例目录用完即清——仅成功/跳过时删：失败现场留给排查（重试以
+        // <title>_<worker>_<retry> 另起新目录，残留不影响重跑）；一律不删会让
+        // tests/.tmp 每轮 e2e 净增一批 home/ws，无限累积。
+        if (testInfo.status === "passed" || testInfo.status === "skipped") {
+            fs.rmSync(h.home, { recursive: true, force: true });
+            fs.rmSync(h.ws, { recursive: true, force: true });
+        }
     },
 });
 export const expect = base.expect;
