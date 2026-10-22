@@ -119,12 +119,15 @@ inline std::string compact_result(const std::string& tool, const json& r,
     const auto dot = tool.rfind('.');
     const std::string last = dot == std::string::npos ? tool : tool.substr(dot + 1);
     if (last == "read") {
-        return "{\"tool\":\"read\",\"path\":" + json(r.value("path", "")).dump() +
+        // "ok" 显式随包——折叠侧 segment_calls 以 ok 判定 outcome（批次五评测发现：
+        // 紧凑形态缺 ok ⇒ 成功调用在折叠行恒标 failed）。ref_field 在对象内插入——
+        // 拼在闭合括号后是非法 JSON（踩过：折叠归档里 segment_calls 解析丢弃）
+        return "{\"ok\":true,\"tool\":\"read\",\"path\":" + json(r.value("path", "")).dump() +
                ",\"bytes\":" +
                std::to_string(r.contains("content") && r["content"].is_string()
                                   ? r["content"].get<std::string>().size() : 0) +
                std::string(r.value("truncated", false) ? ",\"truncated\":true" : "") +
-               ",\"note\":\"内容已外置，用 context.recall 回查\"}" + ref_field(ref);
+               ",\"note\":\"内容已外置，用 context.recall 回查\"" + ref_field(ref) + "}";
     }
     if (last == "apply") {
         std::string files;
@@ -138,9 +141,9 @@ inline std::string compact_result(const std::string& tool, const json& r,
                     r["files"][0].is_object()
                 ? diff_stats_short_str(r["files"][0].value("diff", ""))
                 : "";
-        return "{\"tool\":\"apply\",\"files\":[" + files + "]" +
+        return "{\"ok\":true,\"tool\":\"apply\",\"files\":[" + files + "]" +
                (stats.empty() ? "" : ",\"delta\":\"" + stats + "\"") +
-               ",\"note\":\"diff 已随 applied 事件展示，原始结果外置\"}" + ref_field(ref);
+               ",\"note\":\"diff 已随 applied 事件展示，原始结果外置\"" + ref_field(ref) + "}";
     }
     if (last == "run") {
         const int code = r.contains("exit_code") && r["exit_code"].is_number_integer()
@@ -151,9 +154,9 @@ inline std::string compact_result(const std::string& tool, const json& r,
             const auto nl = o.find('\n');
             first = o.substr(0, nl == std::string::npos ? o.size() : nl);
         }
-        return "{\"tool\":\"run\",\"exit_code\":" + std::to_string(code) +
+        return "{\"ok\":true,\"tool\":\"run\",\"exit_code\":" + std::to_string(code) +
                ",\"first_line\":" + json(first).dump() +
-               ",\"note\":\"完整输出外置，用 context.recall 回查\"}" + ref_field(ref);
+               ",\"note\":\"完整输出外置，用 context.recall 回查\"" + ref_field(ref) + "}";
     }
     if (last == "list") {
         // 前 8 项内联（路径/类型/大小），全量在 raw/（ref 兜底）——列表的信号在
@@ -164,10 +167,10 @@ inline std::string compact_result(const std::string& tool, const json& r,
             n = r["entries"].size();
             for (std::size_t i = 0; i < n && i < 8; ++i) keep.push_back(r["entries"][i]);
         }
-        return "{\"tool\":\"list\",\"entries\":" + std::to_string(n) +
+        return "{\"ok\":true,\"tool\":\"list\",\"entries\":" + std::to_string(n) +
                ",\"top\":" + keep.dump() +
-               ",\"note\":\"仅前 8 项内联；全量已外置，用 context.recall 回查\"}" +
-               ref_field(ref);
+               ",\"note\":\"仅前 8 项内联；全量已外置，用 context.recall 回查\"" +
+               ref_field(ref) + "}";
     }
     if (last == "search") {
         // 前 5 条命中内联（路径+行号+单行——text 已由提供方截 200B），全量 raw/ 兜底
@@ -177,14 +180,14 @@ inline std::string compact_result(const std::string& tool, const json& r,
             n = r["hits"].size();
             for (std::size_t i = 0; i < n && i < 5; ++i) keep.push_back(r["hits"][i]);
         }
-        return "{\"tool\":\"search\",\"hits\":" + std::to_string(n) +
+        return "{\"ok\":true,\"tool\":\"search\",\"hits\":" + std::to_string(n) +
                ",\"top\":" + keep.dump() +
-               ",\"note\":\"仅前 5 条内联；全量已外置，用 context.recall 回查\"}" +
-               ref_field(ref);
+               ",\"note\":\"仅前 5 条内联；全量已外置，用 context.recall 回查\"" +
+               ref_field(ref) + "}";
     }
     if (last == "undo_turn" || last == "recall") return r.dump();  // 已是最小形态
     return "{\"tool\":" + json(last).dump() +
-           ",\"ok\":true,\"note\":\"已最小化，原始结果外置\"}" + ref_field(ref);
+           ",\"ok\":true,\"note\":\"已最小化，原始结果外置\"" + ref_field(ref) + "}";
 }
 
 // ---- recall：provenance 包装 + 分页元数据（批次三-8）---------------------------
@@ -234,6 +237,8 @@ struct CompressPlan {
     std::size_t cut_end = 0;  // 待删除区间 [cut_begin, cut_end)
     std::size_t segments_folded = 0;
     std::vector<std::string> refs;  // 本批折叠的外置锚点（calls 结构化记录提取，批次三-11）
+    std::size_t anchors_total = 0;    // 折叠区逐字锚点总数（路径/文件/退出码/ref，批次五-20）
+    std::size_t anchors_dropped = 0;  // 32KB 降级丢失的锚点数（保真率 = 1 - dropped/total）
     bool valid = false;
 };
 
@@ -288,6 +293,7 @@ inline std::string index_section(const std::vector<std::string>& refs) {
 }
 
 // 单条调用记录 → 紧凑记法（锚点逐字：路径/文件/退出码/ref 原样进 digest）。
+// files 兼容对象数组（原始结果）与字符串数组（agent compact 形态）。
 inline std::string render_call(const json& c) {
     std::string out = c.value("tool", std::string("?"));
     out += ":" + c.value("outcome", std::string("?"));
@@ -297,9 +303,13 @@ inline std::string render_call(const json& c) {
         out += "(files=";
         bool first_f = true;
         for (const auto& f : c["files"]) {
-            if (!f.is_object() || !f.contains("path") || !f["path"].is_string()) continue;
+            const std::string fp =
+                f.is_string() ? f.get<std::string>()
+                              : (f.is_object() && f.contains("path") && f["path"].is_string()
+                                     ? f["path"].get<std::string>() : "");
+            if (fp.empty()) continue;
             if (!first_f) out += ",";
-            out += f["path"].get<std::string>();
+            out += fp;
             first_f = false;
         }
         out += ")";
@@ -366,6 +376,22 @@ inline std::vector<std::string> collect_refs(const std::string& digest_text) {
     return out;
 }
 
+// 一条调用记录携带的逐字锚点数（path/文件路径/退出码/ref——折叠保真统计口径，
+// 批次五-20）。files 兼容两种形态：对象数组（原始结果）与字符串数组（agent
+// compact 形态——每个字符串就是一个路径锚点）。
+inline std::size_t count_anchors(const json& c) {
+    std::size_t n = 0;
+    if (c.contains("path") && c["path"].is_string()) ++n;
+    if (c.contains("files") && c["files"].is_array())
+        for (const auto& f : c["files"]) {
+            if (f.is_string()) { ++n; continue; }   // compact 形态：路径字符串
+            if (f.is_object() && f.contains("path") && f["path"].is_string()) ++n;
+        }
+    if (c.contains("exit_code") && c["exit_code"].is_number_integer()) ++n;
+    if (c.contains("ref") && c["ref"].is_string()) ++n;
+    return n;
+}
+
 // 折叠计划：
 //   多段（≥2 个 user 段）——除最末段（刚完结的 turn，逐字保留）外全部折叠为一
 //     条 digest（迟滞批量语义）；
@@ -395,15 +421,23 @@ inline CompressPlan plan_compress(const json& messages) {
     };
 
     std::vector<std::string> seg_lines, seg_first;  // 每段：完整折叠行 / 仅请求行
+    std::vector<std::size_t> seg_anchors;           // 每段锚点数（32KB 降级丢锚统计）
 
     if (seg_start.size() >= 2) {
         plan.cut_begin = seg_start.front();
         plan.cut_end = seg_start.back();
         // 旧 digest 可能位于 mission 旁（首个 user 之前）——从 messages[1] 起正文
-        // 全部并入；其 ref（新索引段或旧字面格式）提取进统一索引
+        // 全部并入；其 ref（新索引段或旧字面格式）提取进统一索引。并入时剥掉旧
+        // digest 的口径头（marker 起到首个「）」）——新 digest 有自己的头，逐轮
+        // 合并会让口径说明线性堆积；marker 后直接跟内容的旧格式整行保留
         for (std::size_t k = 1; k < plan.cut_end; ++k)
             if (is_digest(messages[k])) {
-                const std::string c = messages[k].value("content", "");
+                std::string c = messages[k].value("content", "");
+                if (c.rfind(kDigestMarker, 0) == 0) {
+                    const auto close = c.find("）");
+                    if (close != std::string::npos)
+                        c = c.substr(close + std::string("）").size());
+                }
                 head += c + "\n";
                 for (const auto& r : collect_refs(c)) take_ref(r);
             }
@@ -414,6 +448,10 @@ inline CompressPlan plan_compress(const json& messages) {
             segment_calls(messages, lo, hi, calls);
             for (const auto& c : calls)
                 if (c.contains("ref") && c["ref"].is_string()) take_ref(c["ref"]);
+            std::size_t sa = 0;
+            for (const auto& c : calls) sa += count_anchors(c);
+            plan.anchors_total += sa;
+            seg_anchors.push_back(sa);
             seg_lines.push_back(render_segment(messages[lo].value("content", ""), calls));
             std::string first = messages[lo].value("content", "");
             const auto nl = first.find('\n');
@@ -431,10 +469,17 @@ inline CompressPlan plan_compress(const json& messages) {
         if (rounds.size() <= kFoldKeepRounds) return plan;  // 不足保留数：无可折叠
         plan.cut_begin = lo;
         plan.cut_end = rounds[rounds.size() - kFoldKeepRounds];
-        // 旧 digest 并入（mission 旁/段前——与多段同一纪律；apply 侧按 k<cut_begin 跳过）
+        // 旧 digest 并入（mission 旁/段前——与多段同一纪律；apply 侧按 k<cut_begin 跳过）。
+        // 并入时剥掉旧 digest 的口径头（marker 起到首个「）」）——逐轮合并的口径
+        // 说明不再线性堆积；marker 后直接跟内容的旧格式整行保留
         for (std::size_t k = 1; k < plan.cut_end; ++k)
             if (is_digest(messages[k])) {
-                const std::string c = messages[k].value("content", "");
+                std::string c = messages[k].value("content", "");
+                if (c.rfind(kDigestMarker, 0) == 0) {
+                    const auto close = c.find("）");
+                    if (close != std::string::npos)
+                        c = c.substr(close + std::string("）").size());
+                }
                 head += c + "\n";
                 for (const auto& r : collect_refs(c)) take_ref(r);
             }
@@ -442,6 +487,10 @@ inline CompressPlan plan_compress(const json& messages) {
         segment_calls(messages, lo, plan.cut_end, calls);
         for (const auto& c : calls)
             if (c.contains("ref") && c["ref"].is_string()) take_ref(c["ref"]);
+        std::size_t sa = 0;
+        for (const auto& c : calls) sa += count_anchors(c);
+        plan.anchors_total += sa;
+        seg_anchors.push_back(sa);
         seg_lines.push_back(render_segment(messages[lo].value("content", ""), calls));
         std::string first = messages[lo].value("content", "");
         const auto nl = first.find('\n');
@@ -451,7 +500,7 @@ inline CompressPlan plan_compress(const json& messages) {
     }
 
     // 组装 + 32KB 上限（批次三-10）：超限从最旧段开始把调用链降级为仅请求行
-    //（调用链是体积大头），直到达标或全部降级
+    //（调用链是体积大头），直到达标或全部降级；降级丢失的锚点计入保真统计
     std::size_t collapsed = 0;   // 前 collapsed 段退化
     const auto assemble = [&]() {
         std::string b = head;
@@ -462,6 +511,7 @@ inline CompressPlan plan_compress(const json& messages) {
     };
     std::string final_body = assemble();
     while (final_body.size() > kDigestCap && collapsed < seg_lines.size()) {
+        plan.anchors_dropped += seg_anchors[collapsed];
         ++collapsed;
         final_body = assemble();
     }

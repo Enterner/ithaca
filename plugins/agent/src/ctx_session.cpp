@@ -30,6 +30,7 @@ void AgentCtx::load_session_state_(const std::string& path) {
         usage_prompt_ = usage.value("prompt_tokens", 0LL);
         usage_completion_ = usage.value("completion_tokens", 0LL);
         usage_total_ = usage.value("total_tokens", 0LL);
+        usage_cache_ = usage.value("cache_tokens", 0LL);   // 缓存命中计量随会话恢复
         // 判定信号随会话恢复：恢复后首轮压缩判定不再失明
         last_prompt_tokens_ = doc.value("last_prompt_tokens", 0LL);
         if (doc.contains("messages") && doc["messages"].is_array())
@@ -49,7 +50,8 @@ void AgentCtx::persist_session_() {
     try {
         json usage = {{"prompt_tokens", usage_prompt_},
                       {"completion_tokens", usage_completion_},
-                      {"total_tokens", usage_total_}};
+                      {"total_tokens", usage_total_},
+                      {"cache_tokens", usage_cache_}};
         json doc = {{"turns", turn_no_},
                     {"usage", usage},
                     {"last_prompt_tokens", last_prompt_tokens_},

@@ -30,7 +30,10 @@ void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
             return;
         }
         const std::size_t idx = turn_index_++;
-        const json turn = turns_[idx];
+        json turn = turns_[idx];
+        // 剧本条目按定义是 assistant 回合——role 缺失时注入（下游按 role 过滤
+        // 消息，缺 role 会让折叠/配对等消费方静默跳过）
+        if (!turn.contains("role")) turn["role"] = "assistant";
         const std::string content = turn.value("content", std::string{});
         if (stopping.load(std::memory_order_relaxed)) { finish_request_(rid); return; }
         for (std::size_t i = 0; i < content.size(); ++i) {

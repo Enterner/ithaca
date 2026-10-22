@@ -423,6 +423,13 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     if (!archive_ref.empty())
         digest["content"] = digest_msg.value("content", "") + "【折叠原文】" +
                             archive_ref + "（context.recall 可回查）\n";
+    // 锚点保真在线观测（批次五-20）：折叠区逐字锚点在折叠产物中的覆盖率——
+    // 32KB 降级会丢最旧段的调用链锚点，比率落 host log 供评测采集（批次五-12）
+    if (pending_plan_.anchors_total > 0)
+        host_.log(2, "ithaca.agent: 折叠锚点保真 " +
+                         std::to_string(pending_plan_.anchors_total -
+                                        pending_plan_.anchors_dropped) +
+                         "/" + std::to_string(pending_plan_.anchors_total));
     const std::size_t before = messages_.size();
     json nm = json::array();
     bool digest_placed = false;
