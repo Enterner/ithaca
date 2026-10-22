@@ -12,9 +12,9 @@ export const S = reactive({
   rate: '0',
   // /api/config（两层供应商）
   providers: [], current: '',
-  model: '', pmode: 'auto-edit', providerType: 'mock',
+  model: '', pmode: 'auto-edit',
   // 会话
-  sessions: [], curSession: '', curWs: '', sessTitle: '', sessRecords: 0,
+  sessions: [], curSession: '', curWs: '', sessTitle: '',
   draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fTurns: 0, fTokens: 0,

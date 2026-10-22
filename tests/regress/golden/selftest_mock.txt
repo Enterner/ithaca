@@ -43,51 +43,7 @@ selftest[workspace] read 确认已删除: ✓
     delta#8: M5 场景完成
     done#8
   [日志 2] ithaca.agent: turn #2 完成（tokens total 3960）
-    delta#9: 输出行 1
-
-    delta#9: 输出行 2
-
-    delta#9: 输出行 3
-
-    delta#9: 输出行 4
-
-    delta#9: 输出行 5
-
-    delta#9: 输出行 6
-
-    delta#9: 输出行 7
-
-    delta#9: 输出行 8
-
-    delta#9: 输出行 9
-
-    delta#9: 输出行 10
-
-    delta#9: 输出行 11
-
-    delta#9: 输出行 12
-
-    delta#9: 输出行 13
-
-    delta#9: 输出行 14
-
-    delta#9: 输出行 15
-
-    delta#9: 输出行 16
-
-    delta#9: 输出行 17
-
-    delta#9: 输出行 18
-
-    delta#9: 输出行 19
-
-    delta#9: 输出行 20
-
-    delta#9: 输出行 21
-
     cancel#0: turn #3 已被用户取消
-    delta#9: 输出行 22
-
   [日志 2] ithaca.agent: 已停用
   [日志 2] ithaca.runner: 已停用
   [日志 2] ithaca.workspace: 已停用

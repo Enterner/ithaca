@@ -72,17 +72,6 @@ void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
     finish_request_(rid);
 }
 
-std::vector<std::string> MockPlugin::split_lines(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (const char c : s) {
-        if (c == '\n') { out.push_back(std::move(cur)); cur.clear(); }
-        else cur.push_back(c);
-    }
-    if (!cur.empty()) out.push_back(std::move(cur));
-    return out;
-}
-
 std::string MockPlugin::builtin_text_() const {
     std::string all;
     for (const auto& l : script_) all += l;

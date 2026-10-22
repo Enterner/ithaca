@@ -3,6 +3,8 @@
 
 #include "webui_plugin.hpp"
 
+#include <nostos/kit/win.hpp>  // nostos::kit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
+
 namespace vc_webui {
 
 // ---- 文件树 watcher（VSCode 式真监听）--------------------------------------
@@ -15,7 +17,7 @@ namespace vc_webui {
 void WebuiPlugin::start_fs_watcher_(const std::string& root) {
     stop_fs_watcher_();
     if (root.empty()) return;   // hero 态：无工作区不监听
-    fs_watch_handle_ = CreateFileW(utf8_to_wide(root).c_str(), FILE_LIST_DIRECTORY,
+    fs_watch_handle_ = CreateFileW(nostos::kit::win::utf8_to_wide(root).c_str(), FILE_LIST_DIRECTORY,
                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
                                    nullptr);

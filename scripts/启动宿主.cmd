@@ -1,6 +1,7 @@
 @echo off
 rem LLM 插件互斥装载（与桌面壳/dev.mjs 同策）：便携包面向真实使用只带 llm_cloud；
 rem mock 仅供开发测试（node scripts/dev.mjs --provider mock）。
+rem 插件清单唯一出处：scripts/plugins.mjs（本文件 = CLOUD_FULL 全链）。
 cd /d "%~dp0"
 set "ITHACA_WEBUI_HOME=%~dp0data"
 set "ITHACA_WEBUI_WEB=%~dp0web\dist"

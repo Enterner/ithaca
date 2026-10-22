@@ -4,7 +4,7 @@
 import { S, X } from './state'
 import { api, shellMsg } from './api'
 import { mdHtml } from '../md'
-import { diffFiles } from '../diff'
+import { diffFiles, diffStats, diffIsNew } from '../diff'
 import { loadSessions, enterDraft, resetView } from './sessions'
 
 function push(rec) { S.records.push(rec) }
@@ -13,10 +13,6 @@ export function pushLocal(text) { push({ type: 'local', text }) }
 
 // ---- 汇总卡聚合（edit-diff 批次语义）-----------------------------------------
 
-function parseStats(diff) {
-  const m = diff.match(/（\+(\d+) −(\d+) 行）/)
-  return m ? { add: +m[1], rem: +m[2] } : null
-}
 // applied 的 diff_text = 每文件一段「── path（N 处编辑）\n<diff>」；按段头切开，
 // 段序与 paths/files 一致，段体 = 该文件的 hunk diff（不含段头）。
 function splitAppliedDiff(diffText) {
@@ -47,11 +43,11 @@ function accumulateApplied(rec) {
       X.turnEdits.set(f.path, e)
     })
   } else {
-    const st = parseStats(rec.diff) || { add: 0, rem: 0 }
+    const st = diffStats(rec.diff) || { add: 0, rem: 0 }
     const m = (rec.diff || '').match(/^── (.+)$/m)
     const paths = rec.paths || []
     const p = paths.length === 1 ? paths[0] : (m ? m[1].replace(/（[^）]*）\s*$/, '').trim() : '?')
-    const isNew = (rec.diff || '').includes('@@ -0,0 +')
+    const isNew = diffIsNew(rec.diff || '')
     const e = X.turnEdits.get(p) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
     e.applies.push(bodies[0] ?? (rec.diff || ''))
     e.n++

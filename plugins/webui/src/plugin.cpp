@@ -288,7 +288,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         // （踩过：开关 10 次攒 10 条）
         std::exit(0);  // 每条记录/每 turn 已落盘，立即退出是安全的
     }
-    host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // TODO: 404 诊断日志，路由稳定后删除
+    host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // 诊断：路由未命中点
     return http::Response::status_page(404, "not found");
 }
 

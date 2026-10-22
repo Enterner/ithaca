@@ -33,7 +33,7 @@ struct TurnDecision {
     const char* msg = nullptr;         // 调用期有效，要留存必须拷贝
 };
 
-// 工具插件后到接入的提示。MVP 的发现走 config 显式清单），
+// 工具插件后到接入的提示。MVP 的发现走 config 显式清单，
 // 这只是"有新工具上线"的通知，载荷是 svc 名。
 struct ToolRegister {
     static constexpr std::string_view name = "vc.tool.register";
@@ -101,8 +101,9 @@ struct EditProposed {
     static constexpr std::string_view name = "vc.edit.proposed";
     int turn_id = 0;
     const char* diff_text = nullptr;  // 行级 diff 展示文本，调用期有效
-    // 尾部追加（M-W7）：提案工具名（"runner.run" 等）——批准卡按工具区分形态
-    // （diff 卡 / 命令批准卡）；旧生产者组合下为 null，消费方以非空探测。
+    // 尾部追加（M-W7）：提案工具名（"runner.run" 等）——按工具区分批准卡形态用。
+    // 当前消费方（webui/host）都不读它（批准卡形态靠 diff_text 首行解析）——
+    // 契约面保留待用，生产者照常填充。
     const char* tool = nullptr;
 };
 struct EditApplied {
@@ -125,6 +126,8 @@ struct EditUndone {
 };
 
 // 子进程执行（agent → runner；runner → agent/tui）。run_id 全链路关联。
+// 【已废弃】本事件无生产者也无消费者——实际路径是工具表 execute 同步发起，
+// 输出/退出经 vc.run.line/exit 事件回。契约冻结只标注不删声明。
 struct RunRequest {
     static constexpr std::string_view name = "vc.run.request";
     int run_id = 0;
@@ -222,7 +225,9 @@ struct McpReload {
     int reserved = 0;
 };
 
-// MCP server 状态回发（mcp 插件 → webui 设置面板状态行）。json（UTF-8，调用期
+// MCP server 状态回发（mcp 插件 → 潜在订阅方）。当前 webui 不订阅本事件——
+// 设置面板的状态行读 mcp-status.json 落盘文件（mcp 插件 emit_status_ 同步写）；
+// 事件面为未来订阅方保留。json（UTF-8，调用期
 // 有效，要留存必须拷贝）：
 //   {"ok":true,"servers":[{"name":"fs","alive":true,
 //                          "tools":["read_file",...],"diag":"仅失败时"}]}

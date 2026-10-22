@@ -23,7 +23,7 @@ if(NOT TARGET nostos::loader)
 endif()
 include("${NOSTOS_ROOT}/cmake/asan_runtime.cmake")
 
-add_executable(ithaca_host main.cpp)
+add_executable(ithaca_host main.cpp selftest.cpp)
 target_link_libraries(ithaca_host PRIVATE nostos::loader)  # loader = 框架里唯一要编译的部分
 
 target_include_directories(ithaca_host PRIVATE

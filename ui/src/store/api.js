@@ -46,7 +46,6 @@ export function cfgFromServer(cfg) {
     }))
   }))
   S.current = cfg.current_provider || (S.providers[0] && S.providers[0].name) || ''
-  S.providerType = cfg.provider || 'mock'
   S.model = cfg.model || 'deepseek-flash'
   S.pmode = cfg.permission_mode || 'auto-edit'
   S.pluginVals = cfg.plugins || {}   // 各插件 schema 的值域（编辑在设置面板）

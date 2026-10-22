@@ -5,6 +5,7 @@
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { NConfigProvider, NTooltip, darkTheme } from 'naive-ui'
 import { S, boot, pickFolder, newSession, api } from './store'
+import { themeOverrides } from './theme'
 import Sidebar from './components/Sidebar.vue'
 import Stream from './components/Stream.vue'
 import InputBar from './components/InputBar.vue'
@@ -16,15 +17,6 @@ const settingsRef = ref(null)
 const fileTreeRef = ref(null)
 onMounted(() => { boot() })
 const curWs = computed(() => S.curWs ? S.curWs : '(未设置)')
-const overrides = {
-  common: {
-    primaryColor: '#6366F1', primaryColorHover: '#7B83F5', primaryColorPressed: '#5257E0',
-    bodyColor: '#0B0E15', cardColor: '#12171F', modalColor: '#12171F',
-    borderColor: '#222B3B', textColorBase: '#E6EAF2',
-  },
-  Card: { borderRadius: '14px' },
-  Dialog: { borderRadius: '14px' },
-}
 
 // ---- 会话栏折叠/调宽（VSCode 式）---------------------------------------------
 const sideW = ref(248)
@@ -98,7 +90,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 </script>
 
 <template>
-  <NConfigProvider :theme="darkTheme" :theme-overrides="overrides" class="app"
+  <NConfigProvider :theme="darkTheme" :theme-overrides="themeOverrides" class="app"
                    style="height:100%; display:flex; overflow:hidden;">
     <!-- 会话栏（可折叠/可拖宽） -->
     <aside v-if="!collapsed"

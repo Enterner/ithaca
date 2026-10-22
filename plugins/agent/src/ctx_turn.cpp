@@ -291,12 +291,11 @@ void AgentCtx::try_finish_tools() {
     append_results_and_continue();
 }
 
-// 确认清单 = 权限模式映射：suggest 逐条问 / auto-edit 编辑免批 /
-// full-auto 全自动（沙箱兜底在 runner）
+// 确认清单 = 权限模式映射（permission.hpp 的纯函数，单测直接覆盖它）：
+// suggest 逐条问 / auto-edit 编辑免批 / full-auto 全自动（沙箱兜底在 runner）；
+// 未识别值按 auto-edit 兜底
 void AgentCtx::rebuild_confirm_() {
-    if (mode_ == "suggest") confirm_ = {"workspace.apply", "runner.run"};
-    else if (mode_ == "full-auto") confirm_.clear();
-    else confirm_ = {"runner.run"};
+    confirm_ = vcagent::mode_confirm(mode_);
 }
 
 void AgentCtx::finish_turn() {

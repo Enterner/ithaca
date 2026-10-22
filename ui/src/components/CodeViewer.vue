@@ -30,8 +30,7 @@ monaco.languages.javascript?.javascriptDefaults?.setDiagnosticsOptions?.(
 
 // Monaco 主题对齐全局 --panel（#12171F）：vs-dark 默认底色 #1e1e1e 会与右栏面板脱节
 // diff 两个 Text 令牌 = 对话流 .add/.del 的行底色；.line-insert/.line-delete 未设
-// Line 令牌，经 CSS 变量回退链取 Text 值——行级红绿一处配置全覆盖（词级加重由
-// global.css 的 .char-insert/.char-delete 覆盖对齐 .mark，见其注释）
+// Line 令牌，经 CSS 变量回退链取 Text 值——行级红绿一处配置全覆盖
 monaco.editor.defineTheme('ithaca', {
   base: 'vs-dark', inherit: true, rules: [],
   colors: {

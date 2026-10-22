@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MOCK_CHAIN } from "./plugins.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const preset = process.argv.includes("--preset") ? process.argv[process.argv.indexOf("--preset") + 1] : "debug";
@@ -17,7 +18,7 @@ if (!fs.existsSync(hostExe)) {
     console.error("先构建：npm run build");
     process.exit(1);
 }
-const plugins = ["llm_mock", "workspace", "runner", "agent"]
+const plugins = MOCK_CHAIN
     .map((n) => path.join(bin, `${n}_plugin.dll`));
 if (plugins.some((p) => !fs.existsSync(p))) {
     console.error("✗ 插件产物不全");
@@ -53,6 +54,11 @@ function invokeSelftest() {
     return fs.readFileSync(outFile, "utf8")
         .replaceAll("\r\n", "\n")
         .replaceAll(/全程 \d+ms/g, "全程 <T>ms")
+        // 取消场景（turn 9）的截断行数 = 取消传播与 5ms 流节奏的赛跑结果，是
+        // 时序噪音——锁进 golden 只会偶发假失败。断言价值在 m4_ok（流即刻终止
+        // + 通告到达），不在截断在第几行；整段归一移出比对（delta 文本以 \n 结尾
+        // ⇒ 每条后随一个空行，一并移除）。
+        .replaceAll(/^    delta#9: 输出行 \d+\n\n/gm, "")
         .replaceAll(root, "<ROOT>")                        // 绝对路径归一化（反斜杠形态）——
         .replaceAll(root.replaceAll("\\", "/"), "<ROOT>"); // 正斜杠形态。golden 才能跨机器比对
 }

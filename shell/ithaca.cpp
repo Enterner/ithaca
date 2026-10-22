@@ -379,7 +379,8 @@ void SpawnInstance(size_t idx) {
     CreateDirectoryW((it.home + L"\\sessions").c_str(), nullptr);
 
     // 供应商模式决定插件装载（产品拍板：mock 仅测试模式，两插件互斥存在——
-    // 竞争性同名服务的热切竞态随双装载一起消失）：--mock 只装 mock，默认只装 cloud
+    // 竞争性同名服务的热切竞态随双装载一起消失）：--mock 只装 mock，默认只装 cloud。
+    // 清单唯一出处 scripts/plugins.mjs（本文件无法 import——改清单时同步此处）
     const wchar_t* plugin_names[] = {
         g_mock_mode ? L"llm_mock_plugin.dll" : L"llm_cloud_plugin.dll",
         L"workspace_plugin.dll",
@@ -394,8 +395,9 @@ void SpawnInstance(size_t idx) {
     cmdline += L"\"";
 
     // 每实例 env（CreateProcessW 独立 env 块；env 块被系统拒时回退进程级继承——
-    // spawn 全在 UI 线程顺序发生，设置后立即 CreateProcess 无串台窗口）
-    std::wstring env = BuildEnvBlock({
+    // spawn 全在 UI 线程顺序发生，设置后立即 CreateProcess 无串台窗口）。
+    // NOTE: 变量清单只有这一份——env 块与回退路径共用，新增变量自动两处生效
+    const std::vector<std::pair<std::wstring, std::wstring>> host_env = {
         {L"ITHACA_WEBUI_HOME", it.home},
         {L"ITHACA_WEBUI_WEB", g_webdir},
         {L"ITHACA_WORKSPACE_DIR", it.ws},   // 空工作区 = 空值条目：webui 视同未设 → hero 引导
@@ -403,7 +405,8 @@ void SpawnInstance(size_t idx) {
         {L"ITHACA_WEBUI_PORT", L"0"},
         {L"ITHACA_SHELL_MANIFEST", g_data + L"\\shell-manifest.txt"},
         {L"ITHACA_LLM_ACTIVE", g_mock_mode ? L"mock" : L"cloud"},   // 模式显式化（webui 面板单侧显示的依据）
-    });
+    };
+    std::wstring env = BuildEnvBlock(host_env);
 
     const std::wstring log = it.home + L"\\host.log";
     HANDLE host_log = CreateFileW(log.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
@@ -419,17 +422,8 @@ void SpawnInstance(size_t idx) {
     if (!ok) {
         LogLine(L"envblock spawn failed gle=" + std::to_wstring(GetLastError()) +
                 L" key=" + it.key + L" —— 回退进程级 env");
-        SetEnvironmentVariableW(L"ITHACA_WEBUI_HOME", it.home.c_str());
-        SetEnvironmentVariableW(L"ITHACA_WEBUI_WEB", g_webdir.c_str());
-        if (!it.ws.empty())
-            SetEnvironmentVariableW(L"ITHACA_WORKSPACE_DIR", it.ws.c_str());
-        else
-            SetEnvironmentVariableW(L"ITHACA_WORKSPACE_DIR", nullptr);
-        SetEnvironmentVariableW(L"ITHACA_WEBUI_CONFIG", (g_data + L"\\config.json").c_str());
-        SetEnvironmentVariableW(L"ITHACA_WEBUI_PORT", L"0");
-        SetEnvironmentVariableW(L"ITHACA_SHELL_MANIFEST",
-                                (g_data + L"\\shell-manifest.txt").c_str());
-        SetEnvironmentVariableW(L"ITHACA_LLM_ACTIVE", g_mock_mode ? L"mock" : L"cloud");
+        for (const auto& [name, value] : host_env)
+            SetEnvironmentVariableW(name.c_str(), value.c_str());   // 空工作区 = 显式空值（webui 视同未设）
         ok = CreateProcessW(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
                             DETACHED_PROCESS, nullptr, g_bin.c_str(), &si, &pi);
     }

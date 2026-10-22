@@ -1,7 +1,7 @@
 #pragma once
 // ithaca 契约 —— LLM provider 服务表（vc.llm.v1）。
 //
-// 同名服务可竞争：llm_cloud / llm_ollama / llm_mock 发布同一张表，
+// 同名服务可竞争：llm_cloud / llm_mock 发布同一张表，
 // agent 与宿主只认契约不认实现（hello ↔ hello_v2 的"换插件不换宿主"）。
 // 布局纪律：C 布局、字段只在尾部追加、字符串只在调用期有效。
 #include <nostos/abi/interface.hpp>

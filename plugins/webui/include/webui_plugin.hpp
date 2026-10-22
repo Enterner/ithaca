@@ -3,8 +3,8 @@
 // 翻译单元职责地图（按功能切片，类声明为本文件）：
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
 //                         通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）+ NOSTOS_PLUGIN 入口
-//   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT/WinEvent 钩子）
-//   src/events.cpp     —— 事件总线订阅（13 个事件回调 → 落盘 + SSE 广播）
+//   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）
+//   src/events.cpp     —— 事件总线订阅（14 个事件回调 → 落盘 + SSE 广播）
 //   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* 端点族
 //   src/config.cpp     —— 供应商两层配置（共享 + 实例覆盖层）+ /api/config
 //   src/fs_watcher.cpp —— 文件树真监听（ReadDirectoryChangesW → fs_changed 广播）
@@ -55,24 +55,12 @@ using json = nlohmann::json;
 
 // ---- 原生选目录对话框（UI 原语，自内核 kit::win 下沉到唯一消费方；置顶修复随迁）--
 
-std::wstring utf8_to_wide(const std::string& text);
-std::string wide_to_utf8(const wchar_t* text);
-
 // 弹出"选择文件夹"对话框（IFileDialog + FOS_PICKFOLDERS：Vista 现代样式，
 // Explorer 同款面包屑/侧栏/搜索；老 SHBrowseForFolderW 是 Win95 树形对话框）。
 // 返回选中绝对路径（UTF-8）；取消/失败返回空串。调用线程需 COM 已初始化。
 //
-// 宿主是无窗口进程，无主对话框有一串系统默认行为要逐个纠正，全部经本线程挂的
-// CBT/WinEvent 钩子完成（真实踩过，细节见各分支）：
-//   · 沉底（被浏览器页面盖住 ⇒ "点了没反应"）——激活瞬间置顶
-//   · 不居中（落主屏左上级联；老 API 自带居中，迁移后才暴露）——按激活时的
-//     前台窗口所在显示器居中
-//   · 记忆边界回写（shell view 初始化后把注册表记忆的位置再套回来）——激活后
-//     1.5s 内 WinEvent 持续重居中，收敛即停；时限外不干预用户手动拖动
-//   · 空壳一闪（窗口先于 shell 视图内容上屏；壳扩展冷加载时间隙可达秒级）——
-//     视图未就绪先隐藏，等 SHELLDLL_DefView 出现或 2s 超时再显示
-// NOTE: MONITORINFO 必须先置 cbSize，否则 GetMonitorInfoW 必败
-// （真实踩过：居中静默失效，31 次激活全部短路）。
+// 宿主是无窗口进程，无主对话框会沉底（被浏览器页面盖住 ⇒ "点了没反应"）——
+// 激活瞬间经本线程挂的 CBT 钩子置顶（真实踩过）。
 std::string pick_folder_dialog(const std::string& title, const std::string& initial_dir = {});
 
 class WebuiPlugin : public http::Handler {
@@ -141,7 +129,6 @@ private:
     // switch_to_ 发出的 WorkspaceSet 可能先于其订阅被丢（事件总线无保留语义），
     // 按当前活跃会话重发一次（同值热切幂等）
     void backfill_workspace_();
-    http::Response api_sessions_();
     http::Response api_session_new_(const std::string& body);
     http::Response api_session_open_(const std::string& body);
     http::Response api_session_rename_(const std::string& body);
@@ -150,7 +137,6 @@ private:
 
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
 
-    bool host_running_() const;
     void start_turn_(const std::string& text);
     http::Response api_input_(const std::string& body);
     http::Response api_decision_(const std::string& body);
@@ -187,7 +173,6 @@ private:
     std::vector<json> records_;      // 会话记录（内存镜像 = 重放源）
     std::ofstream out_{};            // transcript 追加写
     int pending_turn_ = -1;          // 待裁决提案的 turn_id
-    long long token_total_ = 0;
     json index_ = json::object();          // 会话注册表（工作区分组，
     std::string host_workspace_;           // 宿主工作目录（新会话归属）
     bool ws_backfilled_ = false;           // 工作区补发一次性标志（tool_register 兜底）

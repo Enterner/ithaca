@@ -423,14 +423,13 @@ inline CompressPlan plan_compress(const json& messages) {
     std::vector<std::string> seg_lines, seg_first;  // 每段：完整折叠行 / 仅请求行
     std::vector<std::size_t> seg_anchors;           // 每段锚点数（32KB 降级丢锚统计）
 
-    if (seg_start.size() >= 2) {
-        plan.cut_begin = seg_start.front();
-        plan.cut_end = seg_start.back();
-        // 旧 digest 可能位于 mission 旁（首个 user 之前）——从 messages[1] 起正文
-        // 全部并入；其 ref（新索引段或旧字面格式）提取进统一索引。并入时剥掉旧
-        // digest 的口径头（marker 起到首个「）」）——新 digest 有自己的头，逐轮
-        // 合并会让口径说明线性堆积；marker 后直接跟内容的旧格式整行保留
-        for (std::size_t k = 1; k < plan.cut_end; ++k)
+    // 旧 digest 并入：可能位于 mission 旁（首个 user 之前）——从 messages[1] 起到
+    // cut_end 前的正文全部并入；其 ref（新索引段或旧字面格式）提取进统一索引。
+    // 并入时剥掉旧 digest 的口径头（marker 起到首个「）」）——新 digest 有自己的
+    // 头，逐轮合并会让口径说明线性堆积；marker 后直接跟内容的旧格式整行保留。
+    // apply 侧按 k<cut_begin 跳过旧 digest（并入的不再重复出现）。
+    const auto absorb_old_digests = [&](std::size_t cut_end) {
+        for (std::size_t k = 1; k < cut_end; ++k)
             if (is_digest(messages[k])) {
                 std::string c = messages[k].value("content", "");
                 if (c.rfind(kDigestMarker, 0) == 0) {
@@ -441,50 +440,11 @@ inline CompressPlan plan_compress(const json& messages) {
                 head += c + "\n";
                 for (const auto& r : collect_refs(c)) take_ref(r);
             }
-        for (std::size_t s = 0; s + 1 < seg_start.size(); ++s) {
-            const std::size_t lo = seg_start[s];
-            const std::size_t hi = seg_start[s + 1];
-            json calls = json::array();
-            segment_calls(messages, lo, hi, calls);
-            for (const auto& c : calls)
-                if (c.contains("ref") && c["ref"].is_string()) take_ref(c["ref"]);
-            std::size_t sa = 0;
-            for (const auto& c : calls) sa += count_anchors(c);
-            plan.anchors_total += sa;
-            seg_anchors.push_back(sa);
-            seg_lines.push_back(render_segment(messages[lo].value("content", ""), calls));
-            std::string first = messages[lo].value("content", "");
-            const auto nl = first.find('\n');
-            if (nl != std::string::npos) first = first.substr(0, nl);
-            seg_first.push_back("- 请求：" + first + "（调用已略）");
-            ++plan.segments_folded;
-        }
-    } else {
-        const std::size_t lo = seg_start.front();
-        std::vector<std::size_t> rounds;  // 轮起点 = assistant.tool_calls 消息下标
-        for (std::size_t k = lo; k < messages.size(); ++k)
-            if (messages[k].is_object() && messages[k].value("role", "") == "assistant" &&
-                messages[k].contains("tool_calls") && messages[k]["tool_calls"].is_array())
-                rounds.push_back(k);
-        if (rounds.size() <= kFoldKeepRounds) return plan;  // 不足保留数：无可折叠
-        plan.cut_begin = lo;
-        plan.cut_end = rounds[rounds.size() - kFoldKeepRounds];
-        // 旧 digest 并入（mission 旁/段前——与多段同一纪律；apply 侧按 k<cut_begin 跳过）。
-        // 并入时剥掉旧 digest 的口径头（marker 起到首个「）」）——逐轮合并的口径
-        // 说明不再线性堆积；marker 后直接跟内容的旧格式整行保留
-        for (std::size_t k = 1; k < plan.cut_end; ++k)
-            if (is_digest(messages[k])) {
-                std::string c = messages[k].value("content", "");
-                if (c.rfind(kDigestMarker, 0) == 0) {
-                    const auto close = c.find("）");
-                    if (close != std::string::npos)
-                        c = c.substr(close + std::string("）").size());
-                }
-                head += c + "\n";
-                for (const auto& r : collect_refs(c)) take_ref(r);
-            }
+    };
+    // 单段折叠处理（收集调用链 → ref/锚点统计 → 完整行 + 降级用请求行）
+    const auto fold_segment = [&](std::size_t lo, std::size_t hi) {
         json calls = json::array();
-        segment_calls(messages, lo, plan.cut_end, calls);
+        segment_calls(messages, lo, hi, calls);
         for (const auto& c : calls)
             if (c.contains("ref") && c["ref"].is_string()) take_ref(c["ref"]);
         std::size_t sa = 0;
@@ -497,6 +457,26 @@ inline CompressPlan plan_compress(const json& messages) {
         if (nl != std::string::npos) first = first.substr(0, nl);
         seg_first.push_back("- 请求：" + first + "（调用已略）");
         ++plan.segments_folded;
+    };
+
+    if (seg_start.size() >= 2) {
+        plan.cut_begin = seg_start.front();
+        plan.cut_end = seg_start.back();
+        absorb_old_digests(plan.cut_end);
+        for (std::size_t s = 0; s + 1 < seg_start.size(); ++s)
+            fold_segment(seg_start[s], seg_start[s + 1]);
+    } else {
+        const std::size_t lo = seg_start.front();
+        std::vector<std::size_t> rounds;  // 轮起点 = assistant.tool_calls 消息下标
+        for (std::size_t k = lo; k < messages.size(); ++k)
+            if (messages[k].is_object() && messages[k].value("role", "") == "assistant" &&
+                messages[k].contains("tool_calls") && messages[k]["tool_calls"].is_array())
+                rounds.push_back(k);
+        if (rounds.size() <= kFoldKeepRounds) return plan;  // 不足保留数：无可折叠
+        plan.cut_begin = lo;
+        plan.cut_end = rounds[rounds.size() - kFoldKeepRounds];
+        absorb_old_digests(plan.cut_end);
+        fold_segment(lo, plan.cut_end);
     }
 
     // 组装 + 32KB 上限（批次三-10）：超限从最旧段开始把调用链降级为仅请求行

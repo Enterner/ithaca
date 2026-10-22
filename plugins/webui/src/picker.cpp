@@ -1,9 +1,10 @@
-// 原生选目录对话框（plugin/webui 的 UI 原语切片，唯一实现翻译单元）。
-// 对外导出 utf8_to_wide / wide_to_utf8 / pick_folder_dialog（声明见
-// include/webui_plugin.hpp）；对话框定位状态与两个钩子为本文件私有
-// （匿名命名空间），其他翻译单元不可见。
+// 原生选目录对话框（plugin/webui 的 UI 原语切片，唯一实现翻译单元）；
+// UTF-8 ↔ 宽字符转换用 nostos::kit::win（全仓唯一实现）。
+// 对话框定位状态与置顶钩子为本文件私有。
 
 #include "webui_plugin.hpp"
+
+#include <nostos/kit/win.hpp>  // nostos::kit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
 
 #include <objbase.h>   // CoTaskMemFree：释放 shell 返回的路径串
 #include <shlobj.h>    // SHCreateItemFromParsingName：选目录对话框起始目录
@@ -12,26 +13,6 @@
 #include <cwchar>  // wcscmp：视图窗口类名比对
 
 namespace vc_webui {
-
-std::wstring utf8_to_wide(const std::string& text) {
-    if (text.empty()) return {};
-    const int need = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
-                                         nullptr, 0);
-    std::wstring wide(need > 0 ? static_cast<std::size_t>(need) : 0, L'\0');
-    if (!wide.empty())
-        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), wide.data(),
-                            need);
-    return wide;
-}
-
-std::string wide_to_utf8(const wchar_t* text) {
-    if (text == nullptr) return {};
-    const int need = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
-    if (need <= 1) return {};  // 只剩结尾 NUL = 空串
-    std::string out(static_cast<std::size_t>(need - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text, -1, out.data(), need, nullptr, nullptr);
-    return out;
-}
 
 // 机制与踩坑说明见头文件声明处注释（宿主无主对话框的四个系统默认行为纠正）。
 std::string pick_folder_dialog(const std::string& title, const std::string& initial_dir) {
@@ -43,7 +24,7 @@ std::string pick_folder_dialog(const std::string& title, const std::string& init
     DWORD opts = 0;
     if (SUCCEEDED(fd->GetOptions(&opts)))
         fd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    fd->SetTitle(utf8_to_wide(title.empty() ? "选择工作文件夹" : title).c_str());
+    fd->SetTitle(nostos::kit::win::utf8_to_wide(title.empty() ? "选择工作文件夹" : title).c_str());
     fd->SetOkButtonLabel(L"选择文件夹");
     // 文件选择框置顶显示钩子
     HHOOK cbt = SetWindowsHookExW(WH_CBT,
@@ -58,7 +39,7 @@ std::string pick_folder_dialog(const std::string& title, const std::string& init
 
     if (!initial_dir.empty()) {
         IShellItem* item = nullptr;
-        if (SUCCEEDED(SHCreateItemFromParsingName(utf8_to_wide(initial_dir).c_str(), nullptr,
+        if (SUCCEEDED(SHCreateItemFromParsingName(nostos::kit::win::utf8_to_wide(initial_dir).c_str(), nullptr,
                                                   IID_PPV_ARGS(&item))) && item) {
             fd->SetDefaultFolder(item);
             item->Release();
@@ -69,7 +50,7 @@ std::string pick_folder_dialog(const std::string& title, const std::string& init
         if (SUCCEEDED(fd->GetResult(&sel)) && sel) {
             PWSTR ws = nullptr;
             if (SUCCEEDED(sel->GetDisplayName(SIGDN_FILESYSPATH, &ws))) {
-                result = wide_to_utf8(ws);
+                result = nostos::kit::win::wide_to_utf8(ws);
                 CoTaskMemFree(ws);
             }
             sel->Release();

@@ -7,7 +7,7 @@
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
 import { ref, reactive } from 'vue'
 import { NModal } from 'naive-ui'
-import { S, saveConfig, loadPluginUi } from '../store'
+import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx } from '../store'
 import { confirmDialog } from '../confirm'
 import McpSettings from './McpSettings.vue'
 import PluginSettings from './PluginSettings.vue'
@@ -82,19 +82,6 @@ async function onSave() {
   const r = await saveConfig(detail.value, curName.value)
   if (!r.ok) { alert('保存失败：' + (r.error || '未知错误')); return }   // 面板不关，本地状态不动
   show.value = false
-}
-function fmtCtx(n) {
-  if (n >= 1e6 && n % 1e6 === 0) return (n / 1e6) + 'M'
-  if (n >= 1e3 && n % 1e3 === 0) return (n / 1e3) + 'K'
-  return String(n)
-}
-function parseCtx(s) {
-  s = (s || '').trim().toUpperCase()
-  const mul = s.endsWith('M') ? 1e6 : s.endsWith('K') ? 1e3 : 1
-  const n = mul > 1 ? parseFloat(s.slice(0, -1)) : parseFloat(s)
-  if (!isFinite(n) || n <= 0) return null
-  const t = Math.round(n * mul)
-  return t >= 1024 ? t : null
 }
 </script>
 

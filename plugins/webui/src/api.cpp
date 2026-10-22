@@ -15,12 +15,6 @@
 
 namespace vc_webui {
 
-// ---- 输入与裁决 -------------------------------------------------------------
-
-bool WebuiPlugin::host_running_() const {
-    return true;  // 本插件活着 = 宿主活着（HTTP 服务在同进程内）
-}
-
 // 发送管线（select 线程共用；/api/input 与 /api/session/new 同走这一条）：
 // 落盘用户记录 + 延迟广播/开 turn。NOTE: handle 内禁 broadcast——EDEADLOCK
 // （踩过：POST /api/input 即 500）。
@@ -71,14 +65,13 @@ http::Response WebuiPlugin::api_decision_(const std::string& body) {
     // 只发 notice——in_flight_ 无人清零 ⇒ UI 永远卡「生成中」（踩过：停止键卡死）。
     // 用户主动终止 = UI 必须立即解锁。
     if (d == 4) in_flight_.store(false);
-    persist_status_();   // 取消 ⇒ 解锁（聚合徽标同步）
     nostos::kit::poster_submit(poster_, [this, turn, d, paths_json, msg] {
         const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str()};
         host_.emit(vc_api::turn_decision, &e);
     });
-    persist_status_();   // 裁决 ⇒ 提案清零（聚合徽标同步）
     pending_turn_ = -1;   // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后
                           // pending 恒为 false，前端决策坞以后端事实为准（防幻影）
+    persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：in_flight + pending）
     return json_resp({{"ok", true}});
 }
 

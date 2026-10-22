@@ -15,7 +15,7 @@
 // 不解析工具语义（工具自述经 list() 反射透传给 LLM）。
 //
 // 工具发现：env ITHACA_AGENT_TOOLS（svc 名清单，默认
-// "vc.tool.workspace,vc.tool.runner"），每次 turn 开始按清单取表。
+// "ithaca.tool.workspace,ithaca.tool.mcp,ithaca.tool.runner"），每次 turn 开始按清单取表。
 // 审批策略：suggest 逐条问 / auto-edit 编辑免批、命令逐条问 /
 // full-auto 全自动（沙箱由 runner 负责）。确认清单 = 模式映射（rebuild_confirm_），
 // ITHACA_PERMISSION_MODE 设默认，vc.permission.mode 事件热切。
@@ -220,7 +220,6 @@ struct AgentCtx {
     static std::string tool_last(const std::string& full_name);
     std::string exec(const Bound& b, const std::string& tool, const json& args);
     void exec_undo();
-    void tool_result_msg(const std::string& call_id, const std::string& out);
     void emit_tool_call(const std::string& name, const json& args);
     void emit_tool_result(const std::string& name, bool ok, const std::string& brief);
     void notice(const std::string& text, int sys = 0);
@@ -240,14 +239,6 @@ struct AgentCtx {
     // ---- 状态 -----------------------------------------------------------------------
 
     nostos::abi::Host host_{};
-    nostos::abi::Host::Subscription sub_input_{};
-    nostos::abi::Host::Subscription sub_decision_{};
-    nostos::abi::Host::Subscription sub_done_{};
-    nostos::abi::Host::Subscription sub_error_{};
-    nostos::abi::Host::Subscription sub_run_line_{};
-    nostos::abi::Host::Subscription sub_run_exit_{};
-    nostos::abi::Host::Subscription sub_session_{};
-    nostos::abi::Host::Subscription sub_mode_{};
 
     const vc_api::LlmTable* llm_ = nullptr;  // 每次 send_chat 前解析（provider 可被竞争顶掉）
     const vc_api::LlmTable* window_probed_llm_ = nullptr;  // 已向 info() 探过窗口的 provider 实例

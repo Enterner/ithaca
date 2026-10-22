@@ -22,6 +22,7 @@
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
 
+#include "../workspace/jail.hpp"   // vcws::Jail：cwd 容纳检查（全仓唯一路径 jail 实现）
 #include "../workspace/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
 #include <nostos/abi/plugin.hpp>
@@ -53,44 +54,6 @@ constexpr std::size_t kLineCap = 4 * 1024;       // 单行截断
 constexpr int kDefaultTimeoutMs = 600000;
 constexpr int kMaxTimeoutMs = 3600000;
 
-// runner 的 cwd 容纳检查（最小化）：规范化后必须仍落在工作区根内。
-// 与 workspace 的 jail.hpp 同族但更小（只需要目录前缀校验，不做保留设备名等
-// 文件级检查——那些是文件读写工具的职责）。
-class CwdJail {
-public:
-    explicit CwdJail(std::wstring root_wide) {
-        const DWORD need = ::GetFullPathNameW(root_wide.c_str(), 0, nullptr, nullptr);
-        std::wstring out(need, L'\0');
-        const DWORD copied = ::GetFullPathNameW(root_wide.c_str(), need, out.data(), nullptr);
-        out.resize(copied);
-        while (!out.empty() && (out.back() == L'\\' || out.back() == L'/')) out.pop_back();
-        root_ = std::move(out);
-    }
-
-    const std::wstring& root() const noexcept { return root_; }
-
-    bool resolve(const std::string& rel_utf8, std::wstring& out_full, std::string& err) const {
-        if (rel_utf8.empty()) { out_full = root_; return true; }
-        if (rel_utf8.size() > 512 || rel_utf8[0] == '/' || rel_utf8[0] == '\\' ||
-            (rel_utf8.size() >= 2 && rel_utf8[1] == ':')) {
-            err = "cwd 必须是工作区内相对路径";
-            return false;
-        }
-        if (rel_utf8.find("..") != std::string::npos) { err = "cwd 含 '..'（越界尝试）"; return false; }
-        const std::wstring joined = root_ + L"\\" + nostos::kit::win::utf8_to_wide(rel_utf8);
-        const DWORD need = ::GetFullPathNameW(joined.c_str(), 0, nullptr, nullptr);
-        std::wstring canon(need, L'\0');
-        const DWORD copied = ::GetFullPathNameW(joined.c_str(), need, canon.data(), nullptr);
-        canon.resize(copied);
-        if (canon.rfind(root_, 0) != 0) { err = "cwd 规范化后越出工作区根"; return false; }
-        out_full = canon;
-        return true;
-    }
-
-private:
-    std::wstring root_;
-};
-
 class RunnerPlugin {
 public:
     static constexpr std::string_view name = "vc.runner";
@@ -99,7 +62,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<CwdJail>(nostos::kit::win::utf8_to_wide(
+        jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(
             env != nullptr && *env != '\0' ? env : "."));
         // 权限模式默认值：webui 事件可热切；ITHACA_RUN_ALLOW
         // 白名单机制已移除（把关责任上移到权限模式与沙箱）
@@ -107,13 +70,13 @@ public:
             std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
         sandboxed_ = (mode_ == "full-auto");
-        // 工作区热切——重建 CwdJail 边界，立即生效
+        // 工作区热切——重建 jail 边界，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<CwdJail>(nostos::kit::win::utf8_to_wide(e->root));
+            jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
         // 权限模式：full-auto ⇒ 命令在 AppContainer 沙箱内执行；值未变化
@@ -235,11 +198,17 @@ private:
         // cwd：jail 内相对路径（空 = 根）
         std::wstring cwd_wide = jail_->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
+            // 纯点/斜杠路径（"."、" ./ "类）在 Jail 折叠后为空，语义 = 根本身；
+            // ".." 含转义企图，不在此列——必须走 resolve 被拒
+            bool dots_only = rel.find("..") == std::string::npos;
+            for (const char c : rel)
+                if (c != '.' && c != '/' && c != '\\') { dots_only = false; break; }
             std::string err;
             std::wstring full;
-            if (!jail_->resolve(rel, full, err))
+            std::string norm;
+            if (!dots_only && !jail_->resolve(rel, full, norm, err))
                 return json{{"ok", false}, {"error", "cwd 被拒: " + err}};
-            cwd_wide = full;
+            if (!dots_only) cwd_wide = full;
         }
 
         // dry_run：只解析 cwd，不执行——批准门（suggest/auto-edit 模式）的提案素材
@@ -424,7 +393,7 @@ private:
     vc_api::ToolTable table_{};
     std::string out_buf_;
 
-    std::unique_ptr<CwdJail> jail_;
+    std::unique_ptr<vcws::Jail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
     bool sandboxed_ = false;          // full-auto ⇒ AppContainer 沙箱 spawn
     bool degrade_warned_ = false;     // 沙箱降级通告只发一次（进程级）

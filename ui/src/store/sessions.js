@@ -19,16 +19,14 @@ export function resetView() {
 export function enterDraft(ws) {
   S.draft = { workspace: ws || '' }
   resetView()
-  S.curSession = ''; S.curWs = ws || ''; S.sessTitle = ''; S.sessRecords = 0
+  S.curSession = ''; S.curWs = ws || ''; S.sessTitle = ''
 }
-/** 丢弃草稿：内存态消失即结束，无任何清理动作。 */
-export function discardDraft() { S.draft = null }
 
 // ---- 注册表与元数据 ----------------------------------------------------------
 
 /** 会话元数据（/api/session 响应）对齐侧栏/顶栏/统计。 */
 export function sessionMeta(m) {
-  S.sessTitle = m.title; S.sessRecords = m.records
+  S.sessTitle = m.title
   S.fTurns = m.turns; S.fTokens = m.tokens
 }
 

@@ -85,7 +85,6 @@ void McpPlugin::start_server_(const std::string& name, const std::string& comman
     s->start_reader();
     s->start_stderr_drain();
 
-    std::string err;
     json resp;
     json init_params = {
         {"protocolVersion", "2024-11-05"},

@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ALL } from "./plugins.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function flag(name) {
@@ -30,9 +31,7 @@ fs.rmSync(stage, { recursive: true, force: true });
 
 // ---- 组装 ----
 const need = ["ithaca.exe", "ithaca_host.exe", "WebView2Loader.dll",
-              "llm_mock_plugin.dll", "llm_cloud_plugin.dll",
-              "workspace_plugin.dll", "runner_plugin.dll", "agent_plugin.dll", "mcp_plugin.dll",
-              "webui_plugin.dll"];
+              ...ALL.map((n) => `${n}_plugin.dll`)];
 for (const d of ["plugins", "web", "data/sessions", "data/workspace"]) {
     fs.mkdirSync(path.join(stage, d), { recursive: true });
 }

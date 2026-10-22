@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test as base } from "@playwright/test";
+import { MOCK_FULL } from "../../../scripts/plugins.mjs";
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -35,7 +36,7 @@ export function makeHost({ name, port, preset = "debug" }) {
             return f;
         },
         start() {
-            const plugins = ["llm_mock", "workspace", "runner", "agent", "webui", "mcp"]
+            const plugins = MOCK_FULL
                 .map((n) => path.join(bin, `${n}_plugin.dll`));
             proc = spawn(hostExe, ["--seconds", "300", ...plugins], {
                 cwd: ws,

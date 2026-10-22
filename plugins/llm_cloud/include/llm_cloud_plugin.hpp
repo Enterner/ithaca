@@ -141,7 +141,6 @@ private:
     nostos_poster poster_{};
     vc_api::LlmTable table_{};
     std::string info_buf_;
-    std::string out_buf_;  // （预留）同步出参缓冲
 
     std::string key_;  // 仅内存；不进日志
     std::wstring key_wide_;

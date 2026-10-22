@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MOCK_CHAIN } from "./plugins.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const preset = process.argv.includes("--preset") ? process.argv[process.argv.indexOf("--preset") + 1] : "debug";
@@ -25,7 +26,7 @@ env.ITHACA_SESSION_FILE = path.join(ws, "session.json");
 env.ITHACA_LLM_ACTIVE = "mock";   // mock 缺省休眠（非测试模式不发布），必须显式开启
 env.ITHACA_MOCK_DELAY_MS = "5";
 
-const plugins = ["llm_mock", "workspace", "runner", "agent"]
+const plugins = MOCK_CHAIN
     .map((n) => path.join(bin, `${n}_plugin.dll`))
     .filter((p) => fs.existsSync(p));
 if (plugins.length < 4) {

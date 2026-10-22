@@ -5,7 +5,7 @@
 //                    deactivate（全停全收）、set_model/info、剧本装载、NOSTOS_PLUGIN
 //   src/request.cpp  请求登记面：chat/chat_ex/cancel 的 thunk、注册表登记与回收
 //   src/replay.cpp   回放线程与产物回流：逐行 delta/推理事件/done 组包经 poster emit；
-//                    内置剧本文本与行切分工具
+//                    内置剧本文本
 //
 // 两种剧本形态：
 //   1) 内置文本剧本（冒烟）：4 行 delta + done（assistant_json = 纯 content）。
@@ -93,7 +93,6 @@ private:
     // ---- 回放线程与产物回流（src/replay.cpp）------------------------------------
 
     void replay_(int rid, const std::atomic<bool>& stopping);
-    static std::vector<std::string> split_lines(const std::string& s);
     std::string builtin_text_() const;
     void post_delta_(int rid, std::string text);
     void post_done_(int rid, const json& assistant, const json& usage);

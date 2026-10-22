@@ -49,7 +49,7 @@ private:
 };
 
 // chat.completion.chunk → 增量文本。role 块 / usage 块 / finish 块都返回空串——
-// 调用方跳过空增量即可。（DeepSeek reasoner 的 reasoning_content 自 起接入：见 delta_reasoning_of。）
+// 调用方跳过空增量即可。（DeepSeek reasoner 的 reasoning_content 增量见 delta_reasoning_of。）
 inline std::string delta_content_of(const json& chunk) {
     if (!chunk.is_object()) return {};
     const auto choices = chunk.find("choices");

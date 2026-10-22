@@ -48,7 +48,6 @@ export async function boot() {
   if (S.shell) {
     try {
       shellMsg({ type: 'ping', key: S.curSession })   // 消息通道自证（壳端日志）
-      window.__pingSent = true
     } catch (e) { console.error('shellMsg failed', e) }
   }
 }

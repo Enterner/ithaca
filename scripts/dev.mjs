@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MOCK_FULL, CLOUD_FULL } from "./plugins.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 function flag(name) {
@@ -92,10 +93,7 @@ if (!fs.existsSync(hostExe)) {
     process.exit(1);
 }
 // 供应商模式决定装载（产品拍板：mock 仅测试，两 llm 插件互斥——热切竞态随之消失）
-const plugins = [
-    provider === "mock" ? "llm_mock" : "llm_cloud",
-    "workspace", "runner", "agent", "mcp", "webui",
-]
+const plugins = (provider === "mock" ? MOCK_FULL : CLOUD_FULL)
     .map((n) => path.join(bin, `${n}_plugin.dll`))
     .filter((p) => fs.existsSync(p));
 

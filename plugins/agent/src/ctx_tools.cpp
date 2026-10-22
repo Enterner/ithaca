@@ -97,11 +97,6 @@ void AgentCtx::exec_undo() {
     notice("undo: 没有可用的撤销工具");
 }
 
-void AgentCtx::tool_result_msg(const std::string& call_id, const std::string& out) {
-    messages_.push_back(
-        json{{"role", "tool"}, {"tool_call_id", call_id}, {"content", out}});
-}
-
 void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // 调用参数摘要人话化：op 清单/读哪个文件/列哪个目录/搜什么词，而非原始
     // JSON（原始形态对人不可读，大 content 还会截断出半截转义——webui 的

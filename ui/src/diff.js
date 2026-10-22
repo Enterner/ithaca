@@ -28,6 +28,15 @@ function diffChangeRow(l, marker, pair) {
   return '<div class="' + (marker === '+' ? 'add' : 'del') + '"><span class="lnum">' +
          esc(m[1]) + '</span>' + inner + '</div>'
 }
+/** diff 尾行统计「（+A −R 行）」→ {add, rem}；无统计段 ⇒ null。 */
+export function diffStats(diffText) {
+  const m = diffText.match(/（\+(\d+) −(\d+) 行）/)
+  return m ? { add: +m[1], rem: +m[2] } : null
+}
+/** 新文件启发：hunk 从 0 行起（@@ -0,0 +）。 */
+export function diffIsNew(diffText) {
+  return diffText.includes('@@ -0,0 +')
+}
 export function diffFiles(diffText) {   // "── path（…）" 行 → 路径数组（逐文件批准用）
   const files = []
   diffText.split('\n').forEach((l) => {

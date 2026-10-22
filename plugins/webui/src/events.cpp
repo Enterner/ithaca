@@ -52,10 +52,7 @@ void WebuiPlugin::subscribe_() {
         }
         if (e->usage != nullptr) {
             json u = json::parse(e->usage, nullptr, false);
-            if (u.is_object()) {
-                usage = u;
-                token_total_ += u.value("total_tokens", 0LL);
-            }
+            if (u.is_object()) usage = u;
         }
         in_flight_.store(false);
         persist_status_();

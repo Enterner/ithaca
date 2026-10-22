@@ -169,9 +169,6 @@ void WebuiPlugin::switch_to_(const std::string& id) {
     });
 }
 
-/// GET /api/sessions → 注册表 sessions 数组（侧栏/工作区分组的唯一数据源）。
-http::Response WebuiPlugin::api_sessions_() { return json_resp(index_["sessions"]); }
-
 /// POST /api/session/new {message 必须, workspace?} → 创建即初始化：注册 + 切换
 /// + 首条落盘 + 开 turn 一次完成，返回 {ok, id, workspace}。裸调用 400。
 /// 副作用：写注册表/transcript、SSE session 广播、vc.session.load。
@@ -292,7 +289,10 @@ json WebuiPlugin::session_meta_() {
                 title = t;
             }
         }
-        if (type == "usage") tokens += r.value("total", 0LL);
+        // 累计 token = assistant 记录自带 usage（恒真形态——events.cpp 组记录时
+        // 必带）。这是前端「累计 tokens」显示的服务端源，重放后依然成立。
+        if (type == "assistant")
+            tokens += r.value("usage", json::object()).value("total_tokens", 0LL);
     }
     std::string ws;
     if (json* e = session_entry_(session_); e != nullptr)

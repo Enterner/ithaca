@@ -4,8 +4,7 @@
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { S } from '../store'
 import { mdHtml, esc } from '../md'
-import { diffHtml, diffFiles, stripHeads } from '../diff'
-import { decide } from '../store'
+import { diffHtml, stripHeads, diffStats, diffIsNew } from '../diff'
 
 const streamEl = ref(null)
 function scrollBottom() {
@@ -26,14 +25,13 @@ function toolHtml(rec) {
 }
 function appliedHtml(rec) {
   if (rec.diff) {
-    const m = rec.diff.match(/（\+(\d+) −(\d+) 行）/)
-    const st = m ? { a: +m[1], r: +m[2] } : null
+    const st = diffStats(rec.diff)
     const paths = rec.paths || []
     const single = paths.length <= 1
     const label = single ? (paths[0] || (rec.diff.match(/^── (.+)$/m) || ['', ''])[1] || '')
                          : paths.length + ' 个文件'
-    const tag = single && rec.diff.includes('@@ -0,0 +') ? ' <span class="ntag">新文件</span>' : ''
-    const stats = st ? ' <i class="add">+' + st.a + '</i> <i class="del">−' + st.r + '</i>' : ''
+    const tag = single && diffIsNew(rec.diff) ? ' <span class="ntag">新文件</span>' : ''
+    const stats = st ? ' <i class="add">+' + st.add + '</i> <i class="del">−' + st.rem + '</i>' : ''
     return '✔ 已更新 <b>' + esc(label) + '</b>' + tag + stats
   }
   return '✔ 已落盘 ' + esc((rec.paths || []).join(', '))
@@ -61,7 +59,6 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
     setTimeout(() => { b.textContent = '复制' }, 1200)
   }
 }
-function toggleSum(sum) { sum._open = !sum._open }
 </script>
 
 <template>
@@ -167,36 +164,6 @@ function toggleSum(sum) { sum._open = !sum._open }
         </div>
         <div v-if="S.live.text || !S.live.reasoning" class="who">Ithaca</div>
         <div v-if="S.live.text || !S.live.reasoning" class="msg a">{{ S.live.text }}<span class="cursor"></span></div>
-      </template>
-
-      <!-- 「本轮修改」汇总卡：每轮在自己的位置如实汇报该轮的修改 -->
-      <template v-for="(sum, si) in S.editSummaries" :key="'s' + si">
-        <div class="who">Ithaca · 本轮修改</div>
-        <div class="card edits" :class="{ revoked: sum.revoked }">
-          <div class="head">
-            <b>本轮修改 {{ sum.files.length }} 个文件</b>
-            <span class="stat">
-              <template v-if="sum.revoked">已撤销</template>
-              <template v-else>
-                <i class="add">+{{ sum.files.reduce((s, f) => s + f.add, 0) }}</i>
-                <i class="del">−{{ sum.files.reduce((s, f) => s + f.rem, 0) }}</i>
-              </template>
-            </span>
-          </div>
-          <template v-for="f in sum.files" :key="f.path">
-            <div class="erow" :class="{ open: f.open }" @click="f.open = !f.open">
-              <span class="chev">▶</span><span class="p">{{ f.path }}</span>
-              <span v-if="f.isNew" class="ntag">新文件</span>
-              <span class="st">
-                {{ f.n > 1 ? f.n + ' 次编辑 · ' : '' }}
-                <i class="add">+{{ f.add }}</i> <i class="del">−{{ f.rem }}</i>
-              </span>
-            </div>
-            <div class="ebody">
-              <div class="diff" v-html="diffHtml(f.applies.length === 1 ? f.applies[0].replace(/^── [^\n]*\n/, '') : f.applies.join(''))"></div>
-            </div>
-          </template>
-        </div>
       </template>
     </div>
   </div>

@@ -12,6 +12,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MOCK_EVAL } from "./plugins.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const preset = process.argv.includes("--preset")
@@ -80,7 +81,7 @@ async function runOnce(scenario, arm, tag) {
     fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ provider: "mock" }));
 
     const port = 8797;
-    const plugins = ["llm_mock", "workspace", "agent", "webui"]
+    const plugins = MOCK_EVAL
         .map((n) => path.join(bin, `${n}_plugin.dll`));
     const logLines = [];
     let proc = null;
@@ -227,6 +228,5 @@ for (const sc of scenarios) {
 
 fs.writeFileSync(path.join(outDir, "report.json"),
                  JSON.stringify({ generated: new Date().toISOString(), report }, null, 2));
-const fidelityLines = report.flatMap((r) => []);   // 占位：logLines 在 runOnce 内
 console.log(`\n报告: ${path.join(outDir, "report.json")}  总体: ${allSuccess ? "全部成功" : "存在失败"}`);
 process.exit(allSuccess ? 0 : 1);

@@ -5,6 +5,7 @@
 
 #include "mcp_plugin.hpp"
 
+#include <nostos/kit/piped_process.hpp>  // kit::LineSplitter：stdout 流式行分帧（全仓唯一实现）
 #include <nostos/kit/win.hpp>  // nostos::kit::win::utf8_to_wide：命令行/环境块宽字符化
 
 namespace vc_mcp {
@@ -146,19 +147,19 @@ void McpSession::start_reader() {
     alive.store(true);
     reader = std::thread([this] {
 #ifdef _WIN32
-        std::string buf;
+        // 行分帧用 kit::LineSplitter（全仓唯一流式切行实现；runner 同款）
+        nostos::kit::LineSplitter splitter;
         char ch[4096] = {};
         DWORD n = 0;
         for (;;) {
             if (!ReadFile(proc.stdout_r, ch, sizeof(ch), &n, nullptr) || n == 0) break;
-            buf.append(ch, n);
-            std::size_t nl;
-            while ((nl = buf.find('\n')) != std::string::npos) {
-                const std::string line = buf.substr(0, nl);
-                buf.erase(0, nl + 1);
+            splitter.feed(ch, n, [this](const std::string& line) {
                 if (!line.empty()) feed(line);
-            }
+            });
         }
+        splitter.flush([this](const std::string& line) {
+            if (!line.empty()) feed(line);
+        });
 #endif
         alive.store(false);
     });
