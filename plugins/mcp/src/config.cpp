@@ -65,6 +65,8 @@ void McpPlugin::load_config_and_start_() {
         if (s.contains("args") && s["args"].is_array())
             for (const auto& a : s["args"])
                 if (a.is_string()) args.push_back(a.get<std::string>());
+        // NOTE: deactivate 后到达的配置循环到此止步——不再对已清场的插件发起拉起
+        if (stopping_.load()) return;
         start_server_(name, command, args, s.value("env", json::object()),
                       s.value("cwd", ""));
     }
@@ -112,8 +114,9 @@ void McpPlugin::start_server_(const std::string& name, const std::string& comman
         sessions_.push_back(std::move(s));
     }
     emit_status_();
-    host_.log(2, "ithaca.mcp: server「" + name + "」就绪（工具 " +
-                     std::to_string(find_session_(name)->tools.size()) + " 个）");
+    if (const auto& live = find_session_(name))
+        host_.log(2, "ithaca.mcp: server「" + name + "」就绪（工具 " +
+                         std::to_string(live->tools.size()) + " 个）");
 }
 
 }  // namespace vc_mcp

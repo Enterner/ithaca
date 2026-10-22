@@ -135,7 +135,7 @@ private:
     // 插件 UI 贡献：向 webui 声明本插件设置 schema（握手/调用超时）
     void emit_ui_register_();
 
-    // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；宿主线程独占）---
+    // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；mu_ 串行化）-------
 
     void emit_status_();
 
@@ -146,18 +146,19 @@ private:
                                     int /*turn_id——MCP 无快照组语义，忽略*/,
                                     const char** out_json);
     std::string execute(const std::string& name, const std::string& args_json);
-    McpSession* find_session_(const std::string& name);
-    std::size_t live_count() const;
+    std::shared_ptr<McpSession> find_session_(const std::string& name);
 
     // ---- 状态 -------------------------------------------------------------------
 
     nostos::abi::Host host_{};
     nostos_poster poster_{};
-    std::atomic<bool> stopping_{false};   // 停用/再重载置位：过期的后台拉起结果丢弃
+    std::atomic<bool> stopping_{false};   // deactivate 置位：在飞的 reload 拉起/回发到此为止
     vc_api::ToolTable table_{};
-    std::string list_buf_, exec_buf_, status_buf_;   // 调用期有效（消费方同步拷贝）
+    std::string list_buf_, exec_buf_;   // 调用期有效（消费方同步拷贝）
     std::mutex mu_;                     // 保护 sessions_（activate/deactivate/reload 与 agent 线程交叠）
-    std::vector<std::unique_ptr<McpSession>> sessions_;
+    // shared_ptr：execute 持引用跨 reload——find 出的会话要在锁外做网络 I/O
+    //（≤120s），reload 线程 shutdown/clear 不得使在飞调用的对象失效
+    std::vector<std::shared_ptr<McpSession>> sessions_;
     std::vector<nostos::abi::Host::Subscription> subs_;
 
     // 超时可配置（webui 设置面板 plugins.mcp 节；默认 = 契约级 MVP 固定值）

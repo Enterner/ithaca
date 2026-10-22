@@ -626,7 +626,7 @@ void ActivateKey(const std::wstring& key) {
         if (!HttpGetOk(it->port, L"/api/health")) {
             it->state = ST_STOPPED;
             it->port = 0;
-            DeleteFileW((it->home + L"\port").c_str());
+            DeleteFileW((it->home + L"\\port").c_str());
         } else {
             g_page_port = (int)it->port;
             g_page_key = it->key;

@@ -15,13 +15,13 @@ function flag(name) {
     const i = process.argv.indexOf(name);
     return i >= 0 ? process.argv[i + 1] : undefined;
 }
-function run(cmd, args) {
+function run(cmd, args, opts = {}) {
     const env = { ...process.env };
     for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
         delete env[k];
         delete env[k.toLowerCase()];
     }
-    const r = spawnSync(cmd, args, { stdio: "inherit", shell: false, env, cwd: root });
+    const r = spawnSync(cmd, args, { stdio: "inherit", shell: false, env, cwd: root, ...opts });
     if (r.status !== 0) {
         console.error(`✗ ${cmd} ${args.join(" ")} 退出码 ${r.status}`);
         process.exit(r.status ?? 1);
@@ -36,6 +36,21 @@ if (!testOnly) {
     }
     run("cmake", ["--preset", preset]);
     run("cmake", ["--build", "--preset", preset]);
+    // 前端 dist：pack/dev/e2e 都直接消费 ui/dist——构建链必须产出它，否则换机
+    // 克隆后 npm run build 全绿而前端缺失/陈旧（dist 不入 git，见 .gitignore）。
+    // vite 经 node 直调（npm 是 .cmd 批处理，无 shell spawn 会被 Node 拒绝）
+    const uiDir = path.join(root, "ui");
+    if (!fs.existsSync(path.join(uiDir, "node_modules"))) {
+        const r = spawnSync(`"${process.execPath}" "${path.join(process.execPath, "..", "npm-cli.js")}" ci --prefix "${uiDir}"`,
+            { stdio: "inherit", shell: true, env: { ...process.env }, cwd: root });
+        if (r.status !== 0) {
+            console.error("✗ ui 依赖安装失败（npm ci）——先在 ui/ 下手动 npm ci");
+            process.exit(r.status ?? 1);
+        }
+    }
+    run(process.execPath,
+        [path.join(uiDir, "node_modules", "vite", "bin", "vite.js"), "build"],
+        { cwd: uiDir });
 }
 
 const tests = path.join(root, "build", preset, "bin", "ithaca_unit_tests.exe");

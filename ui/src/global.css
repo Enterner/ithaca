@@ -2,7 +2,7 @@
 :root {
   color-scheme: dark;
   --ink: #0B0E15; --panel: #12171F; --line: #222B3B;
-  --text: #E6EAF2; --dim: #8A94A8;
+  --text: #E6EAF2; --dim: #8A94A8; --dim2: #6B7688;
   --acc: #7C8CF8; --acc-from: #4F7CFF; --acc-to: #8B5CF6;
   --grad: linear-gradient(135deg, var(--acc-from), var(--acc-to));
   --cyan: #22D3EE; --teal: #2DD4BF;

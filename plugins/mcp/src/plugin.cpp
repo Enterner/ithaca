@@ -49,6 +49,9 @@ void McpPlugin::reload_async_() {
             sessions_.clear();
         }   // 锁只包清理；拉起（含 ≤30s 握手）绝不持锁——否则 discover/list
             // 与 execute 全部被堵死（踩过：自死锁，turn 卡在 user 记录）
+        // NOTE: detach 线程唯一的生命周期闸门——deactivate 后必须就此打住，
+        // 否则已清场的插件继续拉起 server 并回发状态（DLL 卸载即悬空执行）
+        if (stopping_.load()) return;
         load_config_and_start_();
         emit_status_();
     }).detach();
@@ -72,32 +75,39 @@ void McpPlugin::emit_ui_register_() {
     host_.emit(vc_api::ui_register, &e);
 }
 
-// ---- 状态回发 + 落盘（activate/reload/server 变化后调用；宿主线程独占）-----
+// ---- 状态回发 + 落盘（activate/reload/server 变化后调用；mu_ 串行化）-------
 
 void McpPlugin::emit_status_() {
-    json arr = json::array();
-    for (const auto& s : sessions_) {
-        std::vector<std::string> names;
-        for (const auto& t : s->tools)
-            if (t.is_object() && t.contains("name") && t["name"].is_string())
-                names.push_back(s->name + "__" + t["name"].get<std::string>());
-        arr.push_back(json{{"name", s->name},
-                           {"alive", s->alive.load()},
-                           {"tools", names},
-                           {"diag", s->diag}});
+    // 停用后不再回发/落盘：deactivate 清场期间在飞的 reload 线程可能走到这里
+    if (stopping_.load()) return;
+    std::string snapshot;
+    {
+        std::lock_guard lk(mu_);
+        json arr = json::array();
+        for (const auto& s : sessions_) {
+            std::vector<std::string> names;
+            for (const auto& t : s->tools)
+                if (t.is_object() && t.contains("name") && t["name"].is_string())
+                    names.push_back(s->name + "__" + t["name"].get<std::string>());
+            arr.push_back(json{{"name", s->name},
+                               {"alive", s->alive.load()},
+                               {"tools", names},
+                               {"diag", s->diag}});
+        }
+        snapshot = json{{"ok", true}, {"servers", arr}}.dump();
     }
-    status_buf_ = json{{"ok", true}, {"servers", arr}}.dump();
     if (const char* home = std::getenv("ITHACA_WEBUI_HOME");
         home != nullptr && *home != '\0') {
         std::error_code ec;
         fs::create_directories(home, ec);
         std::ofstream out(fs::path(home) / "mcp-status.json",
                           std::ios::binary | std::ios::trunc);
-        if (out) out << status_buf_;
+        if (out) out << snapshot;
     }
-    // 回发经 poster：调用方可能在后台线程（直接 emit 违反线程纪律）
-    nostos::kit::poster_submit(poster_, [this] {
-        const vc_api::McpStatus e{status_buf_.c_str()};
+    // 回发经 poster：调用方可能在后台线程（直接 emit 违反线程纪律）。
+    // 快照按值捕获——下一次回发可能已重写状态，事件携带的必须是本次看到的。
+    nostos::kit::poster_submit(poster_, [this, snapshot] {
+        const vc_api::McpStatus e{snapshot.c_str()};
         host_.emit(vc_api::mcp_status, &e);
     });
 }

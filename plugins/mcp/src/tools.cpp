@@ -47,14 +47,13 @@ std::string McpPlugin::execute(const std::string& name, const std::string& args_
     const auto us = name.find("__");
     if (us == std::string::npos)
         return json{{"ok", false}, {"error", "MCP 工具名非法: " + name}}.dump();
-    McpSession* s = find_session_(name.substr(0, us));
+    auto s = find_session_(name.substr(0, us));
     if (s == nullptr)
         return json{{"ok", false},
                     {"error", "MCP server 未连接: " + name.substr(0, us)}}.dump();
     json args = json::parse(args_json, nullptr, /*allow_exceptions=*/false);
     if (!args.is_object()) args = json::object();
 
-    std::string err;
     json resp;
     if (!s->request("tools/call",
                     {{"name", name.substr(us + 2)}, {"arguments", args}},
@@ -76,17 +75,11 @@ std::string McpPlugin::execute(const std::string& name, const std::string& args_
     return json{{"ok", true}, {"text", text}}.dump();
 }
 
-McpSession* McpPlugin::find_session_(const std::string& name) {
+std::shared_ptr<McpSession> McpPlugin::find_session_(const std::string& name) {
+    std::lock_guard lk(mu_);
     for (auto& s : sessions_)
-        if (s->name == name && s->alive.load()) return s.get();
+        if (s->name == name && s->alive.load()) return s;
     return nullptr;
-}
-
-std::size_t McpPlugin::live_count() const {
-    std::size_t n = 0;
-    for (const auto& s : sessions_)
-        if (s->alive.load()) ++n;
-    return n;
 }
 
 }  // namespace vc_mcp

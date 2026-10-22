@@ -89,11 +89,15 @@ struct AgentCtx {
 
     // 全局唯一计数（多槽/子代理共用：turn_id 与 request_id 跨 ctx 不冲突——
     // 事件/快照分组按 id 反查的根基）。request_id=0 保留给 agent 自发收口事件。
-    static int next_turn_no() { static std::atomic<int> seq{0}; return ++seq; }
+    // NOTE: 发号与恢复抬升必须共用同一个计数器——抬到旁路计数器等于没抬，
+    // 恢复会话后新 turn 仍从 1 重来，raw/ 归档按 turn 命名即跨会话互相覆盖
+    // （踩过：adopt 曾抬在第二个 static 上，恢复即撞号）。
+    static std::atomic<int>& turn_seq() { static std::atomic<int> seq{0}; return seq; }
+    static int next_turn_no() { return ++turn_seq(); }
     static int next_chat_seq() { static std::atomic<int> seq{0}; return ++seq; }
     // 会话恢复时把全局计数抬到恢复值之上（防新 turn 与历史 turn_id 撞号）
     static int adopt_turn_floor(int restored) {
-        static std::atomic<int> seq{0};
+        std::atomic<int>& seq = turn_seq();
         int cur = seq.load();
         while (restored > cur && !seq.compare_exchange_weak(cur, restored)) {}
         return restored;

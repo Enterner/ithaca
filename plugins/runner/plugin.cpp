@@ -9,7 +9,6 @@
 //   · 权限把关：三档权限模式——suggest/auto-edit 由 agent 确认清单把关
 //     （提案→decision），full-auto 在 AppContainer 沙箱内执行（读宽写窄：系统+
 //     PATH 工具目录只读、工作区可写、断网——机制详见 proc.hpp 沙箱段）；
-//     "cmake,ctest,ninja"）——这是缓解而非沙箱）；
 //   · cwd 限定 jail 内；dry_run=true 只解析并回显 would_run（批准门素材）；
 //   · 超时（默认 600s，上限 1h）⇒ TerminateProcess + 截断通告。
 //
@@ -22,6 +21,8 @@
 
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
+
+#include "../workspace/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/piped_process.hpp>
@@ -89,26 +90,6 @@ public:
 private:
     std::wstring root_;
 };
-
-// 子进程输出不保证 UTF-8（控制台代码页任意）；JSON 序列化要求合法 ⇒ 非法字节
-// 替换为 '?'（保守清洗，保证事件与工具结果可序列化）。
-inline std::string sanitize_utf8(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    std::size_t i = 0;
-    while (i < s.size()) {
-        const auto c = static_cast<unsigned char>(s[i]);
-        if (c < 0x80) { out.push_back(static_cast<char>(c)); ++i; continue; }
-        const int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 0;
-        bool ok = len != 0 && i + static_cast<std::size_t>(len) <= s.size();
-        for (int k = 1; ok && k < len; ++k)
-            ok = (static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]) & 0xC0) == 0x80;
-        if (!ok) { out.push_back('?'); ++i; continue; }
-        out.append(s, i, static_cast<std::size_t>(len));
-        i += static_cast<std::size_t>(len);
-    }
-    return out;
-}
 
 class RunnerPlugin {
 public:
@@ -193,7 +174,7 @@ private:
         std::thread poster;    // 唯一的投递线程：轮询缓冲 → poster 事件 + exit
         std::mutex mu;
         std::vector<std::pair<int, std::string>> buffered;  // (stream, line)
-        bool child_gone = false;   // 子进程已退出（读取端 EOF）
+        bool eof[2] = {false, false};  // 读取端 EOF（[0]=stdout [1]=stderr，mu 保护）
         std::atomic<std::size_t> bytes{0};
         std::atomic<bool> truncated{false};
         bool truncation_announced = false;
@@ -325,7 +306,7 @@ private:
             });
             {
                 std::lock_guard<std::mutex> lock(entry->mu);
-                entry->child_gone = true;  // 该流 EOF（两个流都 EOF ⇒ 子进程已退出）
+                entry->eof[stream] = true;  // 本流 EOF；双流皆 EOF ⇒ 输出终止
             }
         };
         if (!std::getenv("ITHACA_M5_NORD")) {  // 二分实验开关（保留诊断）
@@ -339,45 +320,84 @@ private:
     }
 
     // 投递线程（每 run 唯一的 poster 调用者）：轮询缓冲 → RunLine 事件；
-    // 子进程退出（或超时终止）⇒ 冲刷残余 → RunExit 事件。
+    // 进程确认终止且缓冲清空 ⇒ 终冲刷 → RunExit 事件。
     // 读取线程只缓冲（mu 保护），poster 投递集中在本线程——消除并发投递竞态。
     void pump_and_finish_(int run_id, RunEntry* entry, int timeout_ms) {
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        // 单行投递（主循环与收口终冲刷共用同一份净化/截断/超限纪律）
+        const auto emit_line = [this, run_id, entry](int stream, const std::string& raw) {
+            std::string line = vcws::utf8_sanitize(raw);
+            if (line.size() > kLineCap) line = line.substr(0, kLineCap) + "…";
+            if (entry->bytes.fetch_add(line.size() + 1) > kOutputCap) {
+                if (!entry->truncated.exchange(true)) {
+                    nostos::kit::poster_submit(poster_, [this, run_id] {
+                        const vc_api::RunLine e{
+                            run_id, 0, "（输出超过上限，后续内容已丢弃）"};
+                        host_.emit(vc_api::run_line, &e);
+                    });
+                }
+                return;
+            }
+            nostos::kit::poster_submit(poster_, [this, run_id, stream, line = std::move(line)] {
+                const vc_api::RunLine e{run_id, stream, line.c_str()};
+                host_.emit(vc_api::run_line, &e);
+            });
+        };
         bool killed = false;
+        bool proc_gone_seen = false;
+        std::chrono::steady_clock::time_point proc_gone_at{};
         for (;;) {
             if (stopping_.load(std::memory_order_relaxed) && !killed) {
                 TerminateProcess(entry->child->process, 0xFFFFFFFFu);
                 killed = true;
             }
             std::vector<std::pair<int, std::string>> take;
-            bool gone = false;
+            bool both_eof = false;
             {
                 std::lock_guard<std::mutex> lock(entry->mu);
                 take.swap(entry->buffered);
-                gone = entry->child_gone;
+                both_eof = entry->eof[0] && entry->eof[1];
             }
-            for (const auto& [stream, raw] : take) {
-                std::string line = sanitize_utf8(raw);
-                if (line.size() > kLineCap) line = line.substr(0, kLineCap) + "…";
-                if (entry->bytes.fetch_add(line.size() + 1) > kOutputCap) {
-                    if (!entry->truncated.exchange(true)) {
-                        nostos::kit::poster_submit(poster_, [this, run_id] {
-                            const vc_api::RunLine e{
-                                run_id, 0, "（输出超过上限，后续内容已丢弃）"};
-                            host_.emit(vc_api::run_line, &e);
-                        });
-                    }
-                    continue;
+            if (!proc_gone_seen &&
+                ::WaitForSingleObject(entry->child->process, 0) == WAIT_OBJECT_0) {
+                proc_gone_seen = true;
+                proc_gone_at = std::chrono::steady_clock::now();
+            }
+            for (const auto& [stream, raw] : take) emit_line(stream, raw);
+            // NOTE: 收口判据是双流 EOF，不是进程退出——子进程死后管道里可能还压着
+            // 未读数据（echo 后即退是最常见形态），读取端 EOF 才是"输出终止"的
+            // 可靠信号；进程退出只作兜底：流永不 EOF（孙进程继承句柄/无读取线程）
+            // 时经 2s 宽限再收口。两路都到齐才读退出码，否则 GetExitCodeProcess
+            // 会把 STILL_ACTIVE(259) 当真退出码（踩过：单 bool 任一流 EOF 即收口）。
+            if (both_eof && take.empty()) {
+                if (entry->rd_out.joinable()) entry->rd_out.join();
+                if (entry->rd_err.joinable()) entry->rd_err.join();
+                std::vector<std::pair<int, std::string>> tail;
+                {
+                    std::lock_guard<std::mutex> lock(entry->mu);
+                    tail.swap(entry->buffered);
                 }
-                nostos::kit::poster_submit(poster_, [this, run_id, stream, line = std::move(line)] {
-                    const vc_api::RunLine e{run_id, stream, line.c_str()};
-                    host_.emit(vc_api::run_line, &e);
-                });
-            }
-            if (gone && take.empty()) {  // 两个读取端都 EOF ⇒ 子进程已退出
+                for (const auto& [stream, raw] : tail) emit_line(stream, raw);
+                if (!proc_gone_seen)
+                    proc_gone_seen = ::WaitForSingleObject(
+                        entry->child->process, 2000) == WAIT_OBJECT_0;
                 DWORD code = 0xFFFFFFFFu;
-                GetExitCodeProcess(entry->child->process, &code);
+                if (proc_gone_seen) GetExitCodeProcess(entry->child->process, &code);
+                nostos::kit::poster_submit(poster_, [this, run_id, code] {
+                    const vc_api::RunExit e{run_id, code};
+                    host_.emit(vc_api::run_exit, &e);
+                });
+                break;
+            }
+            if (proc_gone_seen && !both_eof && take.empty() &&
+                std::chrono::steady_clock::now() - proc_gone_at >
+                    std::chrono::seconds(2)) {
+                // 宽限期到仍无 EOF：句柄被孙进程继承等病理场景——放弃残余输出收口
+                if (entry->rd_out.joinable()) entry->rd_out.detach();
+                if (entry->rd_err.joinable()) entry->rd_err.detach();
+                DWORD code = 0xFFFFFFFFu;
+                GetExitCodeProcess(entry->child->process, &code);  // proc_gone_seen ⇒ 已退出
                 nostos::kit::poster_submit(poster_, [this, run_id, code] {
                     const vc_api::RunExit e{run_id, code};
                     host_.emit(vc_api::run_exit, &e);
@@ -394,8 +414,6 @@ private:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        if (entry->rd_out.joinable()) entry->rd_out.join();
-        if (entry->rd_err.joinable()) entry->rd_err.join();
     }
 
     // ---- 状态 -----------------------------------------------------------------------

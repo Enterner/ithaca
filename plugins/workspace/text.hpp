@@ -43,6 +43,38 @@ inline std::string trim_utf8(const std::string& s, std::size_t cap) {
     return s.substr(0, n);
 }
 
+// UTF-8 清洗：非法字节替换为 replacement（子进程/外部字节流进 JSON 前的保守
+// 净化——nlohmann dump 对非法序列抛 type_error.316）。口径与 utf8_valid 一致
+// （overlong/代理区/>U+10FFFF 一律非法），区别只在处置是替换不是拒绝。
+inline std::string utf8_sanitize(const std::string& s, char replacement = '?') {
+    std::string out;
+    out.reserve(s.size());
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t len = 0;
+        if (c < 0x80) len = 1;
+        else if (c >= 0xC2 && c <= 0xDF) len = 2;
+        else if (c >= 0xE0 && c <= 0xEF) len = 3;
+        else if (c >= 0xF0 && c <= 0xF4) len = 4;
+        bool ok = len != 0 && i + len <= s.size();
+        for (std::size_t k = 1; ok && k < len; ++k)
+            if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) ok = false;
+        if (ok && len == 3 &&
+            ((c == 0xE0 && static_cast<unsigned char>(s[i + 1]) < 0xA0) ||
+             (c == 0xED && static_cast<unsigned char>(s[i + 1]) >= 0xA0)))
+            ok = false;
+        if (ok && len == 4 &&
+            ((c == 0xF0 && static_cast<unsigned char>(s[i + 1]) < 0x90) ||
+             (c == 0xF4 && static_cast<unsigned char>(s[i + 1]) > 0x8F)))
+            ok = false;
+        if (!ok) { out.push_back(replacement); ++i; continue; }
+        out.append(s, i, len);
+        i += len;
+    }
+    return out;
+}
+
 // 宽字符小写折叠（Windows 路径大小写不敏感语义；文件标识键统一用它的产物）。
 inline std::wstring wc_lower(std::wstring s) {
     for (wchar_t& c : s) c = static_cast<wchar_t>(towlower(c));

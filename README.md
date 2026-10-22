@@ -64,7 +64,8 @@ npm run build:release
 npm test                    # 单元测试（57 例）
 npm run selftest            # mock 全链路冒烟
 npm run regress             # 回归（selftest 两遍一致 + golden）
-npm run e2e                 # Web UI e2e（配置掩码/落盘/撤销/重启重放/SSE）
+npm run e2e:all             # Playwright e2e（API 契约 + UI 行为，tests/e2e/）
+npm run eval                # 上下文压缩 A/B 评测基准（改折叠逻辑后手动跑，不进 check 链）
 ```
 
 ## 打包
@@ -85,9 +86,9 @@ contract/   宿主与插件的公共契约（C ABI、事件与服务名——冻
 host/       通用宿主（ithaca_host.exe：装载插件、排水循环）
 shell/      Windows 桌面壳（WebView2 内嵌 Web UI）
 plugins/    agent 编排 / llm_cloud / llm_mock / runner / webui / workspace
-ui/         Vue 3 + Naive UI 前端（构建产物 dist/ 随仓库分发）
+ui/         Vue 3 + Naive UI 前端（dist/ 由 npm run build 生成，随包分发）
 tests/      单元测试 + 场景 + golden
-scripts/    任务脚本（build/dev/regress/e2e/pack，零依赖 .mjs）
+scripts/    任务脚本（build/dev/regress/pack，零依赖 .mjs）
 external/   nostos 内核（git 子模块）
 third_party/webview2/   微软 WebView2 SDK 必需子集（include + 加载器）
 docs/       设计文档
