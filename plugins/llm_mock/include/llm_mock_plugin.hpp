@@ -85,17 +85,19 @@ private:
 
     // ---- 请求登记面（src/request.cpp）-------------------------------------------
 
-    nostos_status chat_(int request_id, const char* messages_or_body);
+    // slot：body 携带的路由键（agent 子任务 = 子会话槽 turn_no，非 0）——回放
+    // 事件按槽单播回发（与 llm_cloud 对齐）；0 = 广播（主会话，迁移前行为）。
+    nostos_status chat_(int request_id, const char* messages_or_body, std::uint64_t slot);
     // worker 收尾回收：经 poster 回宿主线程 join + 擦表（自 erase 会析构
     // joinable thread => terminate；与 llm_cloud 同款纪律）
     void finish_request_(int rid);
 
     // ---- 回放线程与产物回流（src/replay.cpp）------------------------------------
 
-    void replay_(int rid, const std::atomic<bool>& stopping);
+    void replay_(int rid, std::uint64_t slot, const std::atomic<bool>& stopping);
     std::string builtin_text_() const;
-    void post_delta_(int rid, std::string text);
-    void post_done_(int rid, const json& assistant, const json& usage);
+    void post_delta_(int rid, std::uint64_t slot, std::string text);
+    void post_done_(int rid, std::uint64_t slot, const json& assistant, const json& usage);
 
     // ---- 状态 --------------------------------------------------------------------
 

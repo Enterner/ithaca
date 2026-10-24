@@ -22,3 +22,15 @@ export function mdHtml(text) {
   return s
 }
 export { esc }
+
+// 工具名 → 中文显示（对话流 ● 卡与右栏明细行共用）。read/list/search/run/
+// recall/task 的摘要已是自含动词的中文短句——显示时不再叠英文原名（英文函数名
+// 是给模型的，不进对话流）；旧数据 brief 还是原始 JSON（以 { 开头）时回退原名。
+// apply/undo 及未知工具（mcp 等）保留「中文名/原名 + 摘要」。
+const TOOL_BRIEF_SELF = new Set(['workspace.read', 'workspace.list', 'workspace.search',
+                                 'runner.run', 'context.recall', 'task'])
+const TOOL_LABELS = { 'workspace.apply': '编辑', 'workspace.undo_turn': '撤销' }
+export function toolLabel(tool, brief) {
+  if (TOOL_BRIEF_SELF.has(tool) && brief && !String(brief).startsWith('{')) return ''
+  return TOOL_LABELS[tool] || tool || ''
+}

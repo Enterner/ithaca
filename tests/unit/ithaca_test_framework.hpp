@@ -1,6 +1,6 @@
 #pragma once
-// ithaca 微型断言框架（与内核 nostos_test 的 tframe 同思路的本地版）：
-// 产品与插件的测试**不进内核 CI**（内核边界纪律），所以在产品仓自备一份。
+// ithaca 微型断言框架（极简自注册形态，仅 CHECK 断言一个概念）：
+// 产品与插件的测试**不进内核仓**（内核边界纪律），所以在产品仓自备一份。
 // 用法：VC_TEST("名字") { CHECK(cond); ... } —— 自注册，main 只调 vctest::run_all()。
 #include <cstdio>
 #include <string>

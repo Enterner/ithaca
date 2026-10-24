@@ -24,6 +24,7 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/win.hpp>
 
+#include <algorithm>  // std::count/clamp/max：read 行统计与分页参数收敛
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -41,7 +42,9 @@ namespace {
 
 using nlohmann::json;
 
-constexpr std::size_t kReadCap = 256 * 1024;   // read 的内容字节上限
+constexpr std::size_t kReadCap = 256 * 1024;   // read 的内容字节上限（切片前的整读护栏）
+constexpr int kReadLinesCap = 2000;            // read 单次返回行数上限（默认值 = 参数上限）
+constexpr int kReadLineCharCap = 2000;         // read 单行字符上限（超长行截断行尾）
 constexpr std::size_t kListEntriesCap = 500;   // list 条目上限
 constexpr int kListDepthCap = 6;               // list 递归深度上限
 constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
@@ -124,8 +127,19 @@ private:
         };
         json tools = json::array(
             {json{{"name", "read"},
-                  {"description", "读取工作区内文本文件（拒绝二进制；上限 256KB）"},
-                  {"schema", object_with({{"path", schema_path}}, json::array({"path"}))}},
+                  {"description",
+                   "读取工作区内文本文件（拒绝二进制）。返回带行号（行首 = 文件真实"
+                   "行号 + 制表符），标注出处直接引用行号即可。一次调用即可读满 "
+                   "2000 行，无需手动分小块；更大的文件用 offset（起始行号，1 起）/"
+                   "limit（行数）续读，单行超 2000 字符截断行尾。返回带 total_lines，"
+                   "可据此判断是否读全"},
+                  {"schema", object_with(
+                                 {{"path", schema_path},
+                                  {"offset", {{"type", "integer"},
+                                              {"description", "起始行号（1 起，默认 1）"}}},
+                                  {"limit", {{"type", "integer"},
+                                             {"description", "本次读取行数（默认/上限 2000）"}}}},
+                                 json::array({"path"}))}},
              json{{"name", "list"},
                   {"description", "列出目录内容（含子目录，默认深度 3，上限 500 条）"},
                   {"schema", object_with(
@@ -199,12 +213,52 @@ private:
             return json{{"ok", false}, {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm}};
         if (!vcws::utf8_valid(content))
             return json{{"ok", false}, {"error", "不是有效的 UTF-8 文本: " + norm}};
-        bool truncated = false;
-        if (content.size() > kReadCap) {
-            content = vcws::trim_utf8(content, kReadCap);
+        // 按行分页（限制作用在「读」的动作上，结果内联一次回灌、无二次回查协议）。
+        // 行按 \n 切、行内 \r 原样保留——重组与原文逐字节一致，apply 的精确块
+        // 匹配不受分页展示影响。行首带行号（cat -n 形态，编号 = 文件真实行号，
+        // 随 offset 对齐）：模型标注行号直接引用，不再需要逐符号 search 定位
+        // （踩过：正文无行号 ⇒ 子代理为标行号发起几十次单符号搜索）
+        const bool empty = content.empty();
+        const int total_lines =
+            empty ? 0
+                  : static_cast<int>(std::count(content.begin(), content.end(), '\n')) +
+                        (content.back() == '\n' ? 0 : 1);
+        const int offset = std::max(args.value("offset", 1), 1);
+        const int limit =
+            std::clamp(args.value("limit", kReadLinesCap), 1, kReadLinesCap);
+        std::string picked;
+        bool line_truncated = false;
+        if (!empty && offset <= total_lines) {
+            std::size_t pos = 0;
+            // 跳过前 offset-1 行
+            for (int ln = 1; ln < offset && pos != std::string::npos; ++ln)
+                pos = content.find('\n', pos) + 1;
+            for (int ln = 0; ln < limit && pos < content.size(); ++ln) {
+                const std::size_t end = content.find('\n', pos);
+                const std::size_t stop = end == std::string::npos ? content.size() : end + 1;
+                std::string line = content.substr(pos, stop - pos);
+                if (line.size() > static_cast<std::size_t>(kReadLineCharCap) + 1) {
+                    // 保留行尾 \n：截断到字符边界再补回（行内容仍以换行收尾）
+                    line = vcws::trim_utf8(line, static_cast<std::size_t>(kReadLineCharCap));
+                    line += "\n";
+                    line_truncated = true;
+                }
+                picked += std::to_string(offset + ln) + "\t" + line;
+                pos = stop;
+            }
+        }
+        bool truncated = line_truncated || offset + limit <= total_lines;
+        if (picked.size() > kReadCap) {
+            picked = vcws::trim_utf8(picked, kReadCap);
             truncated = true;
         }
-        return json{{"ok", true}, {"path", norm}, {"content", content}, {"truncated", truncated}};
+        return json{{"ok", true},
+                    {"path", norm},
+                    {"content", picked},
+                    {"truncated", truncated},
+                    {"total_lines", total_lines},
+                    {"offset", offset},
+                    {"limit", limit}};
     }
 
     json list_tool(const json& args) {

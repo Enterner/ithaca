@@ -24,6 +24,16 @@ export const S = reactive({
   viewer: null,
   // 待裁决提案（ZCode 式决策坞：只在实时提案上出现，重放的历史提案不阻塞输入）
   pending: null,
+  // 挂起等待（子代理/后台任务进行中）：waitingSince = 「等待 N 个…」通告到达
+  // 时刻（挂起条计时用）；waitingLeft = 尚未核销的挂起数（tool 结果逐个核销）。
+  // 纯前端可视态——取消走 /api/decision 4（agent 级联取消在途子请求）。
+  waitingSince: 0, waitingLeft: 0,
+  // 子代理过程视图：subView = 选中的子会话槽 turn_no（0 = 关闭）；subLive =
+  // 各子代理的流式增量缓冲（turn_id → 累积文本；delta 只广播不落盘，重放无此节）；
+  // subDone = 已收口的子代理（turn_id → true，主会话 spawn 卡的状态判定）；
+  // subDetail = 各子代理的工具明细实时缓冲（turn_id → 记录数组；明细落独立
+  // 存档，主会话不收，SSE 实时推送 + 右栏打开时 /api/agent-log 拉历史合并）。
+  subView: 0, subLive: {}, subDone: {}, subDetail: {},
   inputText: '',
   booted: false,
   shell: false,   // 多实例壳模式：会话清单来自 /api/shell/sessions，切换 = 整页导航

@@ -12,18 +12,18 @@ namespace vc_llm_mock {
 
 // ---- 回放线程（rid 标签制：请求态随线程走，插件成员里没有"当前请求"）-----------
 
-void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
+void MockPlugin::replay_(int rid, std::uint64_t slot, const std::atomic<bool>& stopping) {
     // 模拟深度思考增量（推理显示链路可测；真实推理来自 deepseek-reasoner）
     {
         const std::string think = "（模拟深度思考）正在分析请求并组织回答…";
-        nostos::kit::poster_submit(poster_, [this, rid, text = think] {
+        nostos::kit::poster_submit(poster_, [this, rid, slot, text = think] {
             const vc_api::LlmReasoning e{rid, text.c_str()};
-            host_.emit(vc_api::llm_reasoning, &e);
+            host_.emit_slot(vc_api::llm_reasoning, slot, &e);
         });
     }
     if (turns_mode_) {
         if (turn_index_ >= turns_.size()) {  // 剧本耗尽
-            post_done_(rid,
+            post_done_(rid, slot,
                        json{{"role", "assistant"}, {"content", "__MOCK_EXHAUSTED__"}},
                        json{{"prompt_tokens", 1}, {"completion_tokens", 1}, {"total_tokens", 2}});
             finish_request_(rid);
@@ -39,7 +39,7 @@ void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
         for (std::size_t i = 0; i < content.size(); ++i) {
             const std::size_t nl = content.find('\n', i);
             const std::size_t end = nl == std::string::npos ? content.size() : nl + 1;
-            post_delta_(rid, content.substr(i, end - i));
+            post_delta_(rid, slot, content.substr(i, end - i));
             i = end - 1;
             if (stopping.load(std::memory_order_relaxed)) { finish_request_(rid); return; }
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
@@ -52,7 +52,7 @@ void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
                              : json{{"prompt_tokens", 100 * static_cast<int>(one)},
                                     {"completion_tokens", 10 * static_cast<int>(one)},
                                     {"total_tokens", 110 * static_cast<int>(one)}};
-            post_done_(rid, turn, usage);
+            post_done_(rid, slot, turn, usage);
         }
         finish_request_(rid);
         return;
@@ -61,11 +61,11 @@ void MockPlugin::replay_(int rid, const std::atomic<bool>& stopping) {
     // 内置文本剧本（冒烟形态）
     for (const std::string& line : script_) {
         if (stopping.load(std::memory_order_relaxed)) { finish_request_(rid); return; }
-        post_delta_(rid, line);
+        post_delta_(rid, slot, line);
         std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
     }
     if (!stopping.load(std::memory_order_relaxed))
-        post_done_(rid, json{{"role", "assistant"}, {"content", builtin_text_()}},
+        post_done_(rid, slot, json{{"role", "assistant"}, {"content", builtin_text_()}},
                    json{{"prompt_tokens", 40},
                         {"completion_tokens", 10},
                         {"total_tokens", 50}});
@@ -80,19 +80,20 @@ std::string MockPlugin::builtin_text_() const {
 
 // ---- 事件回流（kit::poster_submit；载荷所有权/失败回收都在助手内）--------------
 
-void MockPlugin::post_delta_(int rid, std::string text) {
-    nostos::kit::poster_submit(poster_, [this, rid, text = std::move(text)] {
+// 产物回流：slot=0 广播（主会话）；slot!=0 单播（子会话私有，不进广播通道）。
+void MockPlugin::post_delta_(int rid, std::uint64_t slot, std::string text) {
+    nostos::kit::poster_submit(poster_, [this, rid, slot, text = std::move(text)] {
         const vc_api::LlmDelta e{rid, text.c_str()};
-        host_.emit(vc_api::llm_delta, &e);
+        host_.emit_slot(vc_api::llm_delta, slot, &e);
     });
 }
 
-void MockPlugin::post_done_(int rid, const json& assistant, const json& usage) {
+void MockPlugin::post_done_(int rid, std::uint64_t slot, const json& assistant, const json& usage) {
     const std::string assistant_json = assistant.dump();
     const std::string usage_json = usage.dump();
-    nostos::kit::poster_submit(poster_, [this, rid, s = assistant_json, u = usage_json] {
+    nostos::kit::poster_submit(poster_, [this, rid, slot, s = assistant_json, u = usage_json] {
         const vc_api::LlmDone e{rid, s.c_str(), u.c_str()};
-        host_.emit(vc_api::llm_done, &e);
+        host_.emit_slot(vc_api::llm_done, slot, &e);
     });
 }
 

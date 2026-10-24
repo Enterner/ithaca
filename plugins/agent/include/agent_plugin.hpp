@@ -1,11 +1,12 @@
-// plugin/agent —— turn 状态机 + 泛型工具桥 + 批准流 + 异步长任务归流。
+// plugin/agent —— turn 状态机 + 泛型工具桥 + 批准流 + 异步长任务归流 + 子代理派发。
 //
 // 翻译单元职责地图（按功能切片，AgentCtx/AgentPlugin 声明为本文件）：
-//   src/plugin.cpp       —— AgentPlugin 薄壳（订阅分发到 ctx_）、manifest + NOSTOS_PLUGIN 入口
+//   src/plugin.cpp       —— AgentPlugin 薄壳（订阅分发到 ctx_ 与子代理扇出）、manifest + NOSTOS_PLUGIN 入口
 //   src/ctx_events.cpp   —— 事件处理器（输入/done/错误/裁决）
-//   src/ctx_turn.cpp     —— turn 状态机（分发循环/收口/上下文压缩执行）
+//   src/ctx_turn.cpp     —— turn 状态机（分发循环/收口/上下文压缩执行/子代理 spawn 与回灌）
 //   src/ctx_session.cpp  —— 会话持久化（state.json 读写）+ mission 任务目标卡
 //   src/ctx_tools.cpp    —— 工具桥（discover/exec/undo/事件回发）+ 工具调用/结果人话摘要
+//   src/agent_types.cpp  —— 子代理类型注册表（.ithaca/agent/*.md 快照加载 + 内置 general）
 //
 // **死锁纪律（本插件的最高规则）**：事件处理器内禁止同步等待任何事件——提案后
 // 即返回，decision 事件驱动状态机恢复；turn 进行中的输入入队。单线程事件环里
@@ -47,7 +48,9 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
@@ -79,6 +82,30 @@ using nlohmann::json;
 // （多段折叠 → 单段折叠 → 无可折叠），上界防未知消息形态下「折叠不够 → 仍超窗」
 // 无限打转。
 inline constexpr int kMaxOverwindowResend = 2;
+
+// 子代理护栏：并发上限远低于 provider 的并发额度（llm_cloud kMaxConcurrent=8，
+// 父请求共享同一额度）；轮数上限防失控任务——子代理不做上下文压缩，长循环只会
+// 单调膨胀。
+inline constexpr int kMaxChildren = 4;
+inline constexpr int kMaxChildRounds = 30;
+
+// 内容型工具结果（read / task）的内联豁免上限（对齐主流形态：限制收口在工具
+// 侧——read 按行分页、task 报告即子代理的最终产出——结果一次内联回灌，不再走
+// 「外置→recall 分页」二跳；二者超 4KB 即外置会让主/子会话为拿到正文打几十次
+// recall，踩过）。超本上限的极端结果仍外置可回查。96KB 给行号前缀（每行 ≈7
+// 字节）留出余量，代码类内容 ≈25K token 上下；runner 输出等其他工具维持 4KB
+// 通用闸（构建日志类本就该瘦着进上下文）。
+inline constexpr std::size_t kContentInlineCap = 96 * 1024;
+
+// 子代理类型（一个 .ithaca/agent/<名>.md；内置 general 恒在，同名 md 覆盖之）。
+// 类型只管提示词与工具面——子代理用哪个模型走配置链路（当前主模型的 sub_model
+// 经 vc.llm.set_active 子档案下发），类型不设 model 字段。
+struct AgentType {
+    std::string name;
+    std::string description;         // 进 task 工具自述的类型说明
+    std::vector<std::string> tools;  // 工具集白名单（去 ithaca.tool. 前缀的集合名）；空 = 继承父全量
+    std::string prompt;              // 正文 = 子代理的 system prompt
+};
 
 // ---- AgentCtx：一个会话槽的全部状态与方法 ----------------------------------
 // M2 对象化：把写死在插件单例里的会话状态机抽成可实例化结构。子代理（父 turn
@@ -120,24 +147,39 @@ struct AgentCtx {
     };
 
     // ---- 事件处理器（全部在宿主线程；禁止同步等待）-----------------------------
-
+    // 每个入口 try/catch 包体（*_impl）→ fail_unexpected_ 收口：turn 机器任何
+    // 一段的意外异常都转成本 turn 的失败终态，绝不悬停 TurnActive（悬停无任何
+    // 用户可见痕迹，重启后整段交换从历史蒸发）。内核 ABI 边界已按订阅者隔离
+    // 异常并落日志，本层兜底负责把异常变成可见的 turn 终态。
     void on_input(const char* text);
     void on_done(const vc_api::LlmDone& e);
     void on_llm_error(const vc_api::LlmError& e);
     void on_decision(const vc_api::TurnDecision& d);
+    void on_input_impl(const char* text);
+    void on_done_impl(const vc_api::LlmDone& e);
+    void on_llm_error_impl(const vc_api::LlmError& e);
+    void on_decision_impl(const vc_api::TurnDecision& d);
 
     // ---- turn 状态机 ------------------------------------------------------------
     // （方法体在 src/ctx_turn.cpp）
 
     void begin_turn(const std::string& text);
     void send_chat();
+    void send_chat_impl();
     // 工具分发循环：跳过已完成项；确认类工具挂起等 decision；异步工具登记等归流；
-    // 全部完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。
+    // 全部完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。单条分发的异常由循环兜底转错误结果
+    // （内核 ABI 边界已按订阅者隔离异常并落日志，但本 ctx 状态机仍会停在抛点
+    // ⇒ send_chat 永不执行 ⇒ turn 悬停，见 dispatch_one_）。
     void dispatch_loop();
+    // 单条调用分发（dispatch_loop 的 try 保护体）。返回 true = 挂起即返（提案
+    // 等裁决 / 回灌已就地发车）——调用方必须跳过循环尾，语义对齐重构前这些
+    // 路径的 return（尾部的 append_results_and_continue 在挂起期绝不能再跑）。
+    bool dispatch_one_(ToolCallCtx& ctx);
     // 全部工具调用完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。
     // 上下文压缩阶段一：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
     // 确定性模板摘要 + ref（锚点逐字节保留；失败 2KB 内保留详细错误，ref 兜底全量）
     void append_results_and_continue();
+    void append_results_and_continue_impl();
     // 原始工具结果外置：raw/<turn>_<seq>_<tool>.json；失败 ⇒ 空 ref（调用方内联截断）
     std::string spool_raw(const std::string& tool, const std::string& result);
     // context.recall：ref 校验（纯文件名）→ 读归档 → provenance 包装
@@ -145,6 +187,7 @@ struct AgentCtx {
     // run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口（正在等 decision 时不收口，
     // 收口延迟到 decision 恢复后的 dispatch_loop 的时机修正）
     void try_finish_tools();
+    void try_finish_tools_impl();
     // 确认清单 = 权限模式映射：suggest 逐条问 / auto-edit 编辑免批 /
     // full-auto 全自动（沙箱兜底在 runner）
     void rebuild_confirm_();
@@ -154,9 +197,20 @@ struct AgentCtx {
     // 安全）。request_id=0 是「agent 自发」哨兵：自己订阅的 on_llm_error 靠
     // request_id != inflight_ 忽略它，否则同步派发重入 cleanup 会把排队输入排空两次。
     void fail_turn(const std::string& why);
+    // turn 机器统一异常兜底（事件处理器入口 catch 体 / 回灌与发送原语的 catch 体）：
+    // 重掷当前异常取 what() 后转 fail_turn 终态（错误卡 + 状态机复位）。compress
+    // 在途先清——异常语境下摘要请求不可信，悬着会让 cleanup_turn_ 早退继续悬停；
+    // 迟到的摘要回包按 request_id 失配丢弃。noexcept：兜底绝不成为新故障源，
+    // fail_turn 链自身再抛就强制回 Idle（host_.log 不抛，可安全留痕）。
+    void fail_unexpected_() noexcept;
     // 状态机复位（不含对外事件——收口事件由调用方决定发不发）：持久化 + 回
     // Idle + 清工具现场 + 排队输入依次开新 turn（栈深有界）。
     void cleanup_turn_();
+    // 清理悬挂的工具回合尾巴（cleanup_turn_ 开头调用）：异常/取消收口时
+    // messages_ 可能停在分发中途——尾部是「assistant 带 tool_calls 却没有全部
+    // tool 应答」，这种序列落盘后进下次请求即 provider 400 且每轮复现成错误
+    // 循环。从尾部弹出未闭合的 exchange（tool 应答 → 其所属 assistant）。
+    void truncate_dangling_tool_exchange_();
 
     // ---- 上下文压缩阶段二 ------------
 
@@ -196,6 +250,26 @@ struct AgentCtx {
     // 排队输入 flush：队首开新 turn（栈深有界——一次一条，其余等该 turn 收口再取）。
     void flush_queued_inputs_();
 
+    // 本槽事件订阅（begin_turn 开头调用，slot 路由约定见 contract/vc_events.hpp）：
+    // 归属本槽的 run/LLM 事件单播直达本 ctx——替代迁移前的总线广播 + request_id
+    // 反查扇出。主会话额外把本槽 run 事件重播到广播通道（webui/selftest 的 UI
+    // 消费路径不变）；子会话槽事件不重播——不可见性由"订阅才可达"保证。
+    void subscribe_turn_slot_();
+
+    // ---- 子代理派发（spawn/回灌在 ctx_turn.cpp；类型加载在 agent_types.cpp）------
+
+    // task 内置工具：校验参数与护栏 → 起子 ctx 事件驱动跑循环 → 登记在途。
+    // 返回 false = 拒绝（result 已写好，调用方 emit 后继续分发）；true = 已 spawn
+    // 或已在同帧内经回调就地收口（begin_turn 同步失败的路径）。
+    bool spawn_child_(std::size_t index, ToolCallCtx& call);
+    // 子代理完成回调（宿主线程，可能在子事件处理栈内同步派发）：用量并入本会话、
+    // 结果写回 calls_[index]、统一收口判定。收口门槛 = 全部 call 完成 + 无在途子
+    // + 无在途 run——与 try_finish_tools 同一门。
+    void on_child_finished_(std::size_t index, AgentCtx* child, bool ok,
+                            const std::string& report, int turns);
+    // 类型清单重载（主会话每 turn 开始）：目录快照扫描 + 内置 general 兜底。
+    void load_agent_types_();
+
     // ---- 会话持久化与 mission 卡（src/ctx_session.cpp）--------------------------
 
     // M6 session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
@@ -222,6 +296,11 @@ struct AgentCtx {
     void exec_undo();
     void emit_tool_call(const std::string& name, const json& args);
     void emit_tool_result(const std::string& name, bool ok, const std::string& brief);
+    // 子代理活动广播（vc.subagent.event，主会话工作记录视图——落 transcript 不进
+    // 上下文）：spawn/delta/tool/收口各点共用此出口。turn_id 显式传入——UI 按
+    // turn_id 把同一子代理的记录分组（spawn 卡点开右栏即按它过滤），必须与子
+    // ctx 自身发出的记录同号：spawn 发生在父 ctx，须传子的 turn_no 而非父的
+    void emit_subagent_(int turn_id, int phase, const char* tool, const std::string& text);
     void notice(const std::string& text, int sys = 0);
     static std::string trim(const std::string& s, std::size_t cap);
     // apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空，回退）
@@ -296,10 +375,27 @@ struct AgentCtx {
         std::size_t index = 0;
         json args;
     } pending_;
+
+    // ---- 子代理（M2 预留的多实例化：状态全部随 ctx 走，方法只触自身与 host_）----
+
+    int depth_ = 0;              // 0 = 主会话；≥1 = 子代理（不注册 task，嵌套深度 1）
+    bool subagent_ = false;      // 子代理形态：免批/不压缩/不持久化/quiet/请求体带 subagent 标志
+    std::string system_prompt_;  // 非空 ⇒ begin_turn 以此替代默认 kSystemPrompt（子代理 = 类型 prompt）
+    int rounds_ = 0;             // 本 turn 的 LLM 轮数（子代理以 kMaxChildRounds 封顶）
+    // 子代理完成回调：spawn 时设置；finish_turn（成功）/fail_turn（失败）带回报告
+    // 与轮数。回调在宿主线程同步执行，内部禁止等待（死锁纪律同事件处理器）。
+    std::function<void(bool ok, const std::string& report, int turns)> on_finished_;
+    std::vector<std::unique_ptr<AgentCtx>> children_;  // 仅主会话持有；随 turn 现场清亡（cleanup_turn_）
+    std::set<std::size_t> child_pends_;  // 在途子代理的 calls_ 下标（回调回灌结果并摘除）
+    std::vector<AgentType> types_;       // 子代理类型清单（主会话每 turn 开始重载）
+    std::string agent_dir_;              // 类型目录（<工作区>/.ithaca/agent；env ITHACA_AGENT_DIR 可覆盖）
+    // 本 turn 的槽订阅（run_line/run_exit；子会话另加 llm_done/llm_error）——
+    // begin_turn 换订（上 turn 槽已无事件源），ctx 析构随 RAII 释放
+    std::vector<nostos::abi::Host::Subscription> slot_subs_;
 };  // AgentCtx
 
-// AgentPlugin：薄壳——订阅分发到 ctx_（M2 对象化后 v1 单槽；多会话槽/子代理
-// 只是 AgentCtx 的多实例）
+// AgentPlugin：薄壳——订阅分发到 ctx_ 与子代理扇出（M2 对象化后 v1 单主槽；
+// 多会话槽只是 AgentPlugin 的多实例）
 class AgentPlugin {
 public:
     static constexpr std::string_view name = "vc.agent";
@@ -317,13 +413,12 @@ private:
 
     nostos::abi::Host::Subscription sub_input_{};
     nostos::abi::Host::Subscription sub_decision_{};
-    nostos::abi::Host::Subscription sub_done_{};
-    nostos::abi::Host::Subscription sub_error_{};
-    nostos::abi::Host::Subscription sub_run_line_{};
-    nostos::abi::Host::Subscription sub_run_exit_{};
+    nostos::abi::Host::Subscription sub_done_{};    // 主会话槽（广播）；子会话走各自槽订阅
+    nostos::abi::Host::Subscription sub_error_{};   // 同上
     nostos::abi::Host::Subscription sub_session_{};
     nostos::abi::Host::Subscription sub_mode_{};
-    nostos::abi::Host::Subscription sub_llm_set_{};   // 模型窗口事件（阶段二动态阈值）
+    nostos::abi::Host::Subscription sub_llm_set_{};     // 模型窗口事件（阶段二动态阈值）
+    nostos::abi::Host::Subscription sub_workspace_{};   // 工作区热切（子代理类型目录跟随）
 };
 
 }  // namespace vc_agent

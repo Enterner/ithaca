@@ -261,6 +261,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         return json_resp({{"records", arr}, {"next", records_.size()}});
     }
     if (m == "GET" && t == "/api/session") return json_resp(session_meta_());
+    if (m == "GET" && t.rfind("/api/agent-log", 0) == 0) return api_agent_log_(req.target);
     if (m == "GET" && t == "/api/sessions") return json_resp(index_["sessions"]);
     if (m == "POST" && t == "/api/session/new") return api_session_new_(req.body);
     if (m == "POST" && t == "/api/session/open") return api_session_open_(req.body);

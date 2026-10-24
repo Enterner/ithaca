@@ -31,7 +31,7 @@ nostos_status CloudPlugin::chat_(int request_id, const char* messages_json) {
         host_.log(4, "ithaca.llm.cloud: messages_json 必须是数组");
         return NOSTOS_ERR_INVALID_ARG;
     }
-    return start_(request_id, std::move(messages), json());
+    return start_(request_id, std::move(messages), json(), 0);
 }
 
 nostos_status CloudPlugin::chat_ex_(int request_id, const char* body_json) {
@@ -43,23 +43,41 @@ nostos_status CloudPlugin::chat_ex_(int request_id, const char* body_json) {
     }
     json messages = doc.value("messages", json::array());
     json tools = doc.contains("tools") ? doc["tools"] : json();
-    return start_(request_id, std::move(messages), std::move(tools));
+    // slot 路由键：agent 子任务 = 子会话槽 turn_no（非 0）。非 0 ⇒ 凭据走子档案
+    // 且事件按槽单播；0 = 主会话请求，广播回发（与迁移前行为一致）。
+    const std::uint64_t slot = doc.value("slot", static_cast<std::uint64_t>(0));
+    return start_(request_id, std::move(messages), std::move(tools), slot);
 }
 
-nostos_status CloudPlugin::start_(int request_id, json messages, json tools) {
+nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
+                                  std::uint64_t slot) {
     // 凭据/端点/模型快照进 worker 闭包：provider 热切只影响后续请求。快照在锁内
     // 一次取齐——并发在途与热切并存时，worker 手里的凭据/端点/模型是自洽的一份，
-    // 不存在跨线程读竞态。
+    // 不存在跨线程读竞态。子会话请求（slot!=0）且子档案齐全 ⇒ 按子档案发起（跨
+    // provider 派遣的唯一通路）；档案缺失回落主档案——"子用主模型"是默认形态。
     std::string model, key_utf8, base_utf8;
     std::wstring key_wide, base_wide;
+    bool sub_used = false;
     {
         std::lock_guard<std::mutex> lock(model_mu_);
-        model = model_;
-        key_utf8 = key_;
-        key_wide = key_wide_;
-        base_utf8 = base_utf8_;
-        base_wide = base_wide_;
+        if (slot != 0 && !sub_model_.empty() && !sub_key_.empty() &&
+            !sub_base_utf8_.empty()) {
+            model = sub_model_;
+            key_utf8 = sub_key_;
+            key_wide = sub_key_wide_;
+            base_utf8 = sub_base_utf8_;
+            base_wide = sub_base_wide_;
+            sub_used = true;
+        } else {
+            model = model_;
+            key_utf8 = key_;
+            key_wide = key_wide_;
+            base_utf8 = base_utf8_;
+            base_wide = base_wide_;
+        }
     }
+    if (slot != 0 && !sub_used)
+        host_.log(1, "ithaca.llm.cloud: 子会话请求无子档案，回落主模型 " + model);
     if (key_utf8.empty()) {
         host_.log(4, "ithaca.llm.cloud: ITHACA_API_KEY 未设置——无法发起云端请求");
         return NOSTOS_ERR_FAILED;
@@ -79,9 +97,9 @@ nostos_status CloudPlugin::start_(int request_id, json messages, json tools) {
         RequestWorker& w = requests_[request_id];
         w.th = std::thread([this, request_id, messages = std::move(messages),
                             tools = std::move(tools), model, key_utf8, key_wide,
-                            base_utf8, base_wide, workerp = &w]() mutable {
+                            base_utf8, base_wide, slot, workerp = &w]() mutable {
             run_request_(request_id, std::move(messages), std::move(tools), model,
-                         key_utf8, key_wide, base_utf8, base_wide,
+                         key_utf8, key_wide, base_utf8, base_wide, slot,
                          workerp->stopping, workerp->active);
         });
     }

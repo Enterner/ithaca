@@ -12,7 +12,6 @@
 - 评测 `npm run eval`（上下文压缩 A/B 指标）——不进 check 链，改折叠逻辑后手动跑
 
 ## 测试纪律（写/改任何测试必踩；全文与裁决：docs/测试规范.md）
-
 写或改任何测试（C++ 单测 / API e2e / UI e2e / 回归 golden）前，先读 docs/测试规范.md
 （单一事实源：分层、host fixture、等待纪律、接线与已知坑），不要另起炉灶。
 
@@ -66,16 +65,17 @@
 
 **Never（不做）**：
 - 未经用户明确要求写测试用例
-- 直接改动内核仓 `D:\CODE\c++\nostos`（可优化点只进观察文档，见强制规则第 5 条）
+- 直接改动内核仓 `E:\Project\c++\nostos`（可优化点只进观察文档，见强制规则第 5 条）
 - 破坏性 git 操作（reset --hard 丢弃工作区、force push）除非用户明确要求
 - 新建 doc 文件直接放 `docs/` 根下——**默认一律 `docs/temp/`**（用户明确要求放 docs/
   时才例外；更新既有 docs/ 文档不受此限）
 
 ## 项目事实（避免每次重新发现）
 
-- 内核仓：`D:\CODE\c++\nostos`（独立 git 仓，有完整提交历史；工作区根下其余部分均为
-  测试与消费方，见该根 README 的「内核边界」）。
+- 内核仓：`E:\Project\c++\nostos`（独立 git 仓，有完整提交历史；旧路径 D:\CODE\c++\nostos
+  已废弃。产品仓经 `external/nostos` 子模块消费；内核无自带测试套件，验证随本仓
+  `npm run build` 与内核独立构建进行）。
 - 本仓 git：本地提交，不推远端。
-- 内核 CI 必须全绿：`nostos_test`——构建前清 HTTP_PROXY/http_proxy 等大小写成对代理
-  变量（否则 MSBuild 抛 MSB6001）；Node 侧防御已内置在 `scripts/build.mjs`。
+- MSBuild 对大小写成对代理变量敏感（HTTP_PROXY/http_proxy 同时在环境会抛
+  MSB6001）——构建前清掉；Node 侧防御已内置在 `scripts/build.mjs`。
 - 机器本地指令链：`.gitignore` 排除 AGENTS.md 与 docs/（clone 不携带规范，属刻意设计）。

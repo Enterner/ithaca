@@ -36,6 +36,10 @@ inline bool utf8_valid(const std::string& s) {
 }
 
 // 截断到 cap 字节以内，且不劈开多字节码点（回退到码点首字节边界）。
+// 前提：s 本身是完整 UTF-8（从合法字符串截断而来）。对「切片恰好 = cap」不校验
+// 尾部——调用方自做字节切片（如 exec_recall 的分页窗口）必须自洽边界，否则尾部
+// 残留不完整码点会让下游 dump() 抛 type_error.316（异常被 emit catch-all 吞掉
+// ⇒ turn 挂死，踩过）。
 inline std::string trim_utf8(const std::string& s, std::size_t cap) {
     if (s.size() <= cap) return s;
     std::size_t n = cap;

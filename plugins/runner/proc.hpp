@@ -235,9 +235,25 @@ inline void sandbox_grant_path_dirs(PSID sid) {
     }
 }
 
-// 子进程环境块：继承宿主环境，TEMP/TMP/LOCALAPPDATA 重定向到容器可写目录
+// 子进程环境块：继承宿主环境，TEMP/TMP/LOCALAPPDATA 重定向到容器可写目录。
+// PATH 追加 Git for Windows 的 usr\bin（宿主 PATH 常只有 Git\cmd——git.exe 在而
+// ls/grep/wc 不在；模型写 Unix 命令是高频形态，cmd 包装后由子进程 PATH 找它们）
 inline bool sandbox_env_block(const std::wstring& temp_dir, std::wstring& out,
                               std::string& err) {
+    std::wstring git_bin;
+    {
+        wchar_t gfull[MAX_PATH * 4];
+        if (::SearchPathW(nullptr, L"git.exe", nullptr, MAX_PATH * 4, gfull, nullptr) != 0) {
+            std::wstring g(gfull);
+            const std::size_t s1 = g.find_last_of(L"\\/");
+            if (s1 != std::wstring::npos) {
+                g.resize(s1);   // <git>\cmd
+                const std::size_t s2 = g.find_last_of(L"\\/");
+                if (s2 != std::wstring::npos)
+                    git_bin = g.substr(0, s2) + L"\\usr\\bin";
+            }
+        }
+    }
     LPWCH envs = ::GetEnvironmentStringsW();
     if (envs == nullptr) {
         err = "GetEnvironmentStrings 失败";
@@ -252,6 +268,10 @@ inline bool sandbox_env_block(const std::wstring& temp_dir, std::wstring& out,
             std::wstring key = e.substr(0, eq);
             for (wchar_t& c : key) c = static_cast<wchar_t>(towupper(c));
             if (key == L"TEMP" || key == L"TMP" || key == L"LOCALAPPDATA") continue;
+            if (key == L"PATH" && !git_bin.empty()) {
+                out += e + L";" + git_bin + L'\0';
+                continue;
+            }
         }
         out += e;
         out += L'\0';
@@ -314,6 +334,41 @@ inline bool sandbox_lowbox_token(PSID sid, HANDLE& out, std::string& err) {
     return true;
 }
 
+// 沙箱拉起前的可执行文件定位：低盒令牌下 CreateProcessAsUserW 对裸名命令的
+// PATH 搜索不可靠（实测一律 ERROR_FILE_NOT_FOUND(2)——令牌视角与宿主环境差异，
+// 踩过：子代理在 full-auto 下 grep/wc/ls/python 全部起不来）。先在宿主环境里
+// SearchPath 定位成全路径再拉起；定位失败给出点名错误（宿主 PATH 无此工具），
+// 不再是笼统的 CreateProcess(2)。返回空 = 定位失败（err 已写）。
+inline std::wstring sandbox_locate_exe(const std::wstring& cmdline, std::string& err) {
+    // 提取首个 token：引号形态取到闭引号，否则取到首个空白
+    std::wstring exe;
+    std::size_t rest_at = cmdline.size();
+    if (!cmdline.empty() && cmdline[0] == L'"') {
+        const std::size_t close = cmdline.find(L'"', 1);
+        exe = cmdline.substr(1, close == std::wstring::npos ? std::wstring::npos
+                                                            : close - 1);
+        rest_at = close == std::wstring::npos ? cmdline.size() : close + 1;
+    } else {
+        const std::size_t sp = cmdline.find_first_of(L" \t");
+        exe = cmdline.substr(0, sp);
+        rest_at = sp == std::wstring::npos ? cmdline.size() : sp;
+    }
+    if (exe.empty()) {
+        err = "命令为空";
+        return L"";
+    }
+    wchar_t full[MAX_PATH * 4];
+    // 无扩展名先补 .exe（SearchPath 不自动补）；带扩展名按原名找（.bat/.cmd 交给
+    // CreateProcess 的自动包装，失败走既有逃生舱）
+    const bool has_ext = exe.find_last_of(L'.') != std::wstring::npos;
+    const std::wstring probe = has_ext ? exe : exe + L".exe";
+    if (::SearchPathW(nullptr, probe.c_str(), nullptr, MAX_PATH * 4, full, nullptr) == 0) {
+        err = "找不到命令: " + nostos::kit::win::wide_to_utf8(exe.c_str()) +
+              "（宿主 PATH 中无此可执行文件）";
+        return L"";
+    }
+    return full;
+}
 inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPipes& out,
                   std::string& err, bool sandboxed = false, bool* degraded = nullptr) {
     if (!sandboxed) {
@@ -400,13 +455,34 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
 
     PROCESS_INFORMATION pi{};
     std::wstring cmd = cmdline;  // CreateProcess* 可能改写缓冲 ⇒ 传可写副本
+    // 沙箱下先定位可执行文件（理由见 sandbox_locate_exe）：lpApplicationName 用
+    // 全路径，命令行原样传递（子进程 argv[0] 仍是用户原始形态）。降级路径走普通
+    // CreateProcessW 的宿主 PATH 搜索，无需定位
+    std::wstring exe_full;
+    if (sandboxed && !degraded_now) {
+        exe_full = sandbox_locate_exe(cmdline, err);
+        if (exe_full.empty()) {
+            CloseHandle(so.read_end);
+            CloseHandle(se.read_end);
+            CloseHandle(so.write_end);
+            CloseHandle(se.write_end);
+            if (lowbox != nullptr) ::CloseHandle(lowbox);
+            if (attr_list) {
+                ::DeleteProcThreadAttributeList(attr_list);
+                ::HeapFree(::GetProcessHeap(), 0, attr_list);
+            }
+            return false;
+        }
+    }
     const BOOL ok =
         have_lowbox
-            ? ::CreateProcessAsUserW(lowbox, nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                                     flags, env_block.data(),
+            ? ::CreateProcessAsUserW(lowbox, exe_full.empty() ? nullptr : exe_full.c_str(),
+                                     cmd.data(), nullptr, nullptr, TRUE, flags,
+                                     env_block.data(),
                                      cwd_w.empty() ? nullptr : cwd_w.c_str(),
                                      &siex.StartupInfo, &pi)
-            : ::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, flags,
+            : ::CreateProcessW(exe_full.empty() ? nullptr : exe_full.c_str(), cmd.data(),
+                               nullptr, nullptr, TRUE, flags,
                                (sandboxed && !degraded_now) ? env_block.data() : nullptr,
                                cwd_w.empty() ? nullptr : cwd_w.c_str(),
                                &siex.StartupInfo, &pi);

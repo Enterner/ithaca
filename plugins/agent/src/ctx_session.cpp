@@ -5,6 +5,8 @@
 
 #include "agent_plugin.hpp"
 
+#include <algorithm>  // std::max：turns 记全局计数器高水位
+
 #include <cerrno>  // errno：落盘失败的系统层原因
 
 #include <chrono>  // std::chrono：落盘瞬时锁重试等待
@@ -52,7 +54,11 @@ void AgentCtx::persist_session_() {
                       {"completion_tokens", usage_completion_},
                       {"total_tokens", usage_total_},
                       {"cache_tokens", usage_cache_}};
-        json doc = {{"turns", turn_no_},
+        // turns = 全局 turn 计数器高水位（含本 turn 派出的子代理消耗的号段），
+        // 而非主会话轮号——恢复地板据此抬升；只记主轮号会让重启后的新子代理
+        // 复用历史 transcript 里子代理的 turn_id，UI 按 turn_id 分组即新旧混组
+        // （踩过：新 spawn 卡被上一个进程的完成卡标记为「已结束」）
+        json doc = {{"turns", std::max(turn_no_, turn_seq().load())},
                     {"usage", usage},
                     {"last_prompt_tokens", last_prompt_tokens_},
                     {"messages", messages_}};

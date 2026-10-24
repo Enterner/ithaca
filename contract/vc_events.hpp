@@ -5,6 +5,11 @@
 // **指针/字符串只在本次回调期间有效，要留存必须拷贝**（ABI 纪律第五条）。
 // 事件载荷经 raw 通道跨界：发方 emit(id, const void*)，收方按本头布局读取。
 // 字段只在尾部追加。
+//
+// slot 路由约定（nostos on_slot/emit_slot，内核 58dc137 起）：ithaca 的 slot =
+// 会话槽 turn_no（agent 插件全局发号器，跨主/子会话不撞）。多实例私有事件
+// （子代理的 LLM 事件族、run.line/exit）按槽单播；主会话对外可见的事件留在
+// 广播通道（slot=0）——子代理不可见性由"订阅才可达"保证，不再靠载荷标志。
 #include <nostos/event.hpp>
 
 #include <cstdint>
@@ -45,6 +50,9 @@ struct LlmDelta {
     static constexpr std::string_view name = "vc.llm.delta";
     int request_id = 0;
     const char* text = nullptr;  // UTF-8，调用期有效
+    // 已废弃（slot 路由替代，布局保留）：子代理请求的事件现按 slot=turn_no 单播，
+    // 不进广播通道——本字段恒为 0，生产者不再回填，消费方不得读取。
+    int subagent = 0;
 };
 
 // 深度思考增量（推理模型如 deepseek-reasoner 的 reasoning_content 流）。
@@ -53,6 +61,8 @@ struct LlmReasoning {
     static constexpr std::string_view name = "vc.llm.reasoning";
     int request_id = 0;
     const char* text = nullptr;  // UTF-8，调用期有效
+    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    int subagent = 0;
 };
 
 // 一轮对话正常结束。assistant_json = 完整的 assistant 消息（含可能的 tool_calls）：
@@ -69,6 +79,8 @@ struct LlmDone {
     int request_id = 0;
     const char* assistant_json = nullptr;
     const char* usage = nullptr;
+    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    int subagent = 0;
 };
 
 // 一轮对话失败。code 沿用 nostos_status 值域；message 点名原因（调用期有效）。
@@ -77,6 +89,8 @@ struct LlmError {
     int request_id = 0;
     int code = 0;
     const char* message = nullptr;
+    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    int subagent = 0;
 };
 
 // 工具调用/结果的展示事件（agent → tui）。
@@ -141,11 +155,15 @@ struct RunLine {
     int run_id = 0;
     int stream = 0;  // 0=stdout 1=stderr
     const char* text = nullptr;
+    // 路由（slot 路由约定）：本事件按 slot = 发起 run 的会话槽 turn_id 单播——
+    // 只有归属 ctx 收得到；主会话槽的行由 agent 重播到广播通道供 UI 消费。
+    // 子代理槽的行不再出现在父会话 UI（slot 路由前本字段无隔离能力，踩过）。
 };
 struct RunExit {
     static constexpr std::string_view name = "vc.run.exit";
     int run_id = 0;
     unsigned int exit_code = 0;
+    // 路由：同 RunLine（slot = 发起 run 的会话槽 turn_id）。
 };
 
 // 状态栏级提示（任意 → tui）。level：0=trace 1=debug 2=info 3=warn 4=error。
@@ -195,6 +213,14 @@ struct LlmSetActive {
     // 当前模型上下文窗口（tokens；0 = 未知）——agent 据此做 0.9×W 动态压缩阈值。
     // 旧生产者组合下为 0（消费方回退兜底阈值）。
     int context_window = 0;
+    // 尾部追加（子 agent）：子 agent 模型档案三元组——webui 从当前主模型的
+    // sub_model 配置解析出目标供应商的模型/Key/Base URL 随本事件下发；provider
+    // 对 body 带 "subagent":true 的请求改用这组凭据发起（svc 单槽互斥下跨
+    // provider 派遣的唯一通路）。任一为 null/空 = 无子档案，子请求回落主模型。
+    // 均调用期有效，要留存必须拷贝。
+    const char* sub_model = nullptr;
+    const char* sub_key = nullptr;
+    const char* sub_base_url = nullptr;
 };
 
 inline constexpr std::uint64_t turn_input = nostos::event_id<TurnInput>;
@@ -235,6 +261,25 @@ struct McpStatus {
     static constexpr std::string_view name = "vc.mcp.status";
     const char* json = nullptr;
 };
+
+// 子代理活动（agent → webui，广播）：主会话的工作记录视图——落 transcript 供
+// UI 展示与重放，但**不进任何 LLM 上下文**（父上下文只收 task 工具的最终结果，
+// 子会话的 messages 隔离在子 AgentCtx）。消费方按 turn_id（= 子会话槽 turn_no）
+// 聚合为单个子代理的卡片与过程视图；delta 只广播不落盘（与 assistant_delta
+// 同款——实时性归流式，重放不需要逐字过程）。
+// phase：0=spawn 1=delta 2=tool_call 3=tool_result 4=done 5=fail。
+// tool：spawn=类型名 / tool_call|tool_result=工具全名；其余为 null。
+// text：spawn=任务描述 / delta=流式增量 / tool_*=参数与结果人话摘要 /
+//       done=最终报告（截断）/ fail=失败原因。均调用期有效，要留存必须拷贝。
+struct SubagentEvent {
+    static constexpr std::string_view name = "vc.subagent.event";
+    int turn_id = 0;
+    int phase = 0;
+    const char* tool = nullptr;
+    const char* text = nullptr;
+};
+
+inline constexpr std::uint64_t subagent_event = nostos::event_id<SubagentEvent>;
 
 inline constexpr std::uint64_t mcp_reload = nostos::event_id<McpReload>;
 inline constexpr std::uint64_t mcp_status = nostos::event_id<McpStatus>;

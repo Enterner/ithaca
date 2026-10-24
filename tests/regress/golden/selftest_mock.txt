@@ -26,19 +26,19 @@ selftest[workspace] read 确认已删除: ✓
     done#1
     [tool] workspace.apply ok=1 ithaca_smoke/m3.txt（新文件） +1 −0
     done#2
-    [tool] workspace.read ok=1 ithaca_smoke/m3.txt · 13 字节
+    [tool] workspace.read ok=1 ithaca_smoke/m3.txt · 15 字节
     done#3
     [tool] workspace.apply ok=1 ithaca_smoke/m3.txt +1 −1
     delta#4: M3 场景完成
     done#4
   [日志 2] ithaca.agent: turn #1 完成（tokens total 1100）
     done#5
-    [tool] runner.run ok=1 exit -1
+    [tool] runner.run ok=1 已转后台（run#1）
     [tool] runner.run ok=0 exit 1｜BUILD FAILED 
     done#6
     [tool] workspace.apply ok=1 ithaca_smoke/fix.txt（新文件） +1 −0
     done#7
-    [tool] runner.run ok=1 exit -1
+    [tool] runner.run ok=1 已转后台（run#2）
     [tool] runner.run ok=1 exit 0｜BUILD OK
     delta#8: M5 场景完成
     done#8

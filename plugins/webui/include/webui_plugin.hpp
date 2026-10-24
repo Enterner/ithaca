@@ -102,6 +102,13 @@ private:
     void record_(json rec);
     void load_transcript_();
     void open_transcript_();
+    // 子代理工作明细存档（ZCode 式独立存放，src/sessions.cpp）：sessions/agents/
+    // <会话id>/agent_<turn>.jsonl 追加写 + SSE 广播——明细不进主 transcript，
+    // 主会话只留状态卡；右栏过程视图经 /api/agent-log 按需拉取，行号 seq 单调
+    // （重启按现存行数续接），前端据此合并「拉取历史」与「实时增量」不重不漏
+    void agent_log_append_(int turn_id, const json& rec);
+    void close_agent_logs_();
+    http::Response api_agent_log_(const std::string& target);
 
     // ---- 配置（src/config.cpp）----------------------------------------------------
 
@@ -172,6 +179,10 @@ private:
     json config_ = json::object();
     std::vector<json> records_;      // 会话记录（内存镜像 = 重放源）
     std::ofstream out_{};            // transcript 追加写
+    // 子代理明细存档的写句柄与序号水位（宿主线程串行化，事件回调专用；
+    // 会话切换/删除时 close_agent_logs_ 统一收口）
+    std::map<int, std::ofstream> agent_logs_;
+    std::map<int, long long> agent_log_seq_;
     int pending_turn_ = -1;          // 待裁决提案的 turn_id
     json index_ = json::object();          // 会话注册表（工作区分组，
     std::string host_workspace_;           // 宿主工作目录（新会话归属）

@@ -14,6 +14,45 @@ namespace vcagent {
 
 using nlohmann::json;
 
+// task 内置工具名（子代理派发；对齐 opencode 的 task 工具）。agent 插件内置，
+// 不经工具表——dispatch_loop 在 find_bound 之前拦截。
+inline constexpr const char* kTaskTool = "task";
+
+// task 工具自述：类型清单进 description（模型据此选 subagent_type）。
+// NOTE: 逐层显式构造而非整体初始化列表——嵌套初始化列表有歧义归一规则（某层
+// 元素不是两元素对组 ⇒ 整层退化成数组而非对象），错位后无编译期信号，只在运行期
+// 以畸形 tools 自述爆雷（踩过：排序比较器按 function.name 取值即挂死）。
+inline json build_task_tool_json(const std::vector<std::string>& type_names) {
+    std::string types;
+    for (const auto& t : type_names) {
+        if (!types.empty()) types += " / ";
+        types += t;
+    }
+    json params = json::object();
+    params["type"] = "object";
+    params["properties"] = json{
+        {"description",
+         {{"type", "string"}, {"description", "子任务摘要（3-5 词，供展示）"}}},
+        {"prompt",
+         {{"type", "string"},
+          {"description",
+           "给子代理的完整任务指令（必须自包含：背景、目标、完成标准——子代理"
+           "看不到本次对话的其他内容）"}}},
+        {"subagent_type",
+         {{"type", "string"}, {"description", "子代理类型（可选，默认 general）"}}}};
+    params["required"] = json::array({"description", "prompt"});
+    json fn = json::object();
+    fn["name"] = kTaskTool;
+    fn["description"] =
+        std::string("派发一个子代理去执行独立子任务（它有自己的上下文与工具面，不能再派生"
+                    "子代理），其最终报告作为本工具结果返回。适合边界清晰、可独立交办的子任务"
+                    "（聚焦检索/代码审查/批量机械修改）；需要与用户交互或依赖本对话上下文的"
+                    "工作不要派发。可用类型: ") +
+        types;
+    fn["parameters"] = std::move(params);
+    return json{{"type", "function"}, {"function", std::move(fn)}};
+}
+
 inline std::string toolset_of_svc(const std::string& svc) {
     const std::string prefix = "ithaca.tool.";
     if (svc.rfind(prefix, 0) == 0) return svc.substr(prefix.size());

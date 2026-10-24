@@ -5,6 +5,7 @@
 #include "../include/llm_cloud_plugin.hpp"
 #include "../sse.hpp"  // vcllm::SseParser 等纯逻辑件（tests/unit 直接引用，留插件根）
 
+#include <chrono>  // 请求耗时日志
 #include <cctype>
 
 namespace vc_llm_cloud {
@@ -64,20 +65,38 @@ std::string last_error_text() {
 void CloudPlugin::run_request_(int rid, json messages, json tools, std::string model,
                                std::string key_utf8, std::wstring key_wide,
                                std::string base_utf8, std::wstring base_wide,
+                               std::uint64_t slot,
                                std::atomic<bool>& stopping, std::atomic<HINTERNET>& active) {
     (void)key_utf8;
     (void)base_utf8;  // 契约面保留 utf8 形态（日志/诊断用）；网络面只用宽字符
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto elapsed_ms = [t0] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now() - t0)
+            .count();
+    };
+    host_.log(1, "ithaca.llm.cloud: 请求开始 rid=" + std::to_string(rid) +
+                     " slot=" + std::to_string(slot) + " model=" + model +
+                     " messages=" + std::to_string(messages.size()));
     StreamState st;
     int http_code = 0;
     std::string err;
-    if (do_request_(rid, messages, tools, model, key_wide, base_wide, st, stopping,
-                    active, http_code, err)) {
-        post_done_(rid, st);
+    if (do_request_(rid, messages, tools, model, key_wide, base_wide, slot, st,
+                    stopping, active, http_code, err)) {
+        post_done_(rid, slot, st);
+        host_.log(1, "ithaca.llm.cloud: 请求完成 rid=" + std::to_string(rid) + " 耗时 " +
+                         std::to_string(elapsed_ms()) + "ms（tool_calls " +
+                         std::to_string(st.tc.size()) + " 条）");
     } else if (stopping.load()) {
         // 取消静默（mock 同款约定）：取消不是错误，收口事件由 agent 统一发——
         // 这里再发会造成双重错误卡
+        host_.log(1, "ithaca.llm.cloud: 请求已取消 rid=" + std::to_string(rid) + " 耗时 " +
+                         std::to_string(elapsed_ms()) + "ms");
     } else {
-        post_error_(rid, http_code, err);
+        post_error_(rid, slot, http_code, err);
+        host_.log(3, "ithaca.llm.cloud: 请求失败 rid=" + std::to_string(rid) + " 耗时 " +
+                         std::to_string(elapsed_ms()) + "ms http=" +
+                         std::to_string(http_code) + " " + err);
     }
     // 回收：经 poster 回宿主线程 join + 擦表——worker 自 erase 会析构
     // joinable thread ⇒ terminate；宿主线程 join 已近完成的线程合法且短暂
@@ -102,7 +121,8 @@ std::string CloudPlugin::sanitize_fn_name_(const std::string& name) {
 
 bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                               const std::string& model, const std::wstring& key_wide,
-                              const std::wstring& base_wide, StreamState& st,
+                              const std::wstring& base_wide, std::uint64_t slot,
+                              StreamState& st,
                               const std::atomic<bool>& stopping, std::atomic<HINTERNET>& active,
                               int& http_code, std::string& err) {
     Endpoint ep;
@@ -205,10 +225,10 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
             const std::string delta = vcllm::delta_content_of(piece);
             if (!delta.empty()) {
                 st.content += delta;
-                post_delta_(rid, delta);
+                post_delta_(rid, slot, delta);
             }
             const std::string reasoning = vcllm::delta_reasoning_of(piece);
-            if (!reasoning.empty()) post_reasoning_(rid, reasoning);
+            if (!reasoning.empty()) post_reasoning_(rid, slot, reasoning);
             // tool_calls 碎片拼装（OpenAI 流式形态：按 index 分片，arguments 逐段追加）
             if (piece.contains("choices") && piece["choices"].is_array() &&
                 !piece["choices"].empty() && piece["choices"][0].contains("delta") &&

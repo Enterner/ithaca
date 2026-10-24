@@ -38,6 +38,11 @@ VC_TEST("jail: 合法相对路径被接受并折叠") {
 
     REQUIRE(jail.resolve("./sub//nested/", full, norm, err));  // 点段/空段/尾分隔符折叠
     CHECK(norm == "sub/nested");
+
+    // 绝对路径在根内 = 放行（模型常把工具输出里的绝对形态原样送回），剥根前缀
+    // 转相对；盘符大小写差异随前缀一起剥掉
+    REQUIRE(jail.resolve((root / "a.txt").string(), full, norm, err));
+    CHECK(norm == "a.txt");
 }
 
 VC_TEST("jail: 越界与危险形态被点名拒绝") {
@@ -52,9 +57,10 @@ VC_TEST("jail: 越界与危险形态被点名拒绝") {
     CHECK(rejected("../outside").find("越界") != std::string::npos);
     CHECK(rejected("a/../b").find("'..'") != std::string::npos);
     CHECK(rejected("a/../../b").find("'..'") != std::string::npos);
-    CHECK(rejected("C:/x").find("盘符") != std::string::npos);
-    CHECK(rejected("\\\\srv\\share").find("绝对路径") != std::string::npos);
-    CHECK(rejected("/abs").find("绝对路径") != std::string::npos);
+    // 盘符/根斜杠/UNC：根外一律按越界拒绝（jail 边界不松，只放开根内绝对形态）
+    CHECK(rejected("C:/x").find("越出工作区根") != std::string::npos);
+    CHECK(rejected("\\\\srv\\share").find("越出工作区根") != std::string::npos);
+    CHECK(rejected("/abs").find("越出工作区根") != std::string::npos);
     CHECK(rejected("a.").find("静默剥离") != std::string::npos);
     CHECK(rejected("a ").find("静默剥离") != std::string::npos);
     CHECK(rejected("CON").find("保留设备名") != std::string::npos);

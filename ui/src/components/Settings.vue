@@ -5,7 +5,7 @@
 // MCP 工具页 = McpSettings 组件（server 两层配置，保存 → mcp 插件热重载）。
 // 插件贡献页 = PluginSettings（各插件 vc.ui.register 的 schema 动态生成，
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
-import { ref, reactive } from 'vue'
+import { ref, reactive, computed } from 'vue'
 import { NModal } from 'naive-ui'
 import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx } from '../store'
 import { confirmDialog } from '../confirm'
@@ -20,6 +20,8 @@ const curName = ref('')
 const mDlg = ref(false)
 const mEdit = ref(null)       // {mi}  mi=-1 新增
 const mId = ref(''), mCtx = ref(''), mErr = ref('')
+const mSub = ref('')          // 子 agent 模型选中值（JSON 串 {provider,model}；'' = 默认自己）
+const mSubDangling = ref('')  // 失效引用的展示名（供应商/模型已删；保存时后端会拦截）
 const keyInputs = reactive({})   // 临时输入的 key（不回显，仅保存时带上）
 
 async function openPanel() {
@@ -50,11 +52,33 @@ async function delProvider() {
   provSel.value = Math.max(0, Math.min(provSel.value, detail.value.length - 1))
 }
 function setCur() { if (cur().name) curName.value = cur().name }
+// 子 agent 模型候选：全部启用供应商的启用模型（排除正在编辑的模型自身——自己
+// 派生自己无意义）。选项值用 JSON 串做键：供应商名可含任意字符不会拆坏。
+const subOptions = computed(() => {
+  const out = []
+  const self = cur()
+  const selfMid = mEdit.value && mEdit.value.mi >= 0 ? self.models[mEdit.value.mi]?.id : mId.value
+  for (const p of detail.value || []) {
+    if (p.enabled === false || p.type === 'mock') continue
+    for (const m of p.models || []) {
+      if (m.enabled === false) continue
+      if (p.name === self?.name && m.id === selfMid) continue
+      out.push({ key: JSON.stringify({ provider: p.name, model: m.id }),
+                 label: p.name + ' / ' + m.id })
+    }
+  }
+  return out
+})
 function openModelDlg(mi) {
   mEdit.value = { mi }
   const m = mi >= 0 ? cur().models[mi] : { id: '', context: 128000 }
   mId.value = m.id
   mCtx.value = fmtCtx(m.context)
+  const sub = m.sub_model
+  mSub.value = sub && sub.provider && sub.model
+    ? JSON.stringify({ provider: sub.provider, model: sub.model }) : ''
+  mSubDangling.value = mSub.value && !subOptions.value.some(o => o.key === mSub.value)
+    ? sub.provider + ' / ' + sub.model : ''
   mErr.value = ''
   mDlg.value = true
 }
@@ -67,10 +91,18 @@ function saveModel() {
   if (p.models.some((m, i) => i !== mEdit.value.mi && m.id.toLowerCase() === id.toLowerCase())) {
     mErr.value = '该供应商下已有同名模型 ID'; return
   }
+  // 子模型引用：'' = 默认自己（不落字段）；存在性校验在后端（保存时拦截悬空引用）
+  let sub
+  if (mSub.value) {
+    try { sub = JSON.parse(mSub.value) } catch { sub = null }
+    if (!sub || !sub.provider || !sub.model) { mErr.value = '子 agent 模型引用非法'; return }
+  }
+  const base = { id, context: ctx }
+  if (sub) base.sub_model = { provider: sub.provider, model: sub.model }
   if (mEdit.value.mi >= 0)
-    p.models[mEdit.value.mi] = { id, context: ctx, enabled: p.models[mEdit.value.mi].enabled }
+    p.models[mEdit.value.mi] = { ...base, enabled: p.models[mEdit.value.mi].enabled }
   else
-    p.models.push({ id, context: ctx, enabled: true })
+    p.models.push({ ...base, enabled: true })
   mDlg.value = false
 }
 async function onSave() {
@@ -149,6 +181,7 @@ async function onSave() {
           <div v-for="(m, mi) in cur().models" :key="mi" class="mrow">
             <span class="mid">{{ m.id }}</span>
             <span class="badge" :title="'上下文窗口 ' + m.context.toLocaleString() + ' tokens'">{{ fmtCtx(m.context) }}</span>
+            <span v-if="m.sub_model" class="badge" :title="'子 agent 模型：' + m.sub_model.provider + ' / ' + m.sub_model.model">⇒ {{ m.sub_model.model }}</span>
             <span class="tgl" :class="{ off: m.enabled === false }" title="启用（关闭后不出现在对话下拉）"
                   @click="m.enabled = m.enabled === false"></span>
             <span class="act" title="编辑模型配置" @click="openModelDlg(mi)">✎</span>
@@ -178,6 +211,12 @@ async function onSave() {
         <input v-model="mId" spellcheck="false">
         <label>上下文窗口 <span style="color:var(--dim)">（支持 1M / 256K / 131072 直接输入）</span></label>
         <input v-model="mCtx" spellcheck="false" @keydown.enter="saveModel">
+        <label>子 agent 模型 <span style="color:var(--dim)">（该模型派发的子 agent 用哪个模型跑；默认 = 自己）</span></label>
+        <select v-model="mSub" style="width:100%">
+          <option value="">默认（自己）</option>
+          <option v-if="mSubDangling" :value="mSub">{{ mSubDangling }}（引用已失效）</option>
+          <option v-for="o in subOptions" :key="o.key" :value="o.key">{{ o.label }}</option>
+        </select>
         <div v-if="mErr" style="color:var(--red); font-size:12px">{{ mErr }}</div>
         <div class="sops">
           <button @click="mDlg = false">取消</button>

@@ -10,8 +10,18 @@
 namespace vc_agent {
 
 // ---- 事件处理器（全部在宿主线程；禁止同步等待）-----------------------------
+// 入口统一形态：try/catch 包体 → fail_unexpected_ 收口（语义见 agent_plugin.hpp）；
+// 具体逻辑在 *_impl。
 
 void AgentCtx::on_input(const char* text) {
+    try {
+        on_input_impl(text);
+    } catch (...) {
+        fail_unexpected_();
+    }
+}
+
+void AgentCtx::on_input_impl(const char* text) {
     if (state_ != State::Idle) {
         queued_.push_back(text != nullptr ? text : "");
         notice("当前 turn 进行中，输入已排队（队列 " + std::to_string(queued_.size()) + "）");
@@ -21,6 +31,14 @@ void AgentCtx::on_input(const char* text) {
 }
 
 void AgentCtx::on_done(const vc_api::LlmDone& e) {
+    try {
+        on_done_impl(e);
+    } catch (...) {
+        fail_unexpected_();
+    }
+}
+
+void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
     // 摘要请求回包分流（阶段二）：与 turn 请求共用 chat_ex 通道，按 request_id
     // 区分——摘要在途时 turn 请求不可能在途（摘要只在 turn 收口后发起）。
     if (compress_inflight_ && e.request_id == compress_seq_)
@@ -89,6 +107,14 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
 }
 
 void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
+    try {
+        on_llm_error_impl(e);
+    } catch (...) {
+        fail_unexpected_();
+    }
+}
+
+void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
     // 摘要请求失败分流（阶段二）：回退机械 digest——压缩永不卡死 turn 流
     if (compress_inflight_ && e.request_id == compress_seq_)
         return on_compress_error_(e);
@@ -98,7 +124,8 @@ void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
     // 而非报废 turn。仅 TurnActive 且无异步任务在途（错误对应的正是刚发出的
     // send_chat）；重发有 kMaxOverwindowResend 上界——折叠不够再超窗时最终仍走
     // 报废路径，不会打转。provider 文案归一（待办 15）后可收窄这里的匹配面。
-    if (state_ == State::TurnActive && runs_.empty() &&
+    // 子代理不参与：折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
+    if (!subagent_ && state_ == State::TurnActive && runs_.empty() &&
         compress_retries_ < kMaxOverwindowResend &&
         vcagent::is_context_overflow_error(e.message != nullptr ? e.message : "")) {
         const vcagent::CompressPlan plan = vcagent::plan_compress(messages_);
@@ -110,11 +137,22 @@ void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
         }
     }
     // provider 的 llm_error 已由 webui 落错误卡并清 in_flight——agent 只复位
-    // 状态机，不重发（重发 = 双重错误卡）
+    // 状态机，不重发（重发 = 双重错误卡）。子代理的失败必须经完成回调回灌父
+    // （fail_turn 静默分支），否则父的在途挂起永不归流
+    if (subagent_)
+        return fail_turn(e.message != nullptr ? e.message : "LLM 请求失败");
     cleanup_turn_();
 }
 
 void AgentCtx::on_decision(const vc_api::TurnDecision& d) {
+    try {
+        on_decision_impl(d);
+    } catch (...) {
+        fail_unexpected_();
+    }
+}
+
+void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
     if (d.decision == 3) {  // undo：独立命令，不影响等待中的提案
         exec_undo();
         return;

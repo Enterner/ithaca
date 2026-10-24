@@ -6,12 +6,17 @@
 namespace vc_llm_mock {
 
 nostos_status MockPlugin::chat_thunk(void* self, int request_id, const char* messages_json) noexcept {
-    return static_cast<MockPlugin*>(self)->chat_(request_id, messages_json);
+    return static_cast<MockPlugin*>(self)->chat_(request_id, messages_json, 0);
 }
 
 nostos_status MockPlugin::chat_ex_thunk(void* self, int request_id, const char* body_json) noexcept {
-    // mock 不消费 tools——等价于普通 chat（agent 的 tools 定义只是透传声明）。
-    return static_cast<MockPlugin*>(self)->chat_(request_id, body_json);
+    // mock 不消费 tools——等价于普通 chat（agent 的 tools 定义只是透传声明）；
+    // slot 要消费：回放事件按槽单播回发（与 llm_cloud 的事件路由对齐）
+    const json doc = json::parse(body_json != nullptr ? body_json : "", nullptr,
+                                 /*allow_exceptions=*/false);
+    const std::uint64_t slot =
+        doc.is_object() ? doc.value("slot", static_cast<std::uint64_t>(0)) : 0;
+    return static_cast<MockPlugin*>(self)->chat_(request_id, body_json, slot);
 }
 
 nostos_status MockPlugin::cancel_thunk(void* self, int request_id) noexcept {
@@ -23,13 +28,14 @@ nostos_status MockPlugin::cancel_thunk(void* self, int request_id) noexcept {
     return NOSTOS_OK;
 }
 
-nostos_status MockPlugin::chat_(int request_id, const char* /*messages 或 body，mock 不消费*/) {
+nostos_status MockPlugin::chat_(int request_id, const char* /*messages 或 body，mock 不消费*/,
+                                std::uint64_t slot) {
     {
         std::lock_guard<std::mutex> lock(requests_mu_);
         if (requests_.count(request_id) != 0) return NOSTOS_ERR_BAD_STATE;  // 重入拒绝
         auto& w = requests_[request_id];
-        w.th = std::thread([this, request_id, workerp = &w] {
-            replay_(request_id, workerp->stopping);
+        w.th = std::thread([this, request_id, slot, workerp = &w] {
+            replay_(request_id, slot, workerp->stopping);
         });
     }
     return NOSTOS_OK;

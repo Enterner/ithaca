@@ -101,15 +101,20 @@ private:
     void load_env_();
     // provider 热切（vc.llm.set_active）：匹配 ⇒ 发布自己；否则撤发布。
     // base_url 非空 ⇒ 同步热切请求目标（多供应商下每个供应商各自的端点）。
+    // 子档案三元组（尾部追加字段）：完整 ⇒ 存为子 agent 请求的凭据；否则清空
+    // （子请求回落主档案——"无覆盖"是常态默认，不算异常）。
     void on_set_active_(const std::string& provider, const std::string& key,
-                        const std::string& base_url);
+                        const std::string& base_url, const std::string& sub_model,
+                        const std::string& sub_key, const std::string& sub_base_url);
     nostos_status set_model_(const char* model);
 
     // ---- 请求登记面（src/request.cpp）-------------------------------------------
 
     nostos_status chat_(int request_id, const char* messages_json);
     nostos_status chat_ex_(int request_id, const char* body_json);
-    nostos_status start_(int request_id, json messages, json tools);
+    // slot：body 携带的路由键（agent 子任务 = 子会话槽 turn_no，非 0）。非 0 ⇒
+    // 凭据快照按子档案取（完整时），事件按 slot 单播回发（子事件不进广播）。
+    nostos_status start_(int request_id, json messages, json tools, std::uint64_t slot);
 
     // ---- 请求线程（src/stream.cpp）：只做 WinHTTP 与 poster_submit，绝不直接碰
     //      宿主 API。全部请求态（拼装/取消旗/句柄/凭据快照）随线程走——插件成员
@@ -117,11 +122,11 @@ private:
 
     void run_request_(int rid, json messages, json tools, std::string model,
                       std::string key_utf8, std::wstring key_wide,
-                      std::string base_utf8, std::wstring base_wide,
+                      std::string base_utf8, std::wstring base_wide, std::uint64_t slot,
                       std::atomic<bool>& stopping, std::atomic<HINTERNET>& active);
     bool do_request_(int rid, const json& messages, const json& tools,
                      const std::string& model, const std::wstring& key_wide,
-                     const std::wstring& base_wide, StreamState& st,
+                     const std::wstring& base_wide, std::uint64_t slot, StreamState& st,
                      const std::atomic<bool>& stopping, std::atomic<HINTERNET>& active,
                      int& http_code, std::string& err);
     static std::string read_all_(HINTERNET req, std::size_t cap);
@@ -130,10 +135,10 @@ private:
 
     // ---- 产物回流（src/events.cpp）----------------------------------------------
 
-    void post_delta_(int rid, std::string text);
-    void post_reasoning_(int rid, std::string text);
-    void post_done_(int rid, const StreamState& st);
-    void post_error_(int rid, int code, std::string msg);
+    void post_delta_(int rid, std::uint64_t slot, std::string text);
+    void post_reasoning_(int rid, std::uint64_t slot, std::string text);
+    void post_done_(int rid, std::uint64_t slot, const StreamState& st);
+    void post_error_(int rid, std::uint64_t slot, int code, std::string msg);
 
     // ---- 状态 --------------------------------------------------------------------
 
@@ -147,6 +152,14 @@ private:
     std::string base_utf8_;
     std::wstring base_wide_;
     std::string model_;  // model_ 的写（宿主线程 set_model）与读（worker 组包快照）互斥
+
+    // 子 agent 模型档案（vc.llm.set_active 尾部字段；model_mu_ 保护同上）。
+    // 空 = 无覆盖——子 agent 请求用主模型（默认形态）。
+    std::string sub_model_;
+    std::string sub_key_;
+    std::wstring sub_key_wide_;
+    std::string sub_base_utf8_;
+    std::wstring sub_base_wide_;
 
     std::map<int, RequestWorker> requests_;  // request_id → 在途请求
     std::mutex requests_mu_;

@@ -83,12 +83,18 @@ export function render(rec) {
     if (rec.id <= S.lastId) return
     S.lastId = rec.id
   }
-  if (rec.type === 'assistant' || rec.type === 'error') {
+  if (rec.type === 'error') {
     S.inFlight = false; S.rate = '0'
+  }
+  // 挂起等待的收口：turn 收口/失败/取消、新输入（新 turn）都会终结挂起期
+  if (rec.type === 'error' || rec.type === 'user' ||
+      (rec.type === 'assistant' && rec.turn_done)) {
+    S.waitingSince = 0; S.waitingLeft = 0
   }
   switch (rec.type) {
     case 'session':   // 会话已切换：清空视图并重放（草稿若有则已随创建提交）
       S.draft = null
+      S.subView = 0; S.subLive = {}; S.subDone = {}; S.subDetail = {}
       resetView()
       if (rec.workspace) S.curWs = rec.workspace
       loadSessions(); pollOnce()
@@ -127,6 +133,10 @@ export function render(rec) {
     case 'assistant':
       S.live = null                    // 思考结束：折叠流式块
       push(rec)
+      // inFlight = turn 进行中（带 tool_calls 的 done 只是一轮收束，工具/子代理
+      // 阶段仍是同一 turn——停止入口必须全程在场，否则子代理挂起期无路可退）
+      S.inFlight = rec.turn_done === false
+      S.rate = '0'
       if (rec.usage && rec.usage.total_tokens) {
         S.lastPrompt = rec.usage.prompt_tokens || 0
         S.fTokens += rec.usage.total_tokens
@@ -135,11 +145,41 @@ export function render(rec) {
       { const done = rec.turn_done !== undefined ? rec.turn_done : !!rec.text
         if (done) flushTurnEdits() }
       return
+    case 'subagent':
+      // 子代理状态卡（spawn/完成/失败）：落 transcript，主会话只显示状态。
+      // 收口记录（phase>=4，值 4=完成 5=取消/失败）同时核销挂起条——task 的
+      // tool 结果卡已去重，不再有 tool 记录承担核销
+      push(rec)
+      if (rec.phase >= 4) {
+        S.subDone[rec.turn_id] = rec.phase
+        if (S.waitingLeft > 0) {
+          S.waitingLeft--
+          if (S.waitingLeft === 0) S.waitingSince = 0
+        }
+      }
+      return
+    case 'subagent_detail':
+      // 子代理工具明细（实时推送；持久化在服务端独立存档，不经主会话记录流）：
+      // 按 turn_id 缓冲给右栏过程视图，与打开时拉取的历史按 id 去重合并
+      {
+        const arr = S.subDetail[rec.turn_id] || []
+        arr.push(rec)
+        S.subDetail[rec.turn_id] = arr
+      }
+      return
+    case 'subagent_delta':
+      // 子代理流式增量（只广播不落盘）：按 turn_id 缓冲给右栏过程视图
+      S.subLive[rec.turn_id] = (S.subLive[rec.turn_id] || '') + rec.text
+      return
     case 'tool_call': push(rec); return
     case 'tool':
       // apply 的成功结果与 ✔ applied 行同信息（同文件同增删），不重复渲染；
       // 失败结果（ok=false）保留——那是唯一的错误反馈（踩过：双行同文）
       if (rec.ok && /apply$/.test(rec.tool || '')) return
+      // 挂起核销：等待期内的每条工具结果 = 一个挂起的子代理/后台任务落定
+      // （顺序纪律：等待通告只由 dispatch_loop 尾部发出，其后的 tool 结果
+      // 必然属于挂起项）
+      if (S.waitingLeft > 0) { S.waitingLeft--; if (S.waitingLeft === 0) S.waitingSince = 0 }
       push(rec); return
     case 'proposal':
       // 卡片视图状态（逐文件勾选/裁决标记）挂在记录对象上；实时提案（booted 之后
@@ -172,7 +212,17 @@ export function render(rec) {
       S.fsRev++
       return
     case 'run_exit': push(rec); return
-    case 'notice': push(rec); return
+    case 'notice':
+      push(rec)
+      // 挂起等待信号：agent 在派发尾部仍有未决子代理/后台任务时发「等待 N 个…」
+      // （run 单独等待与 task/混合等待同款式）。取消级联的「已取消 N 个在途子代理」
+      // 即挂起终结信号。转态记号，文本仍照常渲染。
+      { const m = /^等待 (\d+) 个/.exec(rec.text || '')
+        if (m) { S.waitingSince = Date.now(); S.waitingLeft = Number(m[1]) }
+        else if (/^已取消 \d+ 个在途子代理/.test(rec.text || '')) {
+          S.waitingSince = 0; S.waitingLeft = 0
+        } }
+      return
     case 'error':
       push(rec); flushTurnEdits(); return
   }

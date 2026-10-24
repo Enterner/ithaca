@@ -27,6 +27,8 @@ void WebuiPlugin::subscribe_() {
             backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
         }
     }));
+    // LLM 事件只订阅广播（slot=0，主会话）：子会话事件按槽单播、本插件不订阅
+    // ——不可见性由 slot 路由结构性保证（迁移前靠载荷标志过滤，已随 slot 迁移退役）
     subs_.push_back(host_.on(vc_api::llm_delta, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
         if (e->text == nullptr) return;
@@ -54,7 +56,11 @@ void WebuiPlugin::subscribe_() {
             json u = json::parse(e->usage, nullptr, false);
             if (u.is_object()) usage = u;
         }
-        in_flight_.store(false);
+        // in_flight 语义 = 「turn 进行中」（整个工具/子代理阶段都算），不再随每轮
+        // done 清零——子代理/后台任务一跑数分钟，按请求清零会让停止入口在 turn
+        // 中段消失（踩过：子代理挂起期间发送键变回发送、取消无处可点）。
+        // 收口信号 = 无 tool_calls 的 done 或 error。
+        in_flight_.store(!turn_done);
         persist_status_();
         record_({{"type", "assistant"},
                  {"text", content},
@@ -132,6 +138,36 @@ void WebuiPlugin::subscribe_() {
                  {"level", e->level},
                  {"text", e->text != nullptr ? std::string(e->text) : ""},
                  {"sys", e->sys}});
+    }));
+    // 子代理事件三路分流（agent 广播）：phase 1 = 流式增量只广播；phase 2/3 =
+    // 工具明细 → 独立存档（sessions/agents/…）+ 广播，**不进主 transcript**——
+    // 主会话只显示子代理状态卡，运行历史点开右栏才拉取（ZCode 式存放：父
+    // transcript 只存边界，逐条过程行平铺主对话流是刷屏源，踩过）；phase 0/4/5
+    // = 状态卡落主 transcript（重放可用）
+    subs_.push_back(host_.on(vc_api::subagent_event, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::SubagentEvent*>(p);
+        const std::string text = e->text != nullptr ? e->text : "";
+        const std::string tool = e->tool != nullptr ? e->tool : "";
+        if (e->phase == 1) {
+            broadcast_({{"type", "subagent_delta"},
+                        {"turn_id", e->turn_id},
+                        {"text", text}});
+            return;
+        }
+        if (e->phase == 2 || e->phase == 3) {
+            agent_log_append_(e->turn_id,
+                              {{"type", "subagent"},
+                               {"turn_id", e->turn_id},
+                               {"phase", e->phase},
+                               {"tool", tool},
+                               {"text", text}});
+            return;
+        }
+        record_({{"type", "subagent"},
+                 {"turn_id", e->turn_id},
+                 {"phase", e->phase},
+                 {"tool", tool},
+                 {"text", text}});
     }));
     // 插件 UI 贡献：schema 是"界面长什么样"，值在 config 的 plugins 节。
     // 载荷三串均调用期有效——立即拷贝。map 插入在宿主线程串行化，无锁。

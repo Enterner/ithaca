@@ -43,7 +43,10 @@ nostos_status CloudPlugin::activate(const nostos::abi::Host& host) {
         const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
         on_set_active_(e->provider != nullptr ? std::string(e->provider) : "",
                        e->key != nullptr ? std::string(e->key) : "",
-                       e->base_url != nullptr ? std::string(e->base_url) : "");
+                       e->base_url != nullptr ? std::string(e->base_url) : "",
+                       e->sub_model != nullptr ? std::string(e->sub_model) : "",
+                       e->sub_key != nullptr ? std::string(e->sub_key) : "",
+                       e->sub_base_url != nullptr ? std::string(e->sub_base_url) : "");
     }));
     host.log(2, "ithaca.llm.cloud: 就绪 base=" + base_utf8_ + " model=" + model_ +
                     " key=" + (key_.empty() ? "未设置" : "已设置（不落盘）"));
@@ -68,20 +71,41 @@ void CloudPlugin::deactivate() noexcept {
 }
 
 // provider 热切（vc.llm.set_active）：匹配 ⇒ 发布自己；否则撤发布。
+// 子档案：三元组齐全才生效（缺一 = 配置未解析出可派遣的子模型，清空回落主档案）；
+// sub_model 为空 = 主模型未配置子模型（默认形态），静默清空。
 void CloudPlugin::on_set_active_(const std::string& provider, const std::string& key,
-                                const std::string& base_url) {
+                                const std::string& base_url, const std::string& sub_model,
+                                const std::string& sub_key, const std::string& sub_base_url) {
     const bool want = (provider == "cloud");
     if (want) {
-        if (!key.empty()) {
+        {
             std::lock_guard<std::mutex> lock(model_mu_);
-            key_ = key;
-            key_wide_ = nostos::kit::win::utf8_to_wide(key);
+            if (!key.empty()) {
+                key_ = key;
+                key_wide_ = nostos::kit::win::utf8_to_wide(key);
+            }
+            if (!base_url.empty()) {
+                base_utf8_ = base_url;
+                base_wide_ = nostos::kit::win::utf8_to_wide(base_url);
+            }
+            const bool sub_ok =
+                !sub_model.empty() && !sub_key.empty() && !sub_base_url.empty();
+            if (sub_ok) {
+                sub_model_ = sub_model;
+                sub_key_ = sub_key;
+                sub_key_wide_ = nostos::kit::win::utf8_to_wide(sub_key);
+                sub_base_utf8_ = sub_base_url;
+                sub_base_wide_ = nostos::kit::win::utf8_to_wide(sub_base_url);
+            } else {
+                sub_model_.clear();
+                sub_key_.clear();
+                sub_key_wide_.clear();
+                sub_base_utf8_.clear();
+                sub_base_wide_.clear();
+            }
         }
-        if (!base_url.empty()) {
-            std::lock_guard<std::mutex> lock(model_mu_);
-            base_utf8_ = base_url;
-            base_wide_ = nostos::kit::win::utf8_to_wide(base_url);
-        }
+        if (!sub_model.empty() && sub_key.empty())
+            host_.log(3, "ithaca.llm.cloud: 子模型档案不完整（缺 Key）——子 agent 回落主模型");
         if (!published_) {
             if (host_.publish(vc_api::llm, &table_) == NOSTOS_OK) {
                 published_ = true;

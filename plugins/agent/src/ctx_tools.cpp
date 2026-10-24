@@ -47,7 +47,14 @@ bool AgentCtx::discover_tools() {
              {{"ref", {{"type", "string"}, {"description", "归档文件名，见各工具结果里的 ref 字段"}}},
               {"offset", {{"type", "integer"}, {"description", "字节偏移（可选，默认 0；续读传上一次回包的 next_offset）"}}},
               {"limit", {{"type", "integer"}, {"description", "单页字节上限（可选，默认 2048、上限 4096）"}}}}},
-            {"required", json::array({"ref"})}}}}}});// 缓存前缀纪律：tools 数组按名排序——svc 逐个追加的顺序依赖装载
+            {"required", json::array({"ref"})}}}}}});
+    // 内置工具：task（子代理派发；仅主会话暴露——嵌套深度 1，子代理不再派生）
+    if (depth_ == 0) {
+        std::vector<std::string> type_names;
+        for (const auto& t : types_) type_names.push_back(t.name);
+        tools_.push_back(vcagent::build_task_tool_json(type_names));
+    }
+    // 缓存前缀纪律：tools 数组按名排序——svc 逐个追加的顺序依赖装载
     // 顺序，波动即在 tools 处分叉前缀；与上一轮快照逐字节比对，变化落 log 观测。
     std::sort(tools_.begin(), tools_.end(), [](const json& a, const json& b) {
         return a["function"].value("name", "") < b["function"].value("name", "");
@@ -97,6 +104,13 @@ void AgentCtx::exec_undo() {
     notice("undo: 没有可用的撤销工具");
 }
 
+void AgentCtx::emit_subagent_(int turn_id, int phase, const char* tool,
+                              const std::string& text) {
+    nostos::kit::Scratch scratch;
+    const vc_api::SubagentEvent e{turn_id, phase, tool, scratch.hold(text)};
+    host_.emit(vc_api::subagent_event, &e);
+}
+
 void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // 调用参数摘要人话化：op 清单/读哪个文件/列哪个目录/搜什么词，而非原始
     // JSON（原始形态对人不可读，大 content 还会截断出半截转义——webui 的
@@ -104,11 +118,27 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     nostos::kit::Scratch scratch;
     std::string brief = summarize_call(tool_last(name), args);
     if (brief.empty()) brief = trim(args.dump(), 200);
+    if (subagent_) {   // 子代理工作记录：广播给 UI（落 transcript），不进任何上下文
+        emit_subagent_(turn_no_, 2, name.c_str(), brief);
+        return;
+    }
+    // task 调用卡不落对话流：spawn 卡与其同信息（描述/类型全含），一次派发
+    // 只显示一张卡（对齐成熟 CLI 的单 Task 块形态）
+    if (tool_last(name) == "task") return;
     const vc_api::ToolCall e{turn_no_, scratch.hold(name), scratch.hold(brief)};
     host_.emit(vc_api::tool_call, &e);
 }
 
 void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::string& brief) {
+    if (subagent_) {   // 子代理工作记录：同 emit_tool_call
+        emit_subagent_(turn_no_, 3, name.c_str(),
+                       std::string(ok ? "" : "✗ ") + summarize_result(tool_last(name), brief));
+        return;
+    }
+    // task 完成结果卡不落对话流：报告经上下文回灌给模型，收口状态由收口卡
+    // （phase 4/5）承载——只保留拒绝/失败结果卡（那是 spawn 被护栏拒掉时的
+    // 唯一可见反馈）
+    if (tool_last(name) == "task" && ok) return;
     // 结果摘要人话化：apply → 「路径（新文件/N 处编辑）+A −B」；run → 「exit N｜首行」；
     // 失败 → 首条错误点名。解析不出就回退原 JSON 截断（前向兼容）
     nostos::kit::Scratch scratch;
@@ -118,6 +148,7 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
 }
 
 void AgentCtx::notice(const std::string& text, int sys) {
+    if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
     const vc_api::Notice e{2, text.c_str(), sys};
     host_.emit(vc_api::notice, &e);
 }
@@ -152,6 +183,35 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
         const std::string q = args.contains("query") && args["query"].is_string()
                                   ? args["query"].get<std::string>() : "";
         return q.empty() ? std::string{} : "搜索「" + q + "」";
+    }
+    if (tool == "run") {
+        const std::string cmd = args.contains("command_line") && args["command_line"].is_string()
+                                    ? args["command_line"].get<std::string>() : "";
+        if (cmd.empty()) return {};
+        const bool dry = args.contains("dry_run") && args["dry_run"].is_boolean() &&
+                         args["dry_run"].get<bool>();
+        return std::string(dry ? "试算命令 " : "运行命令 ") + trim(cmd, 120);
+    }
+    if (tool == "recall") {
+        const std::string ref = args.contains("ref") && args["ref"].is_string()
+                                    ? args["ref"].get<std::string>() : "";
+        if (ref.empty()) return {};
+        std::string out = "回查归档 " + ref;
+        if (const long long off = args.value("offset", 0LL); off > 0)
+            out += "（自 " + std::to_string(off) + " 字节）";
+        return out;
+    }
+    if (tool == "undo_turn") {
+        if (args.contains("turn_id") && args["turn_id"].is_number_integer())
+            return "撤销编辑（turn " + std::to_string(args["turn_id"].get<int>()) + "）";
+        return "撤销编辑";
+    }
+    if (tool == "task") {
+        const std::string d = args.contains("description") && args["description"].is_string()
+                                  ? args["description"].get<std::string>() : "";
+        const std::string t = args.contains("subagent_type") && args["subagent_type"].is_string()
+                                  ? args["subagent_type"].get<std::string>() : "general";
+        return "派出子代理 [" + t + "] " + d;
     }
     return {};
 }
@@ -231,6 +291,10 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
         return std::to_string(r["files"].size()) + " 个文件";
     }
     if (tool == "run") {
+        // 异步 ack（{"ok":true,"run_id":N}）不是执行结果：显示 "exit -1" 是纯误导
+        // （踩过：用户把 ack 当失败）。真正的退出码随 run.exit 归流后另行回卡
+        if (const int rid = r.value("run_id", 0); rid > 0 && !r.contains("exit_code"))
+            return "已转后台（run#" + std::to_string(rid) + "）";
         int code = -1;
         if (r.contains("exit_code") && r["exit_code"].is_number_integer())
             code = r["exit_code"].get<int>();
@@ -267,6 +331,12 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
                            r["truncated"].get<bool>();
         return "命中 " + std::to_string(r["hits"].size()) + " 处 · 扫描 " +
                std::to_string(scanned) + " 个文件" + (trunc ? "（已达上限）" : "");
+    }
+    if (tool == "task" && r.contains("report") && r["report"].is_string()) {
+        // 报告首行进 ● 卡（完整报告已回灌 LLM；子代理轮数/用量在通告行）
+        const std::string rep = r["report"].get<std::string>();
+        const auto nl = rep.find('\n');
+        return trim(rep.substr(0, nl == std::string::npos ? rep.size() : nl), 80);
     }
     return trim(result, 200);
 }

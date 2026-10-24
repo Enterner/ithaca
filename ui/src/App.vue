@@ -12,11 +12,14 @@ import InputBar from './components/InputBar.vue'
 import Settings from './components/Settings.vue'
 import FileTree from './components/FileTree.vue'
 import CodeViewer from './components/CodeViewer.vue'
+import SubagentPane from './components/SubagentPane.vue'
 
 const settingsRef = ref(null)
 const fileTreeRef = ref(null)
 onMounted(() => { boot() })
 const curWs = computed(() => S.curWs ? S.curWs : '(未设置)')
+// 点击主会话的子代理卡 ⇒ 右栏自动展开到过程视图
+watch(() => S.subView, (v) => { if (v) filesOpen.value = true })
 
 // ---- 会话栏折叠/调宽（VSCode 式）---------------------------------------------
 const sideW = ref(248)
@@ -154,17 +157,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </template>
     </div>
 
-    <!-- 文件树右栏：当前会话工作区的只读视图；无工作区时不占位（hero 引导优先） -->
-    <aside v-if="filesOpen && S.curWs" class="fileside" :style="{ width: filesW + 'px' }">
+    <!-- 右栏：子代理过程视图（选中时优先）⇄ 文件树/查看器 -->
+    <aside v-if="(filesOpen || S.subView) && S.curWs" class="fileside" :style="{ width: filesW + 'px' }">
       <div class="fs-head">
-        <span class="fs-title">文件</span>
+        <span class="fs-title">{{ S.subView ? '子代理' : '文件' }}</span>
         <span class="spacer"></span>
-        <button class="fs-btn" title="刷新" @click="fileTreeRef && fileTreeRef.refresh()">⟳</button>
-        <button class="fs-btn" title="收起文件树" @click="toggleFiles">⟩</button>
+        <button v-if="!S.subView" class="fs-btn" title="刷新" @click="fileTreeRef && fileTreeRef.refresh()">⟳</button>
+        <button class="fs-btn" :title="S.subView ? '关闭过程视图' : '收起文件树'" @click="S.subView ? S.subView = 0 : toggleFiles()">⟩</button>
       </div>
-      <!-- 文件态 ⇄ 查看态切换：树用 v-show 保展开态；查看器 v-if（退出即释放 Monaco 实例） -->
-      <FileTree v-show="!S.viewer" ref="fileTreeRef" @open-file="openFile" />
-      <CodeViewer v-if="S.viewer" />
+      <!-- 文件态 ⇄ 查看态/子代理态：树用 v-show 保展开态；查看器与子代理过程
+           v-if（退出即释放实例/缓冲）。子代理优先——查看器在点击卡片前置空 -->
+      <SubagentPane v-if="S.subView" />
+      <template v-else>
+        <FileTree v-show="!S.viewer" ref="fileTreeRef" @open-file="openFile" />
+        <CodeViewer v-if="S.viewer" />
+      </template>
       <div class="filedrag" title="拖拽调宽" @mousedown="startFilesDrag"></div>
     </aside>
 

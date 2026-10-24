@@ -164,7 +164,8 @@ test.describe("CONV10 工具行人性化", () => {
             .toBeVisible({ timeout: 15000 });
         await expect(page.locator(".toolline", { hasText: "搜索「hello」" })).toBeVisible();
         await expect(page.locator(".toolline", { hasText: "读取 api.txt" })).toBeVisible();
-        await expect(page.locator(".toolline", { hasText: "api.txt · 5 字节" })).toBeVisible();
+        // read 内容带行号前缀，字节数随行数变化——断言稳定前缀而非具体数字
+        await expect(page.locator(".toolline", { hasText: "api.txt · " })).toBeVisible();
         // 结果摘要
         await expect(page.locator(".toolline", { hasText: "列出 1 项" })).toBeVisible();
         await expect(page.locator(".toolline", { hasText: "命中 1 处 · 扫描 1 个文件" })).toBeVisible();

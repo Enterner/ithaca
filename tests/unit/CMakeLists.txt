@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # ── tests/unit/ —— ithaca 单元测试（纯逻辑层：jail / edit / snapshots）────────
-# 内核边界纪律：产品与插件的测试不进内核 CI（nostos_test），所以自备一份。
+# 内核边界纪律：产品与插件的测试不进内核仓，所以自备一份。
 # 构建：cmake --preset debug && cmake --build --preset debug（build.mjs 会顺带运行）。
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)

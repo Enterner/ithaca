@@ -191,8 +191,19 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
                         bad = true; break;
                     }
                     mseen.push_back(mlow);
-                    models.push_back(json{{"id", mid}, {"context", ctx},
-                                          {"enabled", m.value("enabled", true)}});
+                    // 子 agent 模型（可选）：结构化引用 {"provider","model"}——结构化
+                    // 而非 "供应商/模型" 拼串，供应商名可含 "/" 不歧义。缺省 = 自己
+                    // （默认形态）；存在性校验在 cleaned 集齐后统一做（允许引用清单
+                    // 中靠后的供应商）。
+                    json mm = json{{"id", mid}, {"context", ctx},
+                                   {"enabled", m.value("enabled", true)}};
+                    if (m.contains("sub_model") && m["sub_model"].is_object()) {
+                        const std::string sp = m["sub_model"].value("provider", "");
+                        const std::string sm = m["sub_model"].value("model", "");
+                        if (!sp.empty() && !sm.empty())
+                            mm["sub_model"] = json{{"provider", sp}, {"model", sm}};
+                    }
+                    models.push_back(std::move(mm));
                 }
             if (bad) break;
             e["models"] = models;
@@ -202,6 +213,30 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
             return json_resp({{"ok", false},
                               {"error", "供应商配置非法（名称/模型 ID 重复或为空、"
                                         "上下文 ≥1024、超 32 个等）"}});
+        // 子模型引用存在性后置校验：目标供应商必须在本次保存清单内且模型在其
+        // 启用列表——悬空引用运行期会静默回落主模型，保存时拦截让用户当场看到
+        for (const auto& p : cleaned)
+            for (const auto& m : p.value("models", json::array())) {
+                if (!m.is_object() || !m.contains("sub_model")) continue;
+                const json& sm = m["sub_model"];
+                bool ok = false;
+                for (const auto& q : cleaned) {
+                    if (!q.is_object() || q.value("name", "") != sm.value("provider", ""))
+                        continue;
+                    for (const auto& qm : q.value("models", json::array()))
+                        if (qm.is_object() && qm.value("id", "") == sm.value("model", "")) {
+                            ok = qm.value("enabled", true);
+                            break;
+                        }
+                    break;
+                }
+                if (!ok)
+                    return json_resp(
+                        {{"ok", false},
+                         {"error", "子 agent 模型引用无效：" + sm.value("provider", "") +
+                                       " / " + sm.value("model", "") +
+                                       "（供应商不存在或模型未启用）"}});
+            }
         // current_provider：前端指定或保留；必须命中列表，否则回落第一个
         std::string cur = config_.value("current_provider", "");
         if (in.contains("current_provider") && in["current_provider"].is_string())
@@ -311,6 +346,10 @@ void WebuiPlugin::post_llm_set_active_() {
     const std::string cur = config_.value("current_provider", "");
     std::string cur_key = key, cur_burl;
     int window = 0;
+    // 子 agent 模型档案：当前主模型的 sub_model 引用 → 目标供应商凭据，随本事件
+    // 尾部字段下发。解析不出（未配置/悬空引用/目标无 Key）= 留空——provider 侧
+    // 语义是子请求回落主模型，默认形态即无子档案，不报错。
+    std::string sub_model, sub_key, sub_base;
     for (const auto& p : config_.value("providers", json::array()))
         if (p.is_object() && p.value("name", "") == cur) {
             cur_key = p.value("api_key", key);
@@ -319,14 +358,32 @@ void WebuiPlugin::post_llm_set_active_() {
                 if (m.is_object() && m.value("id", "") == config_.value("model", "") &&
                     m.value("enabled", true)) {
                     window = m.value("context", 0);
+                    if (m.contains("sub_model") && m["sub_model"].is_object()) {
+                        const std::string sp = m["sub_model"].value("provider", "");
+                        const std::string sm = m["sub_model"].value("model", "");
+                        for (const auto& q : config_.value("providers", json::array()))
+                            if (q.is_object() && q.value("name", "") == sp) {
+                                const std::string qkey = q.value("api_key", "");
+                                if (!sm.empty() && !qkey.empty()) {
+                                    sub_model = sm;
+                                    sub_key = qkey;
+                                    sub_base = q.value("base_url", "");
+                                }
+                                break;
+                            }
+                    }
                     break;
                 }
             break;
         }
-    nostos::kit::poster_submit(poster_, [this, provider, cur_key, cur_burl, window] {
-        const vc_api::LlmSetActive e{provider.c_str(), cur_key.c_str(),
-                                     cur_burl.empty() ? nullptr : cur_burl.c_str(),
-                                     window};
+    nostos::kit::poster_submit(poster_, [this, provider, cur_key, cur_burl, window,
+                                         sub_model, sub_key, sub_base] {
+        const vc_api::LlmSetActive e{
+            provider.c_str(), cur_key.c_str(),
+            cur_burl.empty() ? nullptr : cur_burl.c_str(), window,
+            sub_model.empty() ? nullptr : sub_model.c_str(),
+            sub_key.empty() ? nullptr : sub_key.c_str(),
+            sub_base.empty() ? nullptr : sub_base.c_str()};
         host_.emit(vc_api::llm_set_active, &e);
         // 工作区归会话管：配置保存不热切工作区
     });

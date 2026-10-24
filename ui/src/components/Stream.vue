@@ -3,7 +3,7 @@
 // diff 着色走 diff.js 的 v-html（内容全部经 esc——信任级别与正文一致）。
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { S } from '../store'
-import { mdHtml, esc } from '../md'
+import { mdHtml, esc, toolLabel } from '../md'
 import { diffHtml, stripHeads, diffStats, diffIsNew } from '../diff'
 
 const streamEl = ref(null)
@@ -19,9 +19,16 @@ onMounted(() => nextTick(scrollBottom))
 watch(() => S.curSession, () => nextTick(scrollBottom))
 
 function toolHtml(rec) {
-  const warn = rec.type === 'tool' && !rec.ok
-  const brief = rec.type === 'tool_call' ? (rec.brief || '') : (rec.brief || '')
-  return '<b>' + esc(rec.tool) + '</b> ' + esc(brief)
+  const brief = rec.brief || ''
+  const label = toolLabel(rec.tool, brief)
+  // label 为空 = 摘要自含中文动词（read/list/search/run/recall/task），直接显示
+  // 短句；否则「中文标签 + 摘要」
+  return label ? '<b>' + esc(label) + '</b> ' + esc(brief) : esc(brief)
+}
+// 子代理明细行（右栏/主对话流同款）：标签为空 = 摘要自含中文动词
+function subLine(r) {
+  const label = toolLabel(r.tool, r.text)
+  return label ? label + ' ' + r.text : (r.text || '')
 }
 function appliedHtml(rec) {
   if (rec.diff) {
@@ -127,12 +134,32 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <div class="toolline">⚙ run #{{ rec.run_id }} 退出（exit {{ rec.exit_code }}）</div>
         </template>
 
+        <template v-else-if="rec.type === 'subagent'">
+          <!-- 子代理工作记录视图：spawn 卡可点击开右栏过程视图（实时+可取消） -->
+          <div v-if="rec.phase === 0" class="subcard" title="点击在右栏查看工作过程"
+               @click="S.subView = rec.turn_id">
+            <span class="subtag">🤖 子代理[{{ rec.tool }}]</span>
+            <span class="subdesc">{{ rec.text }}</span>
+            <span class="stat" :class="{ live: !S.subDone[rec.turn_id] }">
+              {{ !S.subDone[rec.turn_id] ? '进行中 · 点击查看'
+                 : S.subDone[rec.turn_id] >= 5 ? '已取消 · 点击查看' : '已完成 · 点击查看' }}
+            </span>
+          </div>
+          <div v-else-if="rec.phase === 2" class="toolline subtool"
+               v-html="'⚙ ' + esc(subLine(rec))"></div>
+          <div v-else-if="rec.phase === 3" class="toolline subtool"
+               :class="{ warn: (rec.text || '').startsWith('✗') }">⚙ {{ subLine(rec) }}</div>
+          <div v-else-if="rec.phase === 4" class="toolline subdone">✔ 子代理完成</div>
+          <div v-else-if="rec.phase === 5" class="errcard">✗ 子代理失败：{{ rec.text }}</div>
+        </template>
+
         <template v-else-if="rec.type === 'notice'">
           <div v-if="(rec.level || 0) >= 3" class="errcard">{{ rec.text }}</div>
           <!-- 系统通告（sys=1）居中分隔；「模型已切换」「权限模式 = 」通告隐藏
-              （选择器自身即反馈，写流属刷屏噪音——踩过：反复切换连发刷屏） -->
+              （选择器自身即反馈，写流属刷屏噪音——踩过：反复切换连发刷屏）；
+              子代理派出/完成通告已升级为结构化 subagent 卡，文本行隐藏 -->
           <div v-else-if="rec.sys" class="sysline">── {{ rec.text }} ──</div>
-          <div v-else-if="/^(模型已切换|权限模式 = |宿主停止|没有进行中的 turn)/.test(rec.text || '')" style="display:none"></div>
+          <div v-else-if="/^(模型已切换|权限模式 = |宿主停止|没有进行中的 turn|子代理已派出|子代理完成（|子代理失败: )/.test(rec.text || '')" style="display:none"></div>
           <div v-else class="msg">{{ rec.text }}</div>
         </template>
         <template v-else-if="rec.type === 'error'">
@@ -145,7 +172,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         <template v-else-if="rec.type === 'proposal'">
           <div class="who">Ithaca · 提案</div>
           <div class="card" :class="{ superseded: superseded(rec) }">
-            <div class="head"><b>{{ rec.tool || 'workspace.apply' }}</b><span class="stat">{{ statText(rec) }}</span></div>
+            <div class="head"><b>{{ toolLabel(rec.tool || 'workspace.apply', '') || '编辑' }}</b><span class="stat">{{ statText(rec) }}</span></div>
             <div v-if="multi(rec)" class="diff">
               <label v-for="p in rec._files" :key="p" class="fhead-row">
                 <input type="checkbox" v-model="rec._checked[p]"> {{ p }}

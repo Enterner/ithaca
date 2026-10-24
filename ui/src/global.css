@@ -284,6 +284,27 @@ div.li { line-height: 1.55; }
 .ddock-ops button.n:hover { border-color: var(--red); color: var(--red); }
 .ddock-ops button.a:hover { border-color: var(--acc); color: var(--acc); }
 
+/* 子代理过程视图（右栏 SubagentPane）：取消按钮复用琥珀警示色系 */
+.wcancel { background: none; border: 1px solid var(--line); color: var(--text);
+           border-radius: var(--radius-ctl); padding: 3px 12px; font-size: 12px; }
+.wcancel:hover { border-color: var(--red); color: var(--red); }
+.subcard { display: flex; align-items: center; gap: 8px; font-size: 12.5px; cursor: pointer;
+           border: 1px solid rgba(124,140,248,.40); border-radius: 12px;
+           background: rgba(79,124,255,.10); padding: 7px 10px; }
+.subcard:hover { border-color: var(--acc); background: rgba(79,124,255,.16); }
+.subcard .subtag { color: var(--acc); font-weight: 600; flex: none; }
+.subcard .subdesc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subcard .stat { color: var(--dim); font-size: 11px; flex: none; }
+.subcard .stat.live { color: var(--green); }
+.subtool { padding-left: 18px; opacity: .85; }
+.subdone { color: var(--green); }
+.subpane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.subpane-head { display: flex; align-items: center; gap: 8px; padding: 4px 2px 8px; font-size: 13px; }
+.subpane-head b { color: var(--acc); }
+.subpane-head .spacer, .subpane-head .elapsed { color: var(--dim); font-size: 11.5px; }
+.subpane-desc { color: var(--dim); font-size: 11.5px; padding: 0 2px 8px;
+                border-bottom: 1px solid var(--line); }
+.subpane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 2px; }
 /* 齿轮 */
 /* 齿轮：side-foot 行内项（勿改回绝对定位——bottom 定值会随底栏高度漂移压到 border-top，踩过） */
 .gear-btn { flex: none; width: 26px; height: 26px;

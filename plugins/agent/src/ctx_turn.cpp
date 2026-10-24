@@ -25,9 +25,49 @@ constexpr char kSystemPrompt[] =
     "5) Python 依赖一律装进工作区内的虚拟环境（python -m venv .venv，之后用"
     " .venv 里的 python/-m pip 安装与运行）——完全访问模式下工作区外不可写，"
     "装到用户级目录会失败或不可见；"
-    "6) 用中文简明汇报。";
+    "6) 大而独立的子工作（聚焦检索/代码审查/批量机械修改）可用 task 派子代理"
+    "并行处理：prompt 必须自包含（子代理看不到本对话），子代理只跑只读或明确"
+    "授权的改动；其报告须经验证再采纳，不可盲信；"
+    "7) 用中文简明汇报。";
 
 }  // namespace
+
+// 本槽事件订阅（slot 路由约定：slot = 会话槽 turn_no，见 contract/vc_events.hpp）。
+// 主会话槽的 run 事件重播到广播通道——webui/selftest 的消费路径迁移前后一致；
+// 重播在状态推进之前（保持迁移前 transcript 里 run_exit 先于工具结果卡的顺序）。
+// 子会话槽不重播：run 与 LLM 事件都只在归属槽可见，泄漏由"订阅才可达"结构性排除。
+void AgentCtx::subscribe_turn_slot_() {
+    slot_subs_.clear();   // 上 turn 槽已无事件源（run 均归流收口后才收口 turn）
+    const std::uint64_t slot = static_cast<std::uint64_t>(turn_no_);
+    slot_subs_.push_back(host_.on_slot(vc_api::run_line, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::RunLine*>(p);
+        if (AgentCtx::AsyncRun* run = find_run(e->run_id);
+            run != nullptr && e->text != nullptr)
+            run->output += std::string(e->text) + "\n";  // 截断通告也随事件到达
+        if (!subagent_) host_.emit(vc_api::run_line, p);
+    }));
+    slot_subs_.push_back(host_.on_slot(vc_api::run_exit, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::RunExit*>(p);
+        AgentCtx::AsyncRun* run = find_run(e->run_id);
+        if (run == nullptr) return;  // 非本 turn 的 run（取消后的迟到孤儿）：静默
+        run->exited = true;
+        run->exit_code = e->exit_code;
+        if (!subagent_) host_.emit(vc_api::run_exit, p);
+        try_finish_tools();  // 收口门槛（子代理在途/decision 挂起）各 ctx 自查
+    }));
+    if (!subagent_) return;  // 主会话 LLM 事件走广播（slot=0）；子会话需要本槽订阅
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
+        on_done(*static_cast<const vc_api::LlmDone*>(p));
+    }));
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
+        on_llm_error(*static_cast<const vc_api::LlmError*>(p));
+    }));
+    // 流式增量转工作记录视图（广播，落不了盘也不需要——实时过程归前端子代理视图）
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmDelta*>(p);
+        emit_subagent_(turn_no_, 1, nullptr, e->text != nullptr ? e->text : "");
+    }));
+}
 
 // ---- turn 状态机 ------------------------------------------------------------
 
@@ -36,19 +76,48 @@ void AgentCtx::begin_turn(const std::string& text) {
     state_ = State::TurnActive;
     runs_.clear();
     compress_retries_ = 0;
+    // 本槽事件订阅（先于 discover_tools——工具事件可能在本 turn 内即到）：
+    // 上 turn 的槽订阅此时已无事件源，直接换订
+    subscribe_turn_slot_();
+    // 类型清单 turn 边界重载（热编辑即生效）：先于 discover_tools——task 自述
+    // 要带上最新类型名。仅主会话（子代理不再派生，类型无用）
+    if (depth_ == 0) load_agent_types_();
     if (!discover_tools())
         return fail_turn("没有可用的工具表（检查 ITHACA_AGENT_TOOLS）");
-    // M6 session：恢复的会话保留历史（含 system），只在空会话时注入 system
+    // M6 session：恢复的会话保留历史（含 system），只在空会话时注入 system；
+    // 子代理 = 类型 prompt 覆盖
     if (messages_.empty())
-        messages_.push_back(json{{"role", "system"}, {"content", kSystemPrompt}});
+        messages_.push_back(json{{"role", "system"},
+                                 {"content", system_prompt_.empty()
+                                                 ? std::string(kSystemPrompt)
+                                                 : system_prompt_}});
     messages_.push_back(json{{"role", "user"}, {"content", text}});
     // mission 任务目标卡（上下文压缩阶段一）：turn 边界 = 重建点，整卡重写并
-    // 固定在 system 之后——turn 内 append-only（缓存前缀纪律）
-    rebuild_mission_();
+    // 固定在 system 之后——turn 内 append-only（缓存前缀纪律）。子代理是单任务
+    // 短命上下文，任务卡与 user 消息逐字重复，纯耗 token
+    if (!subagent_) rebuild_mission_();
+    // 开轮即落盘（含本条 user 消息与任务卡）：持久化点原本只在 turn 收口/压缩
+    // ——进程在 turn 中途死掉（崩溃/强杀/断电）时本条请求连同任务卡从历史蒸发，
+    // 重放与恢复都不留痕，用户看到的是请求无声消失（踩过：子代理在途挂死 →
+    // 重启 → 任务卡锚点整段跳过该请求，「继续」被接进上一个任务的语境）。
+    // 恢复后未应答的 user 消息是合法序列，下轮正常续接。子代理不持久化
+    // （session_path_ 为空，persist_session_ 自行早退）。
+    persist_session_();
     send_chat();
 }
 
 void AgentCtx::send_chat() {
+    try {
+        send_chat_impl();
+    } catch (...) {
+        fail_unexpected_();   // 请求体 dump/压缩预检抛出 ⇒ 终态收口，不悬停
+    }
+}
+
+void AgentCtx::send_chat_impl() {
+    // 子代理轮数护栏：先于发号判定——超限 fail_turn，不再产生新的在途请求
+    if (subagent_ && ++rounds_ > kMaxChildRounds)
+        return fail_turn("子代理超出轮数上限（" + std::to_string(kMaxChildRounds) + "）");
     // provider 每轮重新解析：同名服务被竞争顶掉时自然切换，agent 无感
     llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
     // 窗口/输出上限自述兜底：env / set_active 没给全（窗口未知或 max_output 未知）
@@ -74,14 +143,18 @@ void AgentCtx::send_chat() {
     inflight_ = next_chat_seq();
     json body = {{"messages", messages_}};
     if (!tools_.empty()) body["tools"] = tools_;
+    // 子会话请求带路由键：provider 据此改走子档案（vc.llm.set_active 尾部字段）
+    // 并把 LLM 事件按 slot 单播回发——不进广播通道，父会话天然不可见
+    if (subagent_) body["slot"] = turn_no_;
     body_buf_ = body.dump();
     if (llm_ == nullptr || llm_->chat_ex == nullptr)
         return fail_turn("LLM 不可用");
     // 发送前预检（批次四-18/19）：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建
     // 请求体再发——单 turn 几十轮工具往返在轮间主动瘦身（每轮 send_chat 都检），
     // 省一次 provider 400 往返；LLM 摘要仍只在 turn 边界。粗估宁高勿低：误折
-    // 代价 = 上下文略瘦，可接受；折叠后旧信号置零待下次回报。
-    if (session_threshold_ > 0 &&
+    // 代价 = 上下文略瘦，可接受；折叠后旧信号置零待下次回报。子代理不压缩——
+    // 折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
+    if (!subagent_ && session_threshold_ > 0 &&
         estimate_prompt_tokens(body_buf_) > session_threshold_) {
         if (const vcagent::CompressPlan plan = vcagent::plan_compress(messages_); plan.valid) {
             pending_plan_ = plan;
@@ -107,98 +180,285 @@ void AgentCtx::dispatch_loop() {
             ++dispatched_;
             continue;
         }
-        emit_tool_call(ctx.full_name, ctx.args);
-        // 内置工具：context.recall（外置存储回查）——不经工具表，直接处理
-        if (ctx.full_name == vcagent::kRecallTool) {
-            ctx.result = exec_recall(ctx.args);
-            ctx.done = true;
-            emit_tool_result(ctx.full_name, true, ctx.result);
-            ++dispatched_;
-            continue;
-        }
-        const Bound* b = find_bound(ctx.full_name);
-        if (b == nullptr) {
-            ctx.result = json{{"ok", false}, {"error", "未知工具: " + ctx.full_name}}.dump();
+        bool suspend = false;
+        try {
+            suspend = dispatch_one_(ctx);
+        } catch (const std::exception& e) {
+            // 单条分发异常兜底：异常若穿出本循环，本 ctx 状态机会停在抛点
+            // ⇒ send_chat 永不执行 ⇒ turn 悬停无终态（内核 ABI 边界只负责
+            // 隔离订阅者与落日志，救不了本状态机）。转成错误结果回灌，LLM
+            // 据此自修或换路。
+            ctx.result = json{{"ok", false},
+                              {"error", std::string("工具执行异常: ") + e.what()}}
+                             .dump();
             ctx.done = true;
             emit_tool_result(ctx.full_name, false, ctx.result);
             ++dispatched_;
-            continue;
+        } catch (...) {
+            ctx.result = json{{"ok", false}, {"error", "工具执行异常（未知类型）"}}.dump();
+            ctx.done = true;
+            emit_tool_result(ctx.full_name, false, ctx.result);
+            ++dispatched_;
         }
-        if (vcagent::needs_confirm(ctx.full_name, confirm_) && !auto_all_) {
-            // 泛化试算 + 提案（先置状态再 emit——嵌套派发会在本帧内回到
-            // on_decision，状态没就位会被自己的守卫丢弃——M3 踩过）。
-            json dry_args = ctx.args;
-            dry_args["dry_run"] = true;
-            const std::string dry_out = exec(*b, ctx.tool, dry_args);
-            pending_.tool = ctx.full_name;
-            pending_.index = dispatched_;
-            pending_.args = ctx.args;
-            state_ = State::AwaitingDecision;
-            // diff_text 只装行级 diff（原始结果 JSON 不可读——webui 截图自审抓到）；
-            // 同文件多 op 已在 workspace 折叠，edits>1 时标注「N 处编辑」
-            std::string diff_text;
-            json dry = json::parse(dry_out, nullptr, false);
-            if (dry.is_object() && dry.contains("files") && dry["files"].is_array())
-                for (const auto& f : dry["files"]) {
-                    if (f.contains("path")) {
-                        std::string head =
-                            "── " + f.value("path", std::string());
-                        if (f.contains("edits") && f["edits"].is_number_integer() &&
-                            f["edits"].get<int>() > 1)
-                            head += "（" + std::to_string(f["edits"].get<int>()) + " 处编辑）";
-                        diff_text += head + "\n";
-                    }
-                    if (f.contains("diff") && f["diff"].is_string())
-                        diff_text += f["diff"].get<std::string>();
-                }
-            // dry 失败（ok:false）不进提案：错误经 tool_result 回灌 LLM 自修
-            if (dry.is_object() && dry.value("ok", true) == false) {
-                ctx.result = dry_out;
-                ctx.done = true;
-                emit_tool_result(ctx.full_name, false, ctx.result);
-                append_results_and_continue();
-                return;
-            }
-            // runner 类提案：would_run 单行卡（命令批准卡形态）
-            if (diff_text.empty() && dry.is_object() && dry.contains("would_run") &&
-                dry["would_run"].is_string())
-                diff_text = "── " + ctx.full_name + "（命令批准）\n" +
-                            dry["would_run"].get<std::string>() + "\n";
-            if (diff_text.empty()) diff_text = dry_out;
-            nostos::kit::Scratch prop_scratch;
-            const vc_api::EditProposed proposal{
-                turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name)};
-            host_.emit(vc_api::edit_proposed, &proposal);
-            return;  // ← 死锁纪律：绝不同步等待
+        if (ctx.done && !ctx.result.empty() &&
+            ctx.result.find("工具执行异常") != std::string::npos) {
+            host_.log(3, "ithaca.agent: 工具分发异常已兜底 turn #" +
+                             std::to_string(turn_no_) + " tool=" + ctx.full_name);
         }
-        ctx.result = exec(*b, ctx.tool, ctx.args);
-        ctx.done = true;
-        emit_tool_result(ctx.full_name, tool_ok(ctx.result), ctx.result);
-        ++dispatched_;
-        // 异步长任务（runner.run）：登记 run_id——结果等 vc.run.exit 归流，
-        // 本条消息的其余工具照常分发（runner 侧并发、run_id 归流）。
-        if (const int rid = parse_run_id(ctx.result); rid > 0) {
-            runs_[rid] = AsyncRun{dispatched_ - 1, "", false, 0};
-            notice("后台任务 run#" + std::to_string(rid) + " 已启动");
-        }
+        if (suspend) return;   // 挂起即返：跳过循环尾（旧 return 语义，见 dispatch_one_）
     }
-    // 分发完但仍未收口 ⇒ 看异步任务：全部已退出（含 run_exit 在审批窗口内
-    // 提前到达的场景 时机修正）就地收口；否则等归流
-    if (runs_.empty()) return append_results_and_continue();
+    // 分发完但仍未收口 ⇒ 看在途面：无任何挂起就地收口；有异步任务/在途子代理
+    // 则等归流回调（含 run_exit 在审批窗口内提前到达的场景 时机修正）
+    if (runs_.empty() && child_pends_.empty()) return append_results_and_continue();
     bool all_exited = true;
     for (const auto& [rid, run] : runs_)
         if (!run.exited) all_exited = false;
-    if (all_exited) return try_finish_tools();
-    notice("等待 " + std::to_string(runs_.size()) + " 个后台任务完成…");
+    if (all_exited && child_pends_.empty()) return try_finish_tools();
+    notice("等待 " + std::to_string(runs_.size() + child_pends_.size()) +
+           " 个后台任务/子代理完成…");
+}
+
+// 单条调用分发（dispatch_loop 的 try 保护体）：emit 调用卡 → 内置工具拦截 →
+// 工具表执行/提案挂起。异常由调用方兜底转错误结果回灌。
+bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
+    emit_tool_call(ctx.full_name, ctx.args);
+    // 内置工具：context.recall（外置存储回查）——不经工具表，直接处理
+    if (ctx.full_name == vcagent::kRecallTool) {
+        ctx.result = exec_recall(ctx.args);
+        ctx.done = true;
+        emit_tool_result(ctx.full_name, true, ctx.result);
+        ++dispatched_;
+        return false;
+    }
+    // 内置工具：task（子代理派发）——不经工具表。spawn 失败 = 护栏/参数拒绝
+    // （result 已写好，就地 emit 回灌）；成功 = 在途登记（begin_turn 同步失败
+    // 的路径已在回调帧内收口，结果同帧写回）
+    if (ctx.full_name == vcagent::kTaskTool) {
+        if (!spawn_child_(dispatched_, ctx)) {
+            ctx.done = true;
+            emit_tool_result(ctx.full_name, false, ctx.result);
+        }
+        ++dispatched_;
+        return false;
+    }
+    const Bound* b = find_bound(ctx.full_name);
+    if (b == nullptr) {
+        ctx.result = json{{"ok", false}, {"error", "未知工具: " + ctx.full_name}}.dump();
+        ctx.done = true;
+        emit_tool_result(ctx.full_name, false, ctx.result);
+        ++dispatched_;
+        return false;
+    }
+    if (vcagent::needs_confirm(ctx.full_name, confirm_) && !auto_all_) {
+        // 泛化试算 + 提案（先置状态再 emit——嵌套派发会在本帧内回到
+        // on_decision，状态没就位会被自己的守卫丢弃——M3 踩过）。
+        json dry_args = ctx.args;
+        dry_args["dry_run"] = true;
+        const std::string dry_out = exec(*b, ctx.tool, dry_args);
+        pending_.tool = ctx.full_name;
+        pending_.index = dispatched_;
+        pending_.args = ctx.args;
+        state_ = State::AwaitingDecision;
+        // diff_text 只装行级 diff（原始结果 JSON 不可读——webui 截图自审抓到）；
+        // 同文件多 op 已在 workspace 折叠，edits>1 时标注「N 处编辑」
+        std::string diff_text;
+        json dry = json::parse(dry_out, nullptr, false);
+        if (dry.is_object() && dry.contains("files") && dry["files"].is_array())
+            for (const auto& f : dry["files"]) {
+                if (f.contains("path")) {
+                    std::string head =
+                        "── " + f.value("path", std::string());
+                    if (f.contains("edits") && f["edits"].is_number_integer() &&
+                        f["edits"].get<int>() > 1)
+                        head += "（" + std::to_string(f["edits"].get<int>()) + " 处编辑）";
+                    diff_text += head + "\n";
+                }
+                if (f.contains("diff") && f["diff"].is_string())
+                    diff_text += f["diff"].get<std::string>();
+            }
+        // dry 失败（ok:false）不进提案：错误经 tool_result 回灌 LLM 自修
+        if (dry.is_object() && dry.value("ok", true) == false) {
+            ctx.result = dry_out;
+            ctx.done = true;
+            emit_tool_result(ctx.full_name, false, ctx.result);
+            append_results_and_continue();
+            return true;   // 回灌已发车：挂起即返，循环尾不得再跑（旧 return 语义）
+        }
+        // runner 类提案：would_run 单行卡（命令批准卡形态）
+        if (diff_text.empty() && dry.is_object() && dry.contains("would_run") &&
+            dry["would_run"].is_string())
+            diff_text = "── " + ctx.full_name + "（命令批准）\n" +
+                        dry["would_run"].get<std::string>() + "\n";
+        if (diff_text.empty()) diff_text = dry_out;
+        nostos::kit::Scratch prop_scratch;
+        const vc_api::EditProposed proposal{
+            turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name)};
+        host_.emit(vc_api::edit_proposed, &proposal);
+        return true;  // ← 死锁纪律：绝不同步等待；挂起即返（旧 return 语义）
+    }
+    ctx.result = exec(*b, ctx.tool, ctx.args);
+    ctx.done = true;
+    emit_tool_result(ctx.full_name, tool_ok(ctx.result), ctx.result);
+    ++dispatched_;
+    // 异步长任务（runner.run）：登记 run_id——结果等 vc.run.exit 归流，
+    // 本条消息的其余工具照常分发（runner 侧并发、run_id 归流）。
+    if (const int rid = parse_run_id(ctx.result); rid > 0) {
+        runs_[rid] = AsyncRun{dispatched_ - 1, "", false, 0};
+        notice("后台任务 run#" + std::to_string(rid) + " 已启动");
+    }
+    return false;
+}
+
+// task 工具：校验参数与护栏 → 起子 ctx（免批/静默/受限工具面）事件驱动跑循环
+// → 登记在途。返回 false = 拒绝（result 已写好，调用方 emit 后继续分发）。
+// 在途登记先于 begin_turn：begin_turn 同步失败（无工具表/LLM 不可用）会在本帧
+// 内经 on_finished_ 回调走 on_child_finished_ 收口，登记晚了就丢挂起。
+bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
+    const std::string desc = call.args.value("description", "");
+    const std::string prompt = call.args.value("prompt", "");
+    const std::string type_name = call.args.value("subagent_type", "general");
+    if (prompt.empty() || desc.empty()) {
+        call.result =
+            json{{"ok", false}, {"error", "task 缺少必填参数（description / prompt）"}}.dump();
+        return false;
+    }
+    if (children_.size() >= kMaxChildren) {
+        call.result = json{{"ok", false},
+                           {"error", "并发子代理已达上限（" + std::to_string(kMaxChildren) +
+                                         "），等在途任务完成后再派发"}}.dump();
+        return false;
+    }
+    const AgentType* type = nullptr;
+    for (const auto& t : types_)
+        if (t.name == type_name) {
+            type = &t;
+            break;
+        }
+    if (type == nullptr) {
+        std::string known;
+        for (const auto& t : types_) {
+            if (!known.empty()) known += " / ";
+            known += t.name;
+        }
+        call.result = json{{"ok", false},
+                           {"error", "未知子代理类型: " + type_name + "（可用: " + known + "）"}}
+                          .dump();
+        return false;
+    }
+    // 工具面：类型白名单（工具集名）过滤父清单；空 = 继承父全量
+    std::vector<std::string> svcs;
+    if (type->tools.empty()) {
+        svcs = tool_svcs_;
+    } else {
+        for (const auto& want : type->tools)
+            for (const auto& s : tool_svcs_)
+                if (vcagent::toolset_of_svc(s) == want) {
+                    svcs.push_back(s);
+                    break;
+                }
+        if (svcs.empty()) {
+            call.result = json{{"ok", false},
+                               {"error", "类型 " + type_name +
+                                             " 的工具白名单未命中任何可用工具集"}}.dump();
+            return false;
+        }
+    }
+    auto child = std::make_unique<AgentCtx>();
+    child->host_ = host_;
+    child->subagent_ = true;       // 免批 + 静默 + 不压缩不持久化 + 请求体带标志
+    child->depth_ = depth_ + 1;
+    child->system_prompt_ = type->prompt;
+    child->tool_svcs_ = std::move(svcs);
+    child->auto_all_ = true;       // 子代理免批：授权由主会话批准链路负责（task 卡用户可见）
+    child->confirm_.clear();
+    child->raw_dir_ = raw_dir_;    // 共享外置目录——归档名带全局唯一 turn_no_ 不相撞
+    AgentCtx* raw = child.get();
+    child->on_finished_ = [this, index, raw](bool ok, const std::string& report, int turns) {
+        on_child_finished_(index, raw, ok, report, turns);
+    };
+    children_.push_back(std::move(child));
+    child_pends_.insert(index);
+    raw->begin_turn(prompt);
+    if (child_pends_.count(index) != 0)
+        notice("子代理已派出 [" + type->name + "] " + desc);
+    // 工作记录视图（落 transcript 不进上下文）：spawn 卡 + 主会话挂起条的数据源。
+    // turn_id 带子的（与子 ctx 后续所有记录同号）——UI 按 turn_id 分组，带父号
+    // 会让 spawn 卡掉进别的组、右栏点开是空（踩过：重启撞号后新 spawn 被旧
+    // 完成卡标记为「已结束」）
+    emit_subagent_(raw->turn_no_, 0, type->name.c_str(),
+                   desc.empty() ? prompt : desc + "——" + trim(prompt, 120));
+    host_.log(2, "ithaca.agent: 子代理 #" + std::to_string(raw->turn_no_) + " 已派出（" +
+                     type->name + "）: " + desc);
+    return true;
+}
+
+// 子代理完成回调（宿主线程；可能在子事件处理栈内同步执行）。收口门槛与
+// try_finish_tools 同一门：全部 call 完成 + 无在途子 + 无在途 run。
+void AgentCtx::on_child_finished_(std::size_t index, AgentCtx* child, bool ok,
+                                  const std::string& report, int turns) {
+    child_pends_.erase(index);
+    // 父已收口（取消/失败级联）：子现场已清，迟到回调只摘挂起不写回
+    if (state_ != State::TurnActive) return;
+    try {
+        // 子用量并入会话累计（计量口径同 on_done 的 usage 累计）
+        usage_prompt_ += child->usage_prompt_;
+        usage_completion_ += child->usage_completion_;
+        usage_total_ += child->usage_total_;
+        usage_cache_ += child->usage_cache_;
+        ToolCallCtx& c = calls_[index];
+        c.result = ok ? json{{"ok", true},
+                             {"report", report},
+                             {"turns", turns},
+                             {"total_tokens", child->usage_total_}}
+                            .dump()
+                      : json{{"ok", false}, {"error", report}}.dump();
+        c.done = true;
+        emit_tool_result(c.full_name, ok, c.result);
+        notice(ok ? "子代理完成（" + std::to_string(turns) + " 轮 · " +
+                         std::to_string(child->usage_total_) + " tokens）"
+                  : "子代理失败: " + trim(report, 120));
+    } catch (...) {
+        // 本回调运行在子代理的调用栈上：禁止 fail_turn/cleanup_turn_——那会析构
+        // 栈上仍在执行的子 ctx（UB）。异常降级为本条 task 的错误结果走常规续段；
+        // 续段原语（append/try_finish）自身已兜底终态
+        host_.log(3, "ithaca.agent: 子代理完成回调异常，已降级为该任务的错误结果");
+        if (index < calls_.size() && !calls_[index].done) {
+            calls_[index].result =
+                json{{"ok", false}, {"error", "子代理完成回调内部异常"}}.dump();
+            calls_[index].done = true;
+            emit_tool_result(calls_[index].full_name, false, calls_[index].result);
+        }
+    }
+    // 其余子代理仍在途：等最后一个完成统一收口
+    if (!child_pends_.empty()) return;
+    // 同消息尚有未分发项：分发循环尾部收口（结果已写回，循环会跳过完成项）
+    if (dispatched_ != calls_.size()) return;
+    if (runs_.empty()) return append_results_and_continue();
+    for (const auto& [rid, run] : runs_)
+        if (!run.exited) return;
+    try_finish_tools();
+}
+
+void AgentCtx::append_results_and_continue() {
+    try {
+        append_results_and_continue_impl();
+    } catch (...) {
+        fail_unexpected_();   // 回灌 dump/外置抛出 ⇒ 终态收口，不悬停
+    }
 }
 
 // 全部工具调用完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。
 // 上下文压缩阶段一：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
 // 确定性模板摘要 + ref（锚点逐字节保留；失败 2KB 内保留详细错误，ref 兜底全量）
-void AgentCtx::append_results_and_continue() {
+void AgentCtx::append_results_and_continue_impl() {
     for (const auto& ctx : calls_) {
         std::string content = ctx.result;
-        if (content.size() > vcagent::kInlineResultCap) {
+        // 内容型工具内联豁免（read/task，量级理由见 kContentInlineCap 声明处）：
+        // 正文一次进上下文——外置+recall 分页留给压缩回查与极端超限结果
+        const bool content_inline =
+            (tool_last(ctx.full_name) == "read" || tool_last(ctx.full_name) == "task") &&
+            content.size() <= kContentInlineCap;
+        if (content.size() > vcagent::kInlineResultCap && !content_inline) {
             if (tool_last(ctx.full_name) == "recall") {
                 // recall 的 content 本身就是外置归档：直接截断兜底即可
                 content = vcws::trim_utf8(content, 2048) + "…（回查内容过长，已截断）";
@@ -255,24 +515,49 @@ std::string AgentCtx::exec_recall(const json& args) {
     const long long total = static_cast<long long>(content.size());
     long long offset = args.value("offset", 0LL);
     const long long limit = std::clamp(args.value("limit", 2048LL), 1LL, 4096LL);
+    // 页边界不劈 UTF-8 码点：起点落在续字节上则后移到码点首字节；**尾边界同理**——
+    // substr 恰好切在多字节序列中间 ⇒ 尾部残留不完整码点，recall_result().dump()
+    // 抛 type_error.316（异常被内核 emit 的 catch-all 吞掉 ⇒ send_chat 永不执行，
+    // turn 挂死，踩过）。trim_utf8 只保证「截断到 cap」不校验切片尾部，边界必须
+    // 由本处自洽：内容是 nlohmann dump 产物（合法 UTF-8）且起点已对齐，前向扫到
+    // 最后一个完整码点边界即可。
     offset = std::clamp(offset, 0LL, total);
-    // 页边界不劈 UTF-8 码点：起点落在续字节上则后移到码点首字节
     while (offset < total && (static_cast<unsigned char>(
                                   content[static_cast<std::size_t>(offset)]) & 0xC0) == 0x80)
         ++offset;
     std::string page = content.substr(static_cast<std::size_t>(offset),
                                       static_cast<std::size_t>(limit));
+    {
+        std::size_t k = 0, last = 0;
+        while (k < page.size()) {
+            last = k;
+            const unsigned char c = static_cast<unsigned char>(page[k]);
+            k += c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2
+               : (c >= 0xE0 && c <= 0xEF) ? 3 : 4;
+        }
+        if (k != page.size()) page.resize(last);   // 尾码点被劈 ⇒ 收回到上一边界
+    }
     page = vcws::trim_utf8(page, static_cast<std::size_t>(limit));
     const bool has_more = offset + static_cast<long long>(page.size()) < total;
     return vcagent::recall_result(ref, page, total, offset, has_more,
                                   offset + static_cast<long long>(page.size()));
 }
 
-// run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口（正在等 decision 时不收口，
-// 收口延迟到 decision 恢复后的 dispatch_loop 的时机修正）
 void AgentCtx::try_finish_tools() {
+    try {
+        try_finish_tools_impl();
+    } catch (...) {
+        fail_unexpected_();   // run 结果组包（输出含进程原始字节）dump 抛出 ⇒ 终态收口
+    }
+}
+
+// run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口（正在等 decision 或有
+// 在途子代理时不收口——前者延迟到 decision 恢复后的 dispatch_loop，后者由最后
+// 完成的子代理回调触发同一门槛）
+void AgentCtx::try_finish_tools_impl() {
     if (state_ != State::TurnActive) return;
     if (dispatched_ != calls_.size()) return;
+    if (!child_pends_.empty()) return;
     if (runs_.empty()) return;  // 无异步任务：常规收口归 dispatch_loop，防双重 send_chat
     for (const auto& [rid, run] : runs_)
         if (!run.exited) return;
@@ -299,6 +584,20 @@ void AgentCtx::rebuild_confirm_() {
 }
 
 void AgentCtx::finish_turn() {
+    // 子代理收口：最后一条 assistant 正文即报告，经回调交父（不持久化/不压缩/
+    // 不排队——子代理是单任务短命上下文，无 turn 边界后续）
+    if (subagent_) {
+        state_ = State::Idle;
+        std::string report;
+        for (auto it = messages_.rbegin(); it != messages_.rend(); ++it)
+            if (it->is_object() && it->value("role", "") == "assistant") {
+                report = it->value("content", "");
+                break;
+            }
+        emit_subagent_(turn_no_, 4, nullptr, trim(report, 2000));   // 工作记录视图：完成卡
+        if (on_finished_) on_finished_(true, report, rounds_);
+        return;
+    }
     // turn 完成只发 host log，不发 notice——webui 对话流不需要；token 统计
     // 已随 assistant 记录回传
     host_.log(2, "ithaca.agent: turn #" + std::to_string(turn_no_) + " 完成（tokens total " +
@@ -347,6 +646,8 @@ bool AgentCtx::hard_window_() const {
 // 判定——否则反复取消/失败的长会话上下文只增不减）。计划不可折叠 ⇒ false，
 // 调用方走原收口；若下一请求仍超窗，由 on_llm_error 的超窗自救接手。
 bool AgentCtx::maybe_compress_() {
+    if (subagent_) return false;  // 子代理总闸：单任务短命上下文，压缩语义（回 Idle/
+                                  // 摘要异步收口/退避校验）全部不适用
     const bool hard = hard_window_();
     if (!hard && !vcagent::should_compress(last_prompt_tokens_, session_threshold_))
         return false;
@@ -479,17 +780,82 @@ void AgentCtx::forced_fold_resend_() {
 // llm_error——webui 由此清 in_flight + 落错误卡，transcript 有终态记录（重放
 // 安全）。request_id=0 是「agent 自发」哨兵：自己订阅的 on_llm_error 靠
 // request_id != inflight_ 忽略它，否则同步派发重入 cleanup 会把排队输入排空两次。
+// 子代理失败静默：不发哨兵（会在父会话落错误卡并提前清 in_flight），失败原因
+// 经完成回调作为 task 工具结果回灌，父 LLM 自行处置。
 void AgentCtx::fail_turn(const std::string& why) {
+    if (subagent_) {
+        host_.log(3, "ithaca.agent: 子代理 turn #" + std::to_string(turn_no_) +
+                         " 失败: " + why);
+        state_ = State::Idle;
+        emit_subagent_(turn_no_, 5, nullptr, trim(why, 500));   // 工作记录视图：失败卡
+        if (on_finished_) on_finished_(false, why, rounds_);
+        calls_.clear();
+        runs_.clear();
+        return;
+    }
     const std::string msg = "turn #" + std::to_string(turn_no_) + " 失败: " + why;
     const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str()};
     host_.emit(vc_api::llm_error, &e);
     cleanup_turn_();
 }
 
+// turn 机器统一异常兜底（语义与 compress 清理的理由见 agent_plugin.hpp 声明处）
+void AgentCtx::fail_unexpected_() noexcept {
+    compress_inflight_ = false;
+    compress_seq_ = -1;
+    try {
+        try {
+            throw;
+        } catch (const std::exception& e) {
+            fail_turn(std::string("turn 内部异常收口: ") + e.what());
+        } catch (...) {
+            fail_turn("turn 内部异常收口（未知异常类型）");
+        }
+    } catch (...) {
+        // fail_turn 链自身再出异常（级联清理/压缩判定等）：最低限度复位状态机
+        // ——悬停 TurnActive 比任何半清现场都糟
+        state_ = State::Idle;
+        host_.log(3, "ithaca.agent: turn 异常收口链自身抛出——已强制回 Idle");
+    }
+}
+
 // 状态机复位（不含对外事件——收口事件由调用方决定发不发）：持久化 + 清工具现场
 // + 压缩判定（失败/取消收口同样过判定——上下文只增不减的反面）
 // + 回 Idle + 排队输入 flush（栈深有界）。
 void AgentCtx::cleanup_turn_() {
+    // 先清悬挂工具尾巴再持久化：异常/取消收口时 messages_ 可能停在分发中途，
+    // 带 tool_calls 的 assistant 没有全部应答就落盘，下次请求即 provider 400
+    // 且每轮复现成错误循环
+    truncate_dangling_tool_exchange_();
+    // 子代理级联收场（取消/失败同走此门）：在途子代理停掉并随现场销毁——它们
+    // 是本 turn 的派生，父已终态则子无意义。子自己派的后台进程不追杀（runner
+    // 自有超时），log 留痕。置 inflight_=-1 防 provider 迟到的取消回包误入路由。
+    // NOTE: 每个被杀子代理补发 phase-5 终态卡——回调已被禁用（父现场正被清），
+    // 不补发则 transcript 永无该子代理的终态记录，spawn 卡在重放与实时里永远
+    // 「进行中」（踩过：取消后卡片挂进行中，刷新也复活不了）
+    if (!children_.empty()) {
+        llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
+        int killed = 0;
+        for (auto& c : children_) {
+            c->on_finished_ = nullptr;   // 级联期间禁回调：父现场正被清空
+            if (c->state_ == State::TurnActive) {
+                if (llm_ != nullptr && llm_->cancel != nullptr)
+                    llm_->cancel(llm_->self, c->inflight_);
+                c->inflight_ = -1;
+                c->state_ = State::Idle;
+                emit_subagent_(c->turn_no_, 5, nullptr, "已随主会话取消");
+                ++killed;
+            }
+            if (!c->runs_.empty())
+                host_.log(3, "ithaca.agent: 子代理 #" + std::to_string(c->turn_no_) +
+                                 " 尚有 " + std::to_string(c->runs_.size()) +
+                                 " 个后台进程在途——留待 runner 超时收尾");
+        }
+        children_.clear();
+        child_pends_.clear();
+        // 逐子代理的取消卡已承载终态，聚合通告不再发（纯刷屏）
+        host_.log(2, "ithaca.agent: 已取消 " + std::to_string(killed) + " 个在途子代理");
+    }
     persist_session_();
     calls_.clear();
     runs_.clear();
@@ -510,6 +876,24 @@ void AgentCtx::flush_queued_inputs_() {
     const std::string next = queued_.front();
     queued_.pop_front();
     begin_turn(next);
+}
+
+// 悬挂工具回合尾巴清理（语义见 agent_plugin.hpp 声明处）：tool 应答与其所属
+// assistant 成对弹出，遇到完整消息（无 tool_calls 的 assistant / user / system）
+// 即停——mission 卡与 digest 都是 system 角色，天然不受影响。
+void AgentCtx::truncate_dangling_tool_exchange_() {
+    while (!messages_.empty()) {
+        const json& last = messages_.back();
+        if (!last.is_object()) break;
+        const std::string role = last.value("role", "");
+        if (role == "tool" ||
+            (role == "assistant" && last.contains("tool_calls") &&
+             last["tool_calls"].is_array() && !last["tool_calls"].empty())) {
+            messages_.erase(messages_.size() - 1);
+            continue;
+        }
+        break;
+    }
 }
 
 }  // namespace vc_agent

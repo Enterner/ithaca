@@ -26,26 +26,15 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         ctx_.on_decision(*static_cast<const vc_api::TurnDecision*>(p));
     });
     sub_done_ = host.on(vc_api::llm_done, [this](const void* p) {
+        // 主会话槽 = 广播（slot=0）；子会话的 LLM 事件按槽单播、各自订阅直达
+        // 所属 ctx——不再总线扇出 + request_id 反查
         ctx_.on_done(*static_cast<const vc_api::LlmDone*>(p));
     });
     sub_error_ = host.on(vc_api::llm_error, [this](const void* p) {
         ctx_.on_llm_error(*static_cast<const vc_api::LlmError*>(p));
     });
-    // M5：异步长任务（runner.run）的输出/退出归流——run_id 匹配后才入结果
-    sub_run_line_ = host.on(vc_api::run_line, [this](const void* p) {
-        const auto* e = static_cast<const vc_api::RunLine*>(p);
-        if (AgentCtx::AsyncRun* run = ctx_.find_run(e->run_id);
-            run != nullptr && e->text != nullptr)
-            run->output += std::string(e->text) + "\n";  // 截断通告也随事件到达
-    });
-    sub_run_exit_ = host.on(vc_api::run_exit, [this](const void* p) {
-        const auto* e = static_cast<const vc_api::RunExit*>(p);
-        AgentCtx::AsyncRun* run = ctx_.find_run(e->run_id);
-        if (run == nullptr) return;  // 非本 agent 启动的 run：忽略
-        run->exited = true;
-        run->exit_code = e->exit_code;
-        ctx_.try_finish_tools();
-    });
+    // run.line/exit 迁移到槽订阅（subscribe_turn_slot_）：runner 按 slot=turn_id
+    // 单播，归属 ctx 直达；主会话槽的行/退出由 agent 重播广播供 UI 消费
     // 会话切换（webui）——仅 Idle 时接受；加载 state 并重定向落盘
     sub_session_ = host.on(vc_api::session_load, [this](const void* p) {
         const auto* e = static_cast<const vc_api::SessionLoad*>(p);
@@ -112,6 +101,21 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     if (const char* v = std::getenv("ITHACA_CONTEXT_COMPRESS_TOKENS"))
         ctx_.compress_threshold_ = std::atoll(v);
 
+    // 子代理类型目录：env ITHACA_AGENT_DIR 显式覆盖（测试/便携）> 启动工作区
+    // 推导（ITHACA_WORKSPACE_DIR，两个启动器均已传递）> 工作区热切事件跟随
+    // （<工作区>/.ithaca/agent）。目录缺失 = 仅内置 general
+    if (const char* v = std::getenv("ITHACA_AGENT_DIR"); v != nullptr && *v != '\0')
+        ctx_.agent_dir_ = v;
+    else if (const char* ws = std::getenv("ITHACA_WORKSPACE_DIR"); ws != nullptr && *ws != '\0')
+        ctx_.agent_dir_ = (fs::path(ws) / ".ithaca" / "agent").string();
+    sub_workspace_ = host.on(vc_api::workspace_set, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
+        if (e->root == nullptr || *e->root == '\0') return;
+        if (const char* v = std::getenv("ITHACA_AGENT_DIR"); v != nullptr && *v != '\0')
+            return;  // env 显式覆盖最高，事件不覆写（对齐 ITHACA_CONTEXT_WINDOW 的优先级语义）
+        ctx_.agent_dir_ = (fs::path(e->root) / ".ithaca" / "agent").string();
+    });
+
     host.log(2, "ithaca.agent: 就绪（工具集 " + std::to_string(ctx_.tool_svcs_.size()) +
                     " 个；需批准 " + std::to_string(ctx_.confirm_.size()) + " 项）");
     return NOSTOS_OK;
@@ -122,11 +126,10 @@ void AgentPlugin::deactivate() noexcept {
     sub_decision_ = {};
     sub_done_ = {};
     sub_error_ = {};
-    sub_run_line_ = {};
-    sub_run_exit_ = {};
     sub_session_ = {};
     sub_mode_ = {};
     sub_llm_set_ = {};
+    sub_workspace_ = {};
     ctx_.host_.log(2, "ithaca.agent: 已停用");
 }
 

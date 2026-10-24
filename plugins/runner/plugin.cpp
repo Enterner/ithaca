@@ -69,7 +69,15 @@ public:
         mode_ = vc_api::normalize_permission_mode(
             std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
-        sandboxed_ = (mode_ == "full-auto");
+        // Windows 沙箱取舍（对齐成熟 CLI 的实际形态——Windows 上命令不经沙箱，
+        // 安全边界 = 三档权限审批 + cwd jail + 输出/超时纪律）：AppContainer 两层
+        // 路径在本机 Insider 26200 实测残缺——v1 SECURITY_CAPABILITIES 拒发(87)，
+        // v2 低盒令牌下 cmd 的 dir 内建拒绝、MSYS 系工具（ls/grep/wc）初始化必挂
+        // (0xC0000142)，full-auto 的可用命令面反而残缺。默认非沙箱执行；
+        // ITHACA_RUN_SANDBOX=1 强制恢复沙箱路径（诊断/未来 Windows 沙箱可用时）
+        const char* fs_env = std::getenv("ITHACA_RUN_SANDBOX");
+        force_sandbox_ = fs_env != nullptr && std::string_view(fs_env) == "1";
+        sandboxed_ = (mode_ == "full-auto") && force_sandbox_;
         // 工作区热切——重建 jail 边界，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
@@ -79,15 +87,16 @@ public:
             jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
-        // 权限模式：full-auto ⇒ 命令在 AppContainer 沙箱内执行；值未变化
-        // ⇒ 静默（启动对齐不刷日志；suggest/auto-edit 的把关在 agent 确认清单）
+        // 权限模式：full-auto ⇒ 命令执行（沙箱取舍见 activate 的 force_sandbox_
+        // 注释）；值未变化 ⇒ 静默（启动对齐不刷日志；suggest/auto-edit 的把关
+        // 在 agent 确认清单）
         subs_.push_back(host_.on(vc_api::permission_mode, [this](const void* p) {
             const auto* e = static_cast<const vc_api::PermissionMode*>(p);
             const std::string next = vc_api::normalize_permission_mode(
                 e->mode != nullptr ? e->mode : "");
             if (next == mode_) return;
             mode_ = next;
-            sandboxed_ = (mode_ == "full-auto");
+            sandboxed_ = (mode_ == "full-auto") && force_sandbox_;
         }));
         nostos::abi::init_table(table_);
         table_.self = this;
@@ -132,6 +141,7 @@ public:
 private:
     struct RunEntry {
         std::unique_ptr<vcrun::ChildPipes> child;
+        int turn_id = 0;       // 发起会话槽（execute 传入）：run 事件的 slot 路由键
         std::thread rd_out;    // stdout 读取线程：只读 + 缓冲（不碰 poster）
         std::thread rd_err;    // stderr 读取线程：只读 + 缓冲（不碰 poster）
         std::thread poster;    // 唯一的投递线程：轮询缓冲 → poster 事件 + exit
@@ -151,8 +161,9 @@ private:
             {"name", "run"},
             {"description",
              "在工作区内执行命令（异步：立即返回 run_id，输出/退出码经事件回；"
-             "执行权限由三档权限模式管理）。"
-             "dry_run=true 只解析不执行"},
+             "执行权限由三档权限模式管理）。命令经 Windows cmd 解析——支持 "
+             "&& | > 等 shell 语法与 cmd 内建（echo/dir）；目录枚举优先用 "
+             "workspace.list。dry_run=true 只解析不执行"},
             {"schema", json{{"type", "object"},
                             {"properties",
                              json::object({{"command_line", {{"type", "string"}}},
@@ -167,15 +178,16 @@ private:
 
     static nostos_status execute_thunk(void* self, const char* tool, const char* args_json,
                                        int turn_id, const char** out_json) noexcept {
-        return static_cast<RunnerPlugin*>(self)->tool_execute(tool, args_json, out_json);
+        return static_cast<RunnerPlugin*>(self)->tool_execute(tool, args_json, turn_id, out_json);
     }
 
-    nostos_status tool_execute(const char* tool, const char* args_json, const char** out) {
+    nostos_status tool_execute(const char* tool, const char* args_json, int turn_id,
+                               const char** out) {
         json args = json::parse(args_json != nullptr ? args_json : "{}", nullptr, false);
         if (args.is_discarded() || !args.is_object()) args = json::object();
         try {
             const std::string t = tool != nullptr ? tool : "";
-            if (t == "run") return finish(run_tool(args), out);
+            if (t == "run") return finish(run_tool(args, turn_id), out);
             return finish(json{{"ok", false}, {"error", "未知工具: \"" + t + "\""}}, out);
         } catch (const std::exception& e) {
             return finish(json{{"ok", false}, {"error", std::string("内部错误: ") + e.what()}},
@@ -191,7 +203,7 @@ private:
 
     // ---- run 工具 ------------------------------------------------------------------
 
-    json run_tool(const json& args) {
+    json run_tool(const json& args, int turn_id) {
         const std::string cmd = args.value("command_line", std::string{});
         if (cmd.empty()) return json{{"ok", false}, {"error", "command_line 为空"}};
 
@@ -221,13 +233,22 @@ private:
         const int timeout_ms =
             std::min(std::max(args.value("timeout_ms", kDefaultTimeoutMs), 1000), kMaxTimeoutMs);
 
+        // 统一经 cmd /d /s /c 包装——Windows 没有 shell 层：CreateProcess 直启
+        // 可执行文件，&&/|/> 重定向与 echo/dir 等 cmd 内建一律不解析（踩过：
+        // "python -c … && echo b" 的 && 被 python 当 argv 吞掉）。/s 保留内层
+        // 引号（python -c "…" 原样透传），/d 禁 Autorun。NOTE: full-auto 沙箱
+        // 低盒令牌下 cmd 的 dir 内建被拒（Insider 26200 实测；目录枚举走
+        // workspace.list / python os.listdir 即可），其余 shell 形态全部可用。
+        // 包装在本层做，agent 侧摘要仍显示用户原始命令
+        const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
+
         // spawn（宿主线程；读线程/等待线程接管后续）
         auto child = std::make_unique<vcrun::ChildPipes>();
         std::string err;
         // full-auto：AppContainer 沙箱（读宽写窄 + 断网）；其余模式由
         // agent 确认清单把关（建议/自动编辑模式逐条批准）
         bool degraded = false;
-        if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(cmd), cwd_wide, *child, err,
+        if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child, err,
                           sandboxed_, &degraded)) {
             // 逃生舱（Claude Code unsandboxed-retry 的降级版）：沙箱路径任何失败
             // （profile/ACL/属性装配/创建）都不回死错误——结构化提示回灌给 agent
@@ -255,6 +276,7 @@ private:
             std::lock_guard<std::mutex> lock(runs_mu_);
             entry = &runs_[run_id];
             entry->child = std::move(child);
+            entry->turn_id = turn_id;  // 事件路由键：run 事件按发起会话槽单播（slot 路由约定）
         }
 
         const auto reader = [this, entry](HANDLE h, int stream) {
@@ -292,25 +314,27 @@ private:
     // 进程确认终止且缓冲清空 ⇒ 终冲刷 → RunExit 事件。
     // 读取线程只缓冲（mu 保护），poster 投递集中在本线程——消除并发投递竞态。
     void pump_and_finish_(int run_id, RunEntry* entry, int timeout_ms) {
+        const std::uint64_t slot =
+            static_cast<std::uint64_t>(entry->turn_id);  // 写于线程启动前，免锁可读
         const auto deadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         // 单行投递（主循环与收口终冲刷共用同一份净化/截断/超限纪律）
-        const auto emit_line = [this, run_id, entry](int stream, const std::string& raw) {
+        const auto emit_line = [this, run_id, slot, entry](int stream, const std::string& raw) {
             std::string line = vcws::utf8_sanitize(raw);
             if (line.size() > kLineCap) line = line.substr(0, kLineCap) + "…";
             if (entry->bytes.fetch_add(line.size() + 1) > kOutputCap) {
                 if (!entry->truncated.exchange(true)) {
-                    nostos::kit::poster_submit(poster_, [this, run_id] {
+                    nostos::kit::poster_submit(poster_, [this, run_id, slot] {
                         const vc_api::RunLine e{
                             run_id, 0, "（输出超过上限，后续内容已丢弃）"};
-                        host_.emit(vc_api::run_line, &e);
+                        host_.emit_slot(vc_api::run_line, slot, &e);
                     });
                 }
                 return;
             }
-            nostos::kit::poster_submit(poster_, [this, run_id, stream, line = std::move(line)] {
+            nostos::kit::poster_submit(poster_, [this, run_id, slot, stream, line = std::move(line)] {
                 const vc_api::RunLine e{run_id, stream, line.c_str()};
-                host_.emit(vc_api::run_line, &e);
+                host_.emit_slot(vc_api::run_line, slot, &e);
             });
         };
         bool killed = false;
@@ -353,9 +377,20 @@ private:
                         entry->child->process, 2000) == WAIT_OBJECT_0;
                 DWORD code = 0xFFFFFFFFu;
                 if (proc_gone_seen) GetExitCodeProcess(entry->child->process, &code);
-                nostos::kit::poster_submit(poster_, [this, run_id, code] {
+                // 0xC0000142 = STATUS_DLL_INIT_FAILED：MSYS/Git 系工具（ls/grep/wc）
+                // 在沙箱低盒令牌下初始化必挂——裸退出码 -65536 对模型不可读，
+                // 就地补一行指向可用替代（python/工作区工具已验证可用）
+                if (code == 0xC0000142u) {
+                    nostos::kit::poster_submit(poster_, [this, run_id, slot] {
+                        const vc_api::RunLine e{
+                            run_id, 0, "（进程初始化失败 0xC0000142——MSYS/Git 系工具"
+                                       "在沙箱内不可用；改用 python 或工作区工具）"};
+                        host_.emit_slot(vc_api::run_line, slot, &e);
+                    });
+                }
+                nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
                     const vc_api::RunExit e{run_id, code};
-                    host_.emit(vc_api::run_exit, &e);
+                    host_.emit_slot(vc_api::run_exit, slot, &e);
                 });
                 break;
             }
@@ -367,18 +402,18 @@ private:
                 if (entry->rd_err.joinable()) entry->rd_err.detach();
                 DWORD code = 0xFFFFFFFFu;
                 GetExitCodeProcess(entry->child->process, &code);  // proc_gone_seen ⇒ 已退出
-                nostos::kit::poster_submit(poster_, [this, run_id, code] {
+                nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
                     const vc_api::RunExit e{run_id, code};
-                    host_.emit(vc_api::run_exit, &e);
+                    host_.emit_slot(vc_api::run_exit, slot, &e);
                 });
                 break;
             }
             if (!killed && std::chrono::steady_clock::now() >= deadline) {
                 TerminateProcess(entry->child->process, 0xFFFFFFFFu);
                 killed = true;
-                nostos::kit::poster_submit(poster_, [this, run_id] {
+                nostos::kit::poster_submit(poster_, [this, run_id, slot] {
                     const vc_api::RunLine e{run_id, 0, "（超时，已强制终止）"};
-                    host_.emit(vc_api::run_line, &e);
+                    host_.emit_slot(vc_api::run_line, slot, &e);
                 });
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -395,7 +430,8 @@ private:
 
     std::unique_ptr<vcws::Jail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
-    bool sandboxed_ = false;          // full-auto ⇒ AppContainer 沙箱 spawn
+    bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关，取舍见 activate）
+    bool sandboxed_ = false;          // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控）
     bool degrade_warned_ = false;     // 沙箱降级通告只发一次（进程级）
     std::mutex runs_mu_;
     std::map<int, RunEntry> runs_;

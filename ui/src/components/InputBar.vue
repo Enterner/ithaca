@@ -40,7 +40,8 @@ async function onSend() {
   liveStart()
   try { await send(S.inputText) } finally { submitting.value = false }
 }
-// 生成中发送键即停止键（decide 4 = 取消当前 turn）
+// 生成中发送键即停止键（decide 4 = 取消当前 turn；挂起条取消同款——级联
+// 取消在途子代理/后台任务）
 async function onStop() {
   if (submitting.value) return
   await decide(4)

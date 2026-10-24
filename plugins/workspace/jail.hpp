@@ -1,10 +1,12 @@
 #pragma once
-// ithaca —— 路径 jail：把模型给出的"相对路径"钉死在工作区根内。
+// ithaca —— 路径 jail：把模型给出的路径钉死在工作区根内。
 //
 // 两道闸，缺一不可：
-//   1) 文本校验：拒绝盘符 / UNC / 绝对路径、".." 段、Windows 保留设备名、
-//      段尾的点与空格（Windows 会静默剥离——请求 "a." 实际落盘 "a"，名实不符）、
-//      控制字符；空段折叠，"." 段丢弃。
+//   1) 文本校验：拒绝 ".." 段、Windows 保留设备名、段尾的点与空格（Windows 会
+//      静默剥离——请求 "a." 实际落盘 "a"，名实不符）、控制字符；空段折叠，"." 段
+//      丢弃。绝对路径（盘符 / 根斜杠）不再一刀切拒绝——在根内的转成相对路径
+//      放行（模型常把工具输出里的绝对形态原样送回来，拒掉只会逼它无谓重试），
+//      根外按越界拒绝，边界本身不松。
 //   2) 规范化复核：GetFullPathNameW 之后必须仍落在根内——文本校验管不住
 //      junction / 符号链接这类重解析点。
 // 失败一律经 err 出参点名原因，由调用方回灌给模型自我纠正。
@@ -42,19 +44,37 @@ public:
                  std::string& err) const {
         if (rel_utf8.empty()) { err = "路径为空"; return false; }
         if (rel_utf8.size() > 512) { err = "路径过长（>512 字节）"; return false; }
-        if (rel_utf8[0] == '/' || rel_utf8[0] == '\\') {
-            err = "绝对路径不允许（需要工作区内相对路径）";
-            return false;
-        }
-        if (rel_utf8.size() >= 2 && rel_utf8[1] == ':') { err = "盘符路径不允许"; return false; }
         for (const char c : rel_utf8)
             if (static_cast<unsigned char>(c) < 0x20) { err = "路径含控制字符"; return false; }
+
+        // 绝对路径入口：盘符完整路径（X:\…）与根斜杠（/…、\…）。规范化后必须
+        // 落在根内——在根内剥根前缀转相对路径走同一条分段校验；根外一律越界
+        // 拒绝。盘符相对形态（"C:foo"，冒号后无分隔符）语义含混（相对该盘符
+        // 当前目录），明确不支持；裸 "/" 规范化后是当前盘根，必然根外。
+        const bool drive = rel_utf8.size() >= 2 && rel_utf8[1] == ':';
+        const bool rooted = rel_utf8[0] == '/' || rel_utf8[0] == '\\';
+        std::string rel = rel_utf8;
+        if (drive || rooted) {
+            if (drive && (rel_utf8.size() == 2 ||
+                          (rel_utf8[2] != '/' && rel_utf8[2] != '\\'))) {
+                err = "盘符相对路径不支持（用工作区内相对路径）";
+                return false;
+            }
+            const std::wstring full = canonical(nostos::kit::win::utf8_to_wide(rel_utf8));
+            if (!under_root(full)) {
+                err = "绝对路径越出工作区根（jail 边界）";
+                return false;
+            }
+            // under_root 保证前缀长度对齐且紧随分隔符——只留后缀，大小写差异
+            //（盘符大小写等）随前缀一起剥掉
+            rel = nostos::kit::win::wide_to_utf8(full.substr(root_.size()).c_str());
+        }
 
         // 分段折叠（分隔符是 ASCII；UTF-8 多字节序列不含 0x2F/0x5C，按字节切安全）
         std::vector<std::string> parts;
         {
             std::string cur;
-            for (const char c : rel_utf8) {
+            for (const char c : rel) {
                 if (c == '/' || c == '\\') {
                     parts.push_back(std::move(cur));
                     cur.clear();
@@ -76,7 +96,12 @@ public:
             if (!out_norm.empty()) out_norm.push_back('/');
             out_norm += seg;
         }
-        if (out_norm.empty()) { err = "路径为空"; return false; }
+        if (out_norm.empty()) {
+            // 纯点形态（"."、"./"、".//"——折叠后为空）语义 = 根本身：直接返回根，
+            // 不再报"路径为空"（踩过：子代理列根目录送 "." 被拒，只好换路重试）
+            out_full = root_;
+            return true;
+        }
 
         const std::wstring canon = canonical(root_ + L"\\" + nostos::kit::win::utf8_to_wide(out_norm));
         if (!under_root(canon)) { err = "规范化后越出工作区根"; return false; }

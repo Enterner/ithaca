@@ -42,7 +42,11 @@ export function cfgFromServer(cfg) {
     base_url: p.base_url || '', enabled: p.enabled !== false, has_key: !!p.has_key,
     // Array.isArray 防御：旧启动器（ConvertTo-Json 低 Depth）会把 models 压成字符串
     models: (Array.isArray(p.models) ? p.models : []).map(m => ({
-      id: m.id, context: m.context || 128000, enabled: m.enabled !== false
+      id: m.id, context: m.context || 128000, enabled: m.enabled !== false,
+      // 子 agent 模型引用（{provider,model}；缺省 = 自己）——形状不齐时丢弃，
+      // 让后端校验兜底而不是把坏值带回配置
+      ...(m.sub_model && m.sub_model.provider && m.sub_model.model
+        ? { sub_model: { provider: m.sub_model.provider, model: m.sub_model.model } } : {})
     }))
   }))
   S.current = cfg.current_provider || (S.providers[0] && S.providers[0].name) || ''
