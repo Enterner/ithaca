@@ -41,7 +41,6 @@ bool parse_endpoint(const std::wstring& base, Endpoint& out, std::string& err) {
     out.port = uc.nPort;
     out.secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
     out.path.assign(uc.lpszUrlPath, uc.dwUrlPathLength);
-    if (out.path.empty()) out.path = L"";
     if (out.path.empty() || out.path.back() == L'/') out.path += L"chat/completions";
     else out.path += L"/chat/completions";
     return true;

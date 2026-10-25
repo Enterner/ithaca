@@ -14,7 +14,7 @@ Ithaca 是一个本地优先的 AI 编程工作台：浏览器与桌面壳两种
 - **插件化 agent 闭环**：LLM 编排（agent）与能力插件（workspace 文件事务、runner 命令执行）
   通过 C ABI 服务表解耦，新增工具插件零 agent 改动
 - **可逆编辑**：dry-run 试算 → 落盘 → 按 turn 快照 → 一键撤销；hunk diff 行内高亮
-- **三档权限模式**：suggest（逐条批准）/ auto-edit（编辑免批、命令逐条问）/ full-auto（沙箱自动执行）
+- **三档权限模式**：suggest（逐条批准）/ auto-edit（编辑免批、命令逐条问）/ full-auto（沙箱自动执行；宿主 Windows 的 AppContainer 沙箱路径不可用时自动降级非沙箱并显式通告）
 - **多前端**：Web UI（Vue 3）、Windows 桌面壳（WebView2），同一份 HTTP/SSE + 事件契约
 - **两层供应商配置**：多 API 供应商各自 Base URL / Key / 模型列表，热切即时生效
 - **上下文压缩**：工具结果外置 + 迟滞批量压缩，长会话不爆上下文
@@ -85,9 +85,9 @@ npm run pack:redist         # 附带 VC++ 运行库
 contract/   宿主与插件的公共契约（C ABI、事件与服务名——冻结面，只尾部追加）
 host/       通用宿主（ithaca_host.exe：装载插件、排水循环）
 shell/      Windows 桌面壳（WebView2 内嵌 Web UI）
-plugins/    agent 编排 / llm_cloud / llm_mock / runner / webui / workspace
+plugins/    agent 编排 / llm_cloud / llm_mock / mcp / runner / webui / workspace
 ui/         Vue 3 + Naive UI 前端（dist/ 由 npm run build 生成，随包分发）
-tests/      单元测试 + 场景 + golden
+tests/      单元测试 + e2e（API 契约 / UI 行为）+ 回归 golden + fixtures
 scripts/    任务脚本（build/dev/regress/pack，零依赖 .mjs）
 external/   nostos 内核（git 子模块）
 third_party/webview2/   微软 WebView2 SDK 必需子集（include + 加载器）

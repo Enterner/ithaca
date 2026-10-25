@@ -39,6 +39,7 @@
 #include <atomic>
 #include <chrono>
 #include <vector>
+#include <map>
 #include <algorithm>
 
 namespace {
@@ -63,8 +64,9 @@ struct Inst {
     UINT port = 0;           // home\port 读到的实际端口（0 = 未就绪/未拉起）
     int state = ST_STOPPED;
 };
-std::vector<Inst> g_insts;   // 只在 UI 线程增改
-CRITICAL_SECTION g_cs;       // worker 读实例表与 UI 写之间的粗粒度互斥
+std::vector<Inst> g_insts;   // 增删改只在 UI 线程；worker 只读快照（经 g_cs）
+CRITICAL_SECTION g_cs;       // UI 线程增删与 worker 快照读的互斥（递归；worker 的
+                             // HTTP 探测在锁外——900ms 级超时不能捂住 UI 操作）
 int g_page_port = 0;         // 页面当前加载的实例端口（删除自源实例时切换用）
 std::wstring g_page_key;     // 页面当前实例的 manifest 键
 bool g_ctrl_ready = false;   // WebView2 controller 就绪（TryNavigate 的两个条件之一）
@@ -274,32 +276,52 @@ UINT ReadPortFile(const std::wstring& home) {
 }
 
 // ---- worker 线程：STARTING 实例的端口文件轮询 + RUNNING 实例健康自愈 ---------
-// 就绪即 PostMessage(UWM_PORT_READY)：UI 线程导航页面 + 记账。健康检查失败
-// 连续 3 拍 ⇒ 回 STOPPED 并删 port 文件（聚合端点随即将该行显示为"已停止"）。
-constexpr UINT UWM_PORT_READY = WM_APP + 1;   // wp=idx lp=port
-constexpr UINT UWM_SELF_STOP  = WM_APP + 2;   // wp=idx（实例死亡自愈）
+// 就绪即 PostMessage(UWM_PORT_READY)：UI 线程导航页面 + 记账。健康检查按端口
+// 连续 3 拍失败 ⇒ 回 STOPPED 并删 port 文件（聚合端点随即将该行显示为"已停止"）。
+// 探测（含 900ms 级超时的 HTTP）全部在锁外——锁内只做实例表快照，UI 线程的
+// 增删不被探测时长捂住。就绪/停机消息按 pid 寻址：消息在途期间实例被删只是
+// 落空（Find 不到即忽略），不会错位命中表里别的实例（索引寻址有此竞态）。
+constexpr UINT UWM_PORT_READY = WM_APP + 1;   // wp=pid lp=port
+constexpr UINT UWM_SELF_STOP  = WM_APP + 2;   // wp=pid
 
 void WorkerLoop(HWND hwnd) {
-    int health_miss = 0;
+    std::map<UINT, int> health_miss;   // port → 连续失败拍数（按端口独立计，成功清零）
     while (g_run.load()) {
-        EnterCriticalSection(&g_cs);
-        for (size_t i = 0; i < g_insts.size(); ++i) {
-            Inst& it = g_insts[i];
-            if (it.state == ST_STARTING) {
-                const UINT p = ReadPortFile(it.home);
-                if (p != 0) PostMessageW(hwnd, UWM_PORT_READY, (WPARAM)i, (LPARAM)p);
-            } else if (it.state == ST_RUNNING && it.port != 0) {
-                if (!HttpGetOk(it.port, L"/api/health")) {
-                    if (++health_miss >= 3) {
-                        health_miss = 0;
-                        PostMessageW(hwnd, UWM_SELF_STOP, (WPARAM)i, 0);
-                    }
-                } else {
-                    health_miss = 0;
-                }
+        std::vector<std::pair<DWORD, std::wstring>> starting;   // {pid, home}
+        std::vector<std::pair<DWORD, UINT>> running;            // {pid, port}
+        {
+            EnterCriticalSection(&g_cs);
+            for (const auto& it : g_insts) {
+                if (it.state == ST_STARTING && it.pid != 0)
+                    starting.emplace_back(it.pid, it.home);
+                else if (it.state == ST_RUNNING && it.port != 0)
+                    running.emplace_back(it.pid, it.port);
+            }
+            LeaveCriticalSection(&g_cs);
+        }
+        std::vector<UINT> probed;
+        for (const auto& [pid, home] : starting) {
+            const UINT p = ReadPortFile(home);
+            if (p != 0) PostMessageW(hwnd, UWM_PORT_READY, (WPARAM)pid, (LPARAM)p);
+        }
+        for (const auto& [pid, port] : running) {
+            probed.push_back(port);
+            if (HttpGetOk(port, L"/api/health")) {
+                health_miss.erase(port);
+                continue;
+            }
+            if (++health_miss[port] >= 3) {
+                PostMessageW(hwnd, UWM_SELF_STOP, (WPARAM)pid, 0);
+                health_miss.erase(port);
             }
         }
-        LeaveCriticalSection(&g_cs);
+        // 剪枝：本轮未探测的端口（停止/删除/换端口）不留陈旧计数
+        for (auto it = health_miss.begin(); it != health_miss.end();) {
+            if (std::find(probed.begin(), probed.end(), it->first) != probed.end())
+                ++it;
+            else
+                it = health_miss.erase(it);
+        }
         for (int i = 0; i < 20 && g_run.load(); ++i)   // 2s 睡眠（可中断）
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
@@ -368,6 +390,7 @@ void MigrateLegacySession(const Inst& it) {
 }
 
 void SpawnInstance(size_t idx) {
+    EnterCriticalSection(&g_cs);   // 全程持锁：状态迁移 + 进程拉起对 worker 快照原子
     Inst& it = g_insts[idx];
     it.state = ST_STARTING;
     // 残留 port 文件必是 stale（新宿主会写新端口）——不删则 STARTING 轮询读到旧值
@@ -431,6 +454,7 @@ void SpawnInstance(size_t idx) {
     if (!ok) {
         it.state = ST_ERROR;
         LogLine(L"spawn failed gle=" + std::to_wstring(GetLastError()) + L" key=" + it.key);
+        LeaveCriticalSection(&g_cs);
         return;
     }
     CloseHandle(pi.hThread);
@@ -438,6 +462,7 @@ void SpawnInstance(size_t idx) {
     it.pid = pi.dwProcessId;
     CloseHandle(pi.hProcess);
     LogLine(L"spawned key=" + it.key + L" pid=" + std::to_wstring(it.pid));
+    LeaveCriticalSection(&g_cs);
 }
 
 // ---- WebView2（单 controller 全窗；页面 = 真实前端）-------------------------
@@ -488,17 +513,29 @@ void NavigatePage(UINT port) {
 }
 
 // 实例就绪回调（worker 的 UWM_PORT_READY，UI 线程）：首次导航 = 页面加载；此后
-// 按 g_pending_key 导航（激活停止态会话时页面停在旧实例上，等新实例就绪切过去）
-void OnPortReady(size_t idx, UINT port) {
-    if (idx >= g_insts.size()) return;
-    Inst& it = g_insts[idx];
-    it.port = port;
-    it.state = ST_RUNNING;
-    LogLine(L"instance ready key=" + it.key + L" port=" + std::to_wstring(port));
-    if (!g_navigated || g_pending_key == it.key) {
+// 按 g_pending_key 导航（激活停止态会话时页面停在旧实例上，等新实例就绪切过去）。
+// pid 寻址：消息在途期间实例被删 ⇒ 落空忽略
+Inst* FindByPid(DWORD pid);   // 定义在实例激活/新建/删除段
+
+void OnPortReady(DWORD pid, UINT port) {
+    std::wstring key;
+    {
+        EnterCriticalSection(&g_cs);
+        Inst* it = FindByPid(pid);
+        if (it == nullptr) {
+            LeaveCriticalSection(&g_cs);
+            return;
+        }
+        it->port = port;
+        it->state = ST_RUNNING;
+        key = it->key;
+        LeaveCriticalSection(&g_cs);
+    }
+    LogLine(L"instance ready key=" + key + L" port=" + std::to_wstring(port));
+    if (!g_navigated || g_pending_key == key) {
         g_pending_key.clear();
         g_page_port = (int)port;
-        g_page_key = it.key;
+        g_page_key = key;
         NavigatePage(port);
         g_navigated = 1;
     }
@@ -609,29 +646,63 @@ Inst* FindByKey(const std::wstring& key) {
         if (it.key == key) return &it;
     return nullptr;
 }
+Inst* FindByPid(DWORD pid) {   // 就绪/停机消息的寻址键（worker 的 PostMessage）
+    for (auto& it : g_insts)
+        if (it.pid == pid) return &it;
+    return nullptr;
+}
 
 void ActivateKey(const std::wstring& key) {
-    Inst* it = FindByKey(key);
-    if (it == nullptr) return;
-    if (it->state == ST_RUNNING && it->port != 0) {
+    int state = ST_STOPPED;
+    UINT port = 0;
+    std::wstring home;
+    {
+        EnterCriticalSection(&g_cs);
+        Inst* it = FindByKey(key);
+        if (it == nullptr) {
+            LeaveCriticalSection(&g_cs);
+            return;
+        }
+        state = it->state;
+        port = it->port;
+        home = it->home;
+        LeaveCriticalSection(&g_cs);
+    }
+    if (state == ST_RUNNING && port != 0) {
         // NOTE: 直航前健康复查——state 可能落后于宿主真实状态（死亡瞬间/探测
         // 窗口），盲航会落到死端口错误页（踩过：nav FAIL 循环）。不健康 ⇒ 按
-        // 停止态重新拉起。
-        if (!HttpGetOk(it->port, L"/api/health")) {
-            it->state = ST_STOPPED;
-            it->port = 0;
-            DeleteFileW((it->home + L"\\port").c_str());
+        // 停止态重新拉起。复查在锁外（900ms 超时），回写按"仍是同一实例同一
+        // 端口"复核，避免与删除/停止竞态误伤。
+        if (!HttpGetOk(port, L"/api/health")) {
+            EnterCriticalSection(&g_cs);
+            Inst* it = FindByKey(key);
+            if (it != nullptr && it->state == ST_RUNNING && it->port == port) {
+                it->state = ST_STOPPED;
+                it->port = 0;
+            }
+            LeaveCriticalSection(&g_cs);
+            DeleteFileW((home + L"\\port").c_str());
+            state = ST_STOPPED;
         } else {
-            g_page_port = (int)it->port;
-            g_page_key = it->key;
-            NavigatePage(it->port);
+            g_page_port = (int)port;
+            g_page_key = key;
+            NavigatePage(port);
             return;
         }
     }
-    if (it->state == ST_STOPPED || it->state == ST_ERROR) {
-        g_pending_key = key;
-        SpawnInstance((size_t)(it - &g_insts[0]));
+    bool spawn = false;
+    size_t idx = 0;
+    {
+        EnterCriticalSection(&g_cs);
+        Inst* it = FindByKey(key);
+        if (it != nullptr && (it->state == ST_STOPPED || it->state == ST_ERROR)) {
+            g_pending_key = key;
+            idx = (size_t)(it - &g_insts[0]);
+            spawn = true;
+        }
+        LeaveCriticalSection(&g_cs);
     }
+    if (spawn) SpawnInstance(idx);
     // ST_STARTING：等 worker ready 回调导航（g_pending_key 已指向这里）
     if (g_pending_key.empty()) g_pending_key = key;
 }
@@ -642,29 +713,49 @@ void NewSessionFlow(const std::wstring& ws) {
     it.key = L"s" + std::to_wstring(GetTickCount64());
     it.ws = ws;
     it.home = g_data + L"\\hosts\\" + it.key;
-    g_insts.push_back(it);
-    ManifestSave();
-    LogLine(L"new session key=" + it.key + L" ws=" + ws);
-    ActivateKey(it.key);
+    const std::wstring key = it.key;
+    {
+        EnterCriticalSection(&g_cs);
+        g_insts.push_back(it);
+        ManifestSave();
+        LeaveCriticalSection(&g_cs);
+    }
+    LogLine(L"new session key=" + key + L" ws=" + ws);
+    ActivateKey(key);
 }
 
 void DeleteFlow(const std::wstring& key) {
-    Inst* it = FindByKey(key);
-    if (it == nullptr) return;
-    if (it->port != 0) ShutdownPort(it->port);
-    const std::wstring home = it->home;
+    std::wstring home;
+    UINT port = 0;
     const bool was_page = g_page_key == key;
-    g_insts.erase(g_insts.begin() + (it - &g_insts[0]));
-    ManifestSave();
+    {
+        EnterCriticalSection(&g_cs);
+        Inst* it = FindByKey(key);
+        if (it == nullptr) {
+            LeaveCriticalSection(&g_cs);
+            return;
+        }
+        port = it->port;
+        home = it->home;
+        g_insts.erase(g_insts.begin() + (it - &g_insts[0]));
+        ManifestSave();
+        LeaveCriticalSection(&g_cs);
+    }
+    if (port != 0) ShutdownPort(port);   // 优雅停（HTTP）在锁外——秒级超时不能捂住 UI
     RemoveDirRec(home);
     LogLine(L"deleted session key=" + key);
     if (was_page) {   // 删的是页面自源实例：切到任一存活实例，没有则现拉一个
-        int target = -1;
-        for (size_t i = 0; i < g_insts.size(); ++i)
-            if (g_insts[i].state == ST_RUNNING && g_insts[i].port != 0) { target = (int)i; break; }
-        if (target >= 0) {
-            g_page_key = g_insts[(size_t)target].key;
-            NavigatePage(g_insts[(size_t)target].port);
+        std::wstring tkey;
+        UINT tport = 0;
+        {
+            EnterCriticalSection(&g_cs);
+            for (const auto& i : g_insts)
+                if (i.state == ST_RUNNING && i.port != 0) { tkey = i.key; tport = i.port; break; }
+            LeaveCriticalSection(&g_cs);
+        }
+        if (!tkey.empty()) {
+            g_page_key = tkey;
+            NavigatePage(tport);
         } else {
             g_navigated = 0;   // 无家可归：走 bootstrap（拉空工作区实例进 hero）
             ActivateKey(BootstrapKey());
@@ -678,12 +769,19 @@ std::wstring BootstrapKey() {
     Inst it;
     it.key = L"s" + std::to_wstring(GetTickCount64());
     it.home = g_data + L"\\hosts\\" + it.key;
-    g_insts.push_back(it);
-    ManifestSave();
-    LogLine(L"bootstrap instance key=" + it.key);
-    SpawnInstance(g_insts.size() - 1);
-    g_pending_key = it.key;
-    return it.key;
+    const std::wstring key = it.key;
+    size_t idx = 0;
+    {
+        EnterCriticalSection(&g_cs);
+        g_insts.push_back(it);
+        ManifestSave();
+        idx = g_insts.size() - 1;
+        LeaveCriticalSection(&g_cs);
+    }
+    LogLine(L"bootstrap instance key=" + key);
+    SpawnInstance(idx);
+    g_pending_key = key;
+    return key;
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -698,14 +796,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case UWM_PORT_READY:
-            OnPortReady((size_t)wp, (UINT)lp);
+            OnPortReady((DWORD)wp, (UINT)lp);
             return 0;
         case UWM_SELF_STOP: {
-            Inst& it = g_insts[(size_t)wp];
-            it.state = ST_STOPPED;
-            it.port = 0;
-            DeleteFileW((it.home + L"\\port").c_str());   // 聚合端点随即显示"已停止"
-            LogLine(L"instance unhealthy key=" + it.key + L" -> stop");
+            // pid 寻址 + 锁内改字段：消息在途期间实例被删/表被重排都不会越界或错位
+            EnterCriticalSection(&g_cs);
+            Inst* it = FindByPid((DWORD)wp);
+            if (it != nullptr) {
+                it->state = ST_STOPPED;
+                it->port = 0;
+                DeleteFileW((it->home + L"\\port").c_str());   // 聚合端点随即显示"已停止"
+                LogLine(L"instance unhealthy key=" + it->key + L" -> stop");
+            }
+            LeaveCriticalSection(&g_cs);
             return 0;
         }
         case WM_DESTROY:

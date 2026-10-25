@@ -8,7 +8,9 @@
 // jail 根：env ITHACA_WORKSPACE_DIR（UTF-8）> 当前目录。越界 / 保留设备名 /
 // 段尾点一律拒绝，拒绝原因回灌给模型自我纠正。
 //
-// 线程纪律：全部表调用发生在宿主线程无自有线程、无 poster 需求）。
+// 线程纪律：无自有线程、无 poster 需求；表调用来自两个线程——agent 的宿主线程
+// （事件回调链）与 webui 的 HTTP select 线程（文件树 /api/fs/list 直调），
+// tool_execute 以全工具串行锁（tool_mu_）串行化两路调用。
 // 状态边界：快照是纯内存态——插件卸载即弃，撤销能力随激活会话一起撤销（文档明示）。
 #include "iface.hpp"
 

@@ -20,6 +20,10 @@ namespace vc_webui {
 // NOTE: 按**引用**收参——id 写回调用方的 rec，广播/延迟广播因此都带 id，前端
 // 按 id 去重；按值收参时广播无 id，SSE 与重放会重复渲染/重复计数。
 void WebuiPlugin::persist_(json& rec) {
+    // select/宿主两线程共用的唯一持久化路径（计数/标题更新在内）——全程持
+    // data_mu_：records_/out_/index_ 的复合变更（读 id、追加、注册表更新、落盘）
+    // 必须原子。recursive_mutex：save_index_/session_entry_ 在锁内重入。
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     rec["id"] = records_.size();
     records_.push_back(rec);
     if (out_.is_open()) {
@@ -58,6 +62,7 @@ void WebuiPlugin::record_(json rec) {
 }
 
 void WebuiPlugin::load_transcript_() {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     std::error_code ec;
     const fs::path f = home_ / "sessions" / (session_ + ".transcript.jsonl");
     if (!fs::exists(f, ec)) return;
@@ -73,6 +78,7 @@ void WebuiPlugin::load_transcript_() {
 }
 
 void WebuiPlugin::open_transcript_() {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     if (session_.empty()) return;   // 无会话态：不建任何 transcript 文件
     std::error_code ec;
     fs::create_directories(home_ / "sessions", ec);
@@ -86,29 +92,34 @@ void WebuiPlugin::open_transcript_() {
 // 同纪律；行号 id 按 turn 单调递增，重启后按现存行数续接——前端据此合并
 // 「/api/agent-log 拉取的历史」与「实时增量」不重不漏。
 void WebuiPlugin::agent_log_append_(int turn_id, const json& rec) {
-    if (session_.empty()) return;
-    std::ofstream& out = agent_logs_[turn_id];
-    if (!out.is_open()) {
-        std::error_code ec;
-        const fs::path dir = home_ / "sessions" / "agents" / session_;
-        fs::create_directories(dir, ec);
-        const fs::path f = dir / ("agent_" + std::to_string(turn_id) + ".jsonl");
-        long long seq = 0;
-        if (fs::exists(f, ec)) {
-            std::ifstream in(f, std::ios::binary);
-            std::string line;
-            while (std::getline(in, line))
-                if (!line.empty()) ++seq;
+    json line;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        if (session_.empty()) return;
+        std::ofstream& out = agent_logs_[turn_id];
+        if (!out.is_open()) {
+            std::error_code ec;
+            const fs::path dir = home_ / "sessions" / "agents" / session_;
+            fs::create_directories(dir, ec);
+            const fs::path f = dir / ("agent_" + std::to_string(turn_id) + ".jsonl");
+            long long seq = 0;
+            if (fs::exists(f, ec)) {
+                std::ifstream in(f, std::ios::binary);
+                std::string ln;
+                while (std::getline(in, ln))
+                    if (!ln.empty()) ++seq;
+            }
+            agent_log_seq_[turn_id] = seq;
+            out.open(f, std::ios::app | std::ios::binary);
         }
-        agent_log_seq_[turn_id] = seq;
-        out.open(f, std::ios::app | std::ios::binary);
+        line = rec;
+        line["id"] = ++agent_log_seq_[turn_id];
+        if (out.is_open()) {
+            out << line.dump() << "\n";
+            out.flush();
+        }
     }
-    json line = rec;
-    line["id"] = ++agent_log_seq_[turn_id];
-    if (out.is_open()) {
-        out << line.dump() << "\n";
-        out.flush();
-    }
+    // 广播在锁外（data_mu_ 锁内禁 broadcast/emit，见文件头线程纪律）。
     // 广播副本必须换类型名：type=subagent 会被前端当主会话记录 push 进主对话流，
     // subagent_detail 才进右栏实时缓冲（踩过：类型未换 ⇒ 右栏永不实时更新，
     // 刷新后明细反而"出现在主会话"）
@@ -119,6 +130,7 @@ void WebuiPlugin::agent_log_append_(int turn_id, const json& rec) {
 
 // 会话切换/删除时收口写句柄——句柄绑定旧会话的存档文件，跨会话复用会写串
 void WebuiPlugin::close_agent_logs_() {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     for (auto& [turn, out] : agent_logs_)
         if (out.is_open()) out.close();
     agent_logs_.clear();
@@ -132,9 +144,14 @@ http::Response WebuiPlugin::api_agent_log_(const std::string& target) {
     if (const auto q = target.find("?turn="); q != std::string::npos)
         turn = std::atoi(target.c_str() + q + 6);
     json records = json::array();
-    if (!session_.empty() && turn > 0) {
+    std::string session;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        session = session_;
+    }
+    if (!session.empty() && turn > 0) {
         std::error_code ec;
-        const fs::path f = home_ / "sessions" / "agents" / session_ /
+        const fs::path f = home_ / "sessions" / "agents" / session /
                            ("agent_" + std::to_string(turn) + ".jsonl");
         if (fs::exists(f, ec)) {
             std::ifstream in(f, std::ios::binary);
@@ -152,6 +169,7 @@ http::Response WebuiPlugin::api_agent_log_(const std::string& target) {
 // ---- 会话注册表（index.json：工作区分组的元数据源；--------------------
 
 void WebuiPlugin::load_index_() {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     std::error_code ec;
     const fs::path f = home_ / "index.json";
     if (!fs::exists(f, ec)) {
@@ -165,11 +183,13 @@ void WebuiPlugin::load_index_() {
                  : json{{"active", session_}, {"sessions", json::array()}};
 }
 
+// 落盘注册表——锁内调用约定（调用方持 data_mu_；本文件所有调用点均在锁内）
 void WebuiPlugin::save_index_() {
     std::ofstream out(home_ / "index.json", std::ios::binary | std::ios::trunc);
     if (out) out << index_.dump();
 }
 
+// 锁内调用约定：返回的指针指向 index_ 内部，只在调用方持有 data_mu_ 期间有效
 json* WebuiPlugin::session_entry_(const std::string& id) {
     for (auto& s : index_["sessions"])
         if (s.is_object() && s.value("id", "") == id) return &s;
@@ -183,6 +203,7 @@ long long WebuiPlugin::now_epoch_() {
 }
 
 void WebuiPlugin::ensure_session_(const std::string& id, const std::string& workspace) {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     if (session_entry_(id) != nullptr) return;
     json s = {{"id", id},
               {"title", "(新会话)"},
@@ -199,6 +220,7 @@ void WebuiPlugin::ensure_session_(const std::string& id, const std::string& work
 // 用户记录）。turns==0 的条目（历史首装种子 / 组合端点中途崩溃的残留）移除，
 // 其空 transcript 一并清掉——注册表结构上不可能留未初始化条目。
 void WebuiPlugin::sweep_uninitialized_() {
+    std::lock_guard<std::recursive_mutex> lock(data_mu_);
     bool changed = false;
     json arr = json::array();
     for (auto& s : index_["sessions"]) {
@@ -213,24 +235,32 @@ void WebuiPlugin::sweep_uninitialized_() {
 
 // 会话切换：换 transcript + 通知 agent 加载上下文（vc.session.load）
 void WebuiPlugin::switch_to_(const std::string& id) {
-    session_ = id;
-    index_["active"] = id;
-    if (json* e = session_entry_(id); e != nullptr) (*e)["updated"] = now_epoch_();
-    save_index_();
-    records_.clear();
-    close_agent_logs_();   // 旧会话的明细存档句柄收口，防跨会话写串
-    load_transcript_();
-    if (out_.is_open()) out_.close();
-    open_transcript_();
     const fs::path sp = home_ / "sessions" / (id + ".state.json");
-    // 工作区随会话：会话记录的 workspace ≠ 当前 ⇒ 热切 jail/runner
-    std::string ws = host_workspace_;
-    if (json* e = session_entry_(id); e != nullptr)
-        ws = e->value("workspace", host_workspace_);
-    const bool ws_changed = !ws.empty() && ws != host_workspace_;
-    if (ws_changed) host_workspace_ = ws;
-    // 广播与 emit 都 defer 到宿主线程（handle 内禁 broadcast——EDEADLOCK）
+    std::string ws;
+    bool ws_changed = false;
+    {
+        // 同步段全持锁：session_/index_/records_/日志句柄的换会话变更是复合操作
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        session_ = id;
+        index_["active"] = id;
+        if (json* e = session_entry_(id); e != nullptr) (*e)["updated"] = now_epoch_();
+        save_index_();
+        records_.clear();
+        close_agent_logs_();   // 旧会话的明细存档句柄收口，防跨会话写串
+        load_transcript_();
+        if (out_.is_open()) out_.close();
+        open_transcript_();
+        // 工作区随会话：会话记录的 workspace ≠ 当前 ⇒ 热切 jail/runner
+        ws = host_workspace_;
+        if (json* e = session_entry_(id); e != nullptr)
+            ws = e->value("workspace", host_workspace_);
+        ws_changed = !ws.empty() && ws != host_workspace_;
+        if (ws_changed) host_workspace_ = ws;
+    }
+    // 广播与 emit 都 defer 到宿主线程（handle 内禁 broadcast——EDEADLOCK；
+    // lambda 也不取 data_mu_——锁内禁 broadcast/emit）
     nostos::kit::poster_submit(poster_, [this, path = sp.string(), id, ws, ws_changed] {
+        reasoning_buf_.clear();   // 会话边界：旧会话残留的思考不串进新会话收口记录
         broadcast_({{"type", "session"}, {"id", id}, {"workspace", ws}});
         const vc_api::SessionLoad e{path.c_str()};
         host_.emit(vc_api::session_load, &e);
@@ -284,9 +314,14 @@ http::Response WebuiPlugin::api_session_open_(const std::string& body) {
         return json_resp({{"ok", false}, {"error", "轮次进行中，稍后再试"}});
     json in = parse_body_(body);
     const std::string id = in.value("id", "");
-    if (session_entry_(id) == nullptr)
-        return json_resp({{"ok", false}, {"error", "会话不存在"}});
-    if (id == session_) return json_resp({{"ok", true}, {"id", id}});
+    std::string cur;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        if (session_entry_(id) == nullptr)
+            return json_resp({{"ok", false}, {"error", "会话不存在"}});
+        cur = session_;
+    }
+    if (id == cur) return json_resp({{"ok", true}, {"id", id}});
     switch_to_(id);
     return json_resp({{"ok", true}, {"id", id}});
 }
@@ -298,11 +333,14 @@ http::Response WebuiPlugin::api_session_rename_(const std::string& body) {
     const std::string title = in.value("title", "");
     if (id.empty() || title.empty())
         return json_resp({{"ok", false}, {"error", "id 与 title 不能为空"}});
-    json* e = session_entry_(id);
-    if (e == nullptr) return json_resp({{"ok", false}, {"error", "会话不存在"}});
-    (*e)["title"] = title;
-    (*e)["updated"] = now_epoch_();
-    save_index_();
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        json* e = session_entry_(id);
+        if (e == nullptr) return json_resp({{"ok", false}, {"error", "会话不存在"}});
+        (*e)["title"] = title;
+        (*e)["updated"] = now_epoch_();
+        save_index_();
+    }
     return json_resp({{"ok", true}, {"title", title}});
 }
 
@@ -311,30 +349,39 @@ http::Response WebuiPlugin::api_session_rename_(const std::string& body) {
 http::Response WebuiPlugin::api_session_delete_(const std::string& body) {
     json in = parse_body_(body);
     const std::string id = in.value("id", "");
-    if (session_entry_(id) == nullptr)
-        return json_resp({{"ok", false}, {"error", "会话不存在"}});
-    // 活跃会话也可删（用户定义）：删后自动切到最近更新的会话；全空则新建无工作区会话
-    json arr = json::array();
-    for (auto& s : index_["sessions"])
-        if (s.is_object() && s.value("id", "") != id) arr.push_back(s);
-    index_["sessions"] = arr;
-    save_index_();
+    bool is_active = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        if (session_entry_(id) == nullptr)
+            return json_resp({{"ok", false}, {"error", "会话不存在"}});
+        // 活跃会话也可删（用户定义）：删后自动切到最近更新的会话；全空则新建无工作区会话
+        json arr = json::array();
+        for (auto& s : index_["sessions"])
+            if (s.is_object() && s.value("id", "") != id) arr.push_back(s);
+        index_["sessions"] = arr;
+        save_index_();
+        close_agent_logs_();   // 先收口句柄（可能是活跃会话的存档），再删文件
+        is_active = id == session_;
+    }
     std::error_code ec;
-    close_agent_logs_();   // 先收口句柄（可能是活跃会话的存档），再删文件
     fs::remove(home_ / "sessions" / (id + ".transcript.jsonl"), ec);
     fs::remove(home_ / "sessions" / (id + ".state.json"), ec);
     fs::remove_all(home_ / "sessions" / "agents" / id, ec);   // 子代理明细随会话删除
-    if (id == session_) {
+    if (is_active) {
         std::string next;
-        long long best = -1;
-        for (auto& s : index_["sessions"]) {
-            const long long u = s.value("updated", 0LL);
-            if (u > best) { best = u; next = s.value("id", ""); }
+        {
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            long long best = -1;
+            for (auto& s : index_["sessions"]) {
+                const long long u = s.value("updated", 0LL);
+                if (u > best) { best = u; next = s.value("id", ""); }
+            }
         }
         if (!next.empty()) {
             switch_to_(next);
         } else {
             // 全删 ⇒ 无会话态：注册表只含已初始化会话，前端 loadSessions 后进草稿态
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
             session_ = "";
             index_["active"] = "";
             save_index_();
@@ -350,36 +397,43 @@ http::Response WebuiPlugin::api_session_delete_(const std::string& body) {
 json WebuiPlugin::session_meta_() {
     // pending：后端当前真有挂起提案（运行时事实，重启即 false）——前端决策坞
     // 以此为门卫，防止任何来源的幻影提案弹审批
-
+    std::string session, ws;
+    bool pending = false;
     int turns = 0;
     long long tokens = 0;
+    std::size_t count = 0;
     std::string title = "(新会话)";
-    for (const auto& r : records_) {
-        const std::string type = r.value("type", "");
-        if (type == "user") {
-            ++turns;
-            if (title == "(新会话)") {
-                std::string t = r.value("text", "");
-                if (t.size() > 48) t = vcws::trim_utf8(t, 48) + "…";  // 码点安全
-                title = t;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        count = records_.size();
+        for (const auto& r : records_) {
+            const std::string type = r.value("type", "");
+            if (type == "user") {
+                ++turns;
+                if (title == "(新会话)") {
+                    std::string t = r.value("text", "");
+                    if (t.size() > 48) t = vcws::trim_utf8(t, 48) + "…";  // 码点安全
+                    title = t;
+                }
             }
+            // 累计 token = assistant 记录自带 usage（恒真形态——events.cpp 组记录时
+            // 必带）。这是前端「累计 tokens」显示的服务端源，重放后依然成立。
+            if (type == "assistant")
+                tokens += r.value("usage", json::object()).value("total_tokens", 0LL);
         }
-        // 累计 token = assistant 记录自带 usage（恒真形态——events.cpp 组记录时
-        // 必带）。这是前端「累计 tokens」显示的服务端源，重放后依然成立。
-        if (type == "assistant")
-            tokens += r.value("usage", json::object()).value("total_tokens", 0LL);
+        if (json* e = session_entry_(session_); e != nullptr)
+            ws = e->value("workspace", "");
+        session = session_;
+        pending = pending_turn_ >= 0;
     }
-    std::string ws;
-    if (json* e = session_entry_(session_); e != nullptr)
-        ws = e->value("workspace", "");
-    return {{"id", session_},
+    return {{"id", session},
             {"title", title},
             {"turns", turns},
             {"tokens", tokens},
             {"workspace", ws},
             {"in_flight", in_flight_.load()},   // 后端原子真值：前端重放后对账防 zombie
-            {"records", records_.size()},
-            {"pending", pending_turn_ >= 0}};
+            {"records", count},
+            {"pending", pending}};
 }
 
 }  // namespace vc_webui

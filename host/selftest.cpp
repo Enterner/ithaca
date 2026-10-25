@@ -94,7 +94,7 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
  {"role":"assistant","content":"","tool_calls":[{"id":"c6","type":"function","function":{"name":"runner.run","arguments":"{\"command_line\":\"cmd /c echo BUILD OK\"}"}}]},
  {"role":"assistant","content":"M5 场景完成"},
  {"role":"assistant","content":")json";
-    // 第 9 轮取消场景）：30 行长内容流——中途 cancel，流应即刻终止
+    // 第 9 轮（取消场景）：30 行长内容流——中途 cancel，流应即刻终止
     for (int i = 1; i <= 30; ++i) f << "输出行 " << i << "\\n";
     f << "\"}\n]";
     const std::string env1 =

@@ -57,6 +57,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     sweep_uninitialized_();
     {
         std::string act = prefer_session;
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
         if (act.empty() || session_entry_(act) == nullptr) {
             act = index_.value("active", "");
             if (act.empty() || session_entry_(act) == nullptr) {
@@ -89,8 +90,9 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     }();
     // workspace 工具表（文件树 /api/fs/list 的后端）：activate 时解析一次；
     // 装载顺序在 webui 之后的情况由 subscribe_ 的 tool_register 兜底重解析
-    tools_ = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-    if (tools_ == nullptr) host_.log(3, "ithaca.webui: workspace 工具表未就绪——文件树不可用");
+    tools_.store(host_.service<vc_api::ToolTable>(vcws::kToolSvc));
+    if (tools_.load() == nullptr)
+        host_.log(3, "ithaca.webui: workspace 工具表未就绪——文件树不可用");
 
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host_.log(4, "ithaca.webui: 领取 poster 失败");
@@ -247,8 +249,14 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         r.content_type = "text/event-stream";
         return r;
     }
-    if (m == "GET" && t == "/api/health")
-        return json_resp({{"ok", true}, {"session", session_}});
+    if (m == "GET" && t == "/api/health") {
+        std::string sess;
+        {
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            sess = session_;
+        }
+        return json_resp({{"ok", true}, {"session", sess}});
+    }
     if (m == "GET" && t == "/api/config") return json_resp(config_public_());
     if (m == "POST" && t == "/api/config") return api_config_save_(req.body);
     if (m == "GET" && t.rfind("/api/transcript", 0) == 0) {
@@ -256,13 +264,26 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         const auto q = req.target.find("after=");   // 从原始 target 解析（t 已剥 query）
         if (q != std::string::npos) after = std::atol(req.target.c_str() + q + 6);
         json arr = json::array();
-        for (std::size_t i = static_cast<std::size_t>(after); i < records_.size(); ++i)
-            arr.push_back(records_[i]);
-        return json_resp({{"records", arr}, {"next", records_.size()}});
+        std::size_t total = 0;
+        {
+            // 快照拷贝持锁出——宿主线程的 record_ 并发追加，不能裸遍历
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            total = records_.size();
+            for (std::size_t i = static_cast<std::size_t>(after); i < records_.size(); ++i)
+                arr.push_back(records_[i]);
+        }
+        return json_resp({{"records", arr}, {"next", total}});
     }
     if (m == "GET" && t == "/api/session") return json_resp(session_meta_());
     if (m == "GET" && t.rfind("/api/agent-log", 0) == 0) return api_agent_log_(req.target);
-    if (m == "GET" && t == "/api/sessions") return json_resp(index_["sessions"]);
+    if (m == "GET" && t == "/api/sessions") {
+        json list;
+        {
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            list = index_.value("sessions", json::array());
+        }
+        return json_resp(list);
+    }
     if (m == "POST" && t == "/api/session/new") return api_session_new_(req.body);
     if (m == "POST" && t == "/api/session/open") return api_session_open_(req.body);
     if (m == "POST" && t == "/api/session/delete") return api_session_delete_(req.body);

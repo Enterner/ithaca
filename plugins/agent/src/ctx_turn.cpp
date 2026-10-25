@@ -181,6 +181,7 @@ void AgentCtx::dispatch_loop() {
             continue;
         }
         bool suspend = false;
+        bool excepted = false;   // 异常兜底路径标记（catch 块内直接判，不反查串）
         try {
             suspend = dispatch_one_(ctx);
         } catch (const std::exception& e) {
@@ -194,17 +195,17 @@ void AgentCtx::dispatch_loop() {
             ctx.done = true;
             emit_tool_result(ctx.full_name, false, ctx.result);
             ++dispatched_;
+            excepted = true;
         } catch (...) {
             ctx.result = json{{"ok", false}, {"error", "工具执行异常（未知类型）"}}.dump();
             ctx.done = true;
             emit_tool_result(ctx.full_name, false, ctx.result);
             ++dispatched_;
+            excepted = true;
         }
-        if (ctx.done && !ctx.result.empty() &&
-            ctx.result.find("工具执行异常") != std::string::npos) {
+        if (excepted)
             host_.log(3, "ithaca.agent: 工具分发异常已兜底 turn #" +
                              std::to_string(turn_no_) + " tool=" + ctx.full_name);
-        }
         if (suspend) return;   // 挂起即返：跳过循环尾（旧 return 语义，见 dispatch_one_）
     }
     // 分发完但仍未收口 ⇒ 看在途面：无任何挂起就地收口；有异步任务/在途子代理

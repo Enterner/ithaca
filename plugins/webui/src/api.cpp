@@ -24,6 +24,7 @@ void WebuiPlugin::start_turn_(const std::string& text) {
     json rec = {{"type", "user"}, {"text", text}};
     persist_(rec);   // 只落盘；广播 defer 到宿主线程
     nostos::kit::poster_submit(poster_, [this, text, rec] {
+        reasoning_buf_.clear();                // 轮边界兜底：取消/异常残留的思考不串进新轮
         broadcast_(rec);                       // 先广播用户消息
         const vc_api::TurnInput e{text.c_str()};
         host_.emit(vc_api::turn_input, &e);    // 再开 turn（顺序保证）
@@ -37,7 +38,12 @@ http::Response WebuiPlugin::api_input_(const std::string& body) {
         json in = parse_body_(body);
         std::string line = in.value("line", "");
         if (line.empty()) return json_resp({{"ok", false}, {"error", "空输入"}});
-        if (session_.empty())
+        std::string session;
+        {
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            session = session_;
+        }
+        if (session.empty())
             return json_resp({{"ok", false},
                               {"error", "无活跃会话——发送首条消息时自动创建"}}, 400);
         start_turn_(line);
@@ -60,7 +66,15 @@ http::Response WebuiPlugin::api_decision_(const std::string& body) {
     // 拒绝反馈：{msg:"..."} 随拒绝回灌给 agent（ZCode 式"拒绝并告诉它怎么做"）
     const std::string msg = in.contains("msg") && in["msg"].is_string()
                                 ? in["msg"].get<std::string>() : "";
-    const int turn = (d == 0 || d == 1) ? pending_turn_ : 0;  // undo/cancel 不看 turn
+    // 读取与复位同锁原子完成——宿主线程的 edit_proposed 回调在另一侧写同一字段
+    int turn = 0;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        turn = (d == 0 || d == 1) ? pending_turn_ : 0;  // undo/cancel 不看 turn
+        // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后 pending 恒为
+        // false，前端决策坞以后端事实为准（防幻影）
+        pending_turn_ = -1;
+    }
     // NOTE: 取消（d=4）后 provider 侧不发 done/error（mock 直接静默终止），agent
     // 只发 notice——in_flight_ 无人清零 ⇒ UI 永远卡「生成中」（踩过：停止键卡死）。
     // 用户主动终止 = UI 必须立即解锁。
@@ -69,8 +83,6 @@ http::Response WebuiPlugin::api_decision_(const std::string& body) {
         const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str()};
         host_.emit(vc_api::turn_decision, &e);
     });
-    pending_turn_ = -1;   // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后
-                          // pending 恒为 false，前端决策坞以后端事实为准（防幻影）
     persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：in_flight + pending）
     return json_resp({{"ok", true}});
 }
@@ -194,13 +206,14 @@ static std::string query_val(const std::string& target, const char* key) {
 http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
     const std::string rel = query_val(target, "path");
     const std::string depth_s = query_val(target, "depth");
-    if (tools_ == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
+    const vc_api::ToolTable* tools = tools_.load();
+    if (tools == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
     const json args = json{{"path", rel},
                            {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)}};
     const char* out_json = nullptr;
     // 直调工具表（线程安全见上）：NOSTOS_OK + {ok:false} = 工具级失败，原样透传
-    const nostos_status st = tools_->execute(tools_->self, "list", args.dump().c_str(), 0,
-                                             &out_json);
+    const nostos_status st = tools->execute(tools->self, "list", args.dump().c_str(), 0,
+                                            &out_json);
     json r = st == NOSTOS_OK && out_json != nullptr
                  ? json::parse(out_json, nullptr, false)
                  : json{{"ok", false}, {"error", "workspace execute 失败 (" +
@@ -230,11 +243,12 @@ http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
 /// 校验、256KB 封顶（truncated 标记）全在提供方。副作用：无（纯读）。
 /// 线程纪律同 api_fs_list_（见上）。
 http::Response WebuiPlugin::api_fs_read_(const std::string& target) {
-    if (tools_ == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
+    const vc_api::ToolTable* tools = tools_.load();
+    if (tools == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
     const json args = json{{"path", query_val(target, "path")}};
     const char* out_json = nullptr;
-    const nostos_status st = tools_->execute(tools_->self, "read", args.dump().c_str(), 0,
-                                             &out_json);
+    const nostos_status st = tools->execute(tools->self, "read", args.dump().c_str(), 0,
+                                            &out_json);
     json r = st == NOSTOS_OK && out_json != nullptr
                  ? json::parse(out_json, nullptr, false)
                  : json{{"ok", false}, {"error", "workspace execute 失败 (" +

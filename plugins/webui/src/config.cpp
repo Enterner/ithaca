@@ -12,6 +12,11 @@
 
 namespace vc_webui {
 
+// 实例差异项键清单（共享/覆盖两层配置的分界）——merge 与 persist 三处共用，
+// 单一出处：新增覆盖键漏改任一处即静默失效
+static const char* const kOverlayKeys[] = {"current_provider", "model", "provider",
+                                           "permission_mode"};
+
 // ---- 配置 -------------------------------------------------------------------
 
 void WebuiPlugin::load_config_() {
@@ -47,7 +52,7 @@ void WebuiPlugin::merge_local_overlay_() {
     std::ifstream in(f, std::ios::binary);
     json d = json::parse(in, nullptr, false);
     if (!d.is_object()) return;
-    for (const char* k : {"current_provider", "model", "provider", "permission_mode"})
+    for (const char* k : kOverlayKeys)
         if (d.contains(k)) config_[k] = d[k];
 }
 bool WebuiPlugin::persist_config_() {
@@ -65,11 +70,11 @@ bool WebuiPlugin::persist_config_() {
     }
     if (config_shared()) {
         json shared = config_;
-        for (const char* k : {"current_provider", "model", "provider", "permission_mode"})
+        for (const char* k : kOverlayKeys)
             shared.erase(k);
         out << shared.dump();
         json local = json::object();
-        for (const char* k : {"current_provider", "model", "provider", "permission_mode"})
+        for (const char* k : kOverlayKeys)
             if (config_.contains(k)) local[k] = config_[k];
         std::ofstream lo(home_ / "config-local.json", std::ios::binary | std::ios::trunc);
         if (lo) lo << local.dump();
@@ -327,10 +332,14 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
 /// /api/config 的 plugins 节。
 http::Response WebuiPlugin::api_ui_registry_() {
     json arr = json::array();
-    for (const auto& [name, ui] : ui_registry_)
-        arr.push_back(json{{"plugin", name},
-                           {"label", ui.value("label", name)},
-                           {"schema", ui.value("schema", json::array())}});
+    {
+        // 快照拷贝持锁出——宿主线程的 vc.ui.register 回调并发写
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        for (const auto& [name, ui] : ui_registry_)
+            arr.push_back(json{{"plugin", name},
+                               {"label", ui.value("label", name)},
+                               {"schema", ui.value("schema", json::array())}});
+    }
     return json_resp({{"ok", true}, {"plugins", std::move(arr)}});
 }
 

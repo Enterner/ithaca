@@ -6,3 +6,6 @@ playwright-report/
 test-results/
 docs/temp/
 ui/dist/
+
+# 构建产物（曾误提交 probe.obj——见 docs/temp/代码审查报告）
+*.obj

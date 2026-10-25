@@ -1,18 +1,38 @@
 <script setup>
-// 对话流：记录列表 + 流式块。提案卡（逐文件批准）/「本轮修改」汇总卡内联实现，
-// diff 着色走 diff.js 的 v-html（内容全部经 esc——信任级别与正文一致）。
-import { ref, watch, nextTick, onMounted } from 'vue'
+// 对话流：记录列表 + 流式块。消息级内容平铺，过程层收敛（工具调用+结果一行、
+// run 输出折叠、applied/完成行并入汇总卡与状态卡——records 层过滤）。提案卡
+//（逐文件批准）/「本轮修改」汇总卡内联实现，diff 着色走 diff.js 的 v-html
+//（内容全部经 esc——信任级别与正文一致）。
+import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { S } from '../store'
 import { mdHtml, esc, toolLabel } from '../md'
-import { diffHtml, stripHeads, diffStats, diffIsNew } from '../diff'
+import { diffHtml, stripHeads } from '../diff'
 
 const streamEl = ref(null)
+const thinkEl = ref(null)
 function scrollBottom() {
   if (streamEl.value) streamEl.value.scrollTop = streamEl.value.scrollHeight
 }
-// 常规跟随：记录数/流式文本变化即滚底
-watch(() => [S.records.length, S.live && S.live.text, S.live && S.live.reasoning],
+// 常规跟随：记录数/流式正文变化即滚底。思考增量不进这条——思考体有自己的
+// 滚动域，推页面滚底会让「思考时页面一直往下走」
+watch(() => [S.records.length, S.live && S.live.text],
   () => nextTick(scrollBottom), { deep: true })
+// 思考阶段 = live 块在且正文未开始（reasoning 先于 content 流；收口后 live 置空）
+const thinking = computed(() => !!(S.live && S.live.reasoning && !S.live.text))
+// 思考跟随：展开时吸附思考体内部底部；尚未超出上限（无内部滚动、块体仍在长高）
+// 时退化为推页面滚底。用户上翻阅读（离底 > 48px）时不拽回。
+watch(() => S.live && S.live.reasoning, () => nextTick(() => {
+  const el = thinkEl.value
+  if (!el || !S.live || !S.live.open) return
+  const pinned = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  if (!pinned) return   // 用户上翻阅读中：不拽回
+  el.scrollTop = el.scrollHeight
+  if (el.scrollHeight <= el.clientHeight) scrollBottom()
+}))
+// 思考中途手动展开：直接落到思考体底部（最新思考），后续增量交给上面的跟随
+watch(() => S.live && S.live.open, (v) => {
+  if (v) nextTick(() => { if (thinkEl.value) thinkEl.value.scrollTop = thinkEl.value.scrollHeight })
+})
 // NOTE: 初始定位必须主动做——本组件在会话模式下才挂载，挂载时记录往往已装载
 // 完毕（数量不再变化 ⇒ watch 永不触发 ⇒ 刷新/切会话后停在顶部，踩过）
 onMounted(() => nextTick(scrollBottom))
@@ -25,23 +45,33 @@ function toolHtml(rec) {
   // 短句；否则「中文标签 + 摘要」
   return label ? '<b>' + esc(label) + '</b> ' + esc(brief) : esc(brief)
 }
-// 子代理明细行（右栏/主对话流同款）：标签为空 = 摘要自含中文动词
-function subLine(r) {
-  const label = toolLabel(r.tool, r.text)
-  return label ? label + ' ' + r.text : (r.text || '')
+// ---- 过程行（两行制：调用行 + 独立结果行；run 输出折叠在结果行下）------------
+// 结果独立成行（ZCode 式）：退出码/结果摘要住结果行，与命令文本物理分行——
+// 命令串含 exit N 也不会拼出重叠；失败红显，run 失败恒带 exit N（分行后无
+// 撞车顾虑，退出码是最廉价的失败诊断）
+
+function toolFailed(rec) {
+  return rec.type === 'tool' && !rec.ok   // 仅无配对兜底行红显；配对调用的失败由结果行红显
 }
-function appliedHtml(rec) {
-  if (rec.diff) {
-    const st = diffStats(rec.diff)
-    const paths = rec.paths || []
-    const single = paths.length <= 1
-    const label = single ? (paths[0] || (rec.diff.match(/^── (.+)$/m) || ['', ''])[1] || '')
-                         : paths.length + ' 个文件'
-    const tag = single && diffIsNew(rec.diff) ? ' <span class="ntag">新文件</span>' : ''
-    const stats = st ? ' <i class="add">+' + st.add + '</i> <i class="del">−' + st.rem + '</i>' : ''
-    return '✔ 已更新 <b>' + esc(label) + '</b>' + tag + stats
-  }
-  return '✔ 已落盘 ' + esc((rec.paths || []).join(', '))
+/** 结果行内容：null = 不出结果行（无配对/运行中无输出/成功无输出） */
+function resRow(rec) {
+  if (rec.type !== 'tool_call') return null
+  const r = rec._result
+  const nOut = rec._runs ? rec._runs.reduce((n, b) => n + b.lines.length, 0) : 0
+  if (!r) return nOut > 0 ? { text: nOut + ' 行输出', out: true } : null   // 运行中已有输出
+  if (r.exit !== undefined && r.exit !== null)
+    // 失败：有输出只标 ✗（错误文本在自动展开的输出块里）；静默失败留 exit N
+    //——输出块为空，退出码是唯一线索。成功同判：输出行数才值得占位
+    return r.ok ? (nOut > 0 ? { text: nOut + ' 行输出', out: true } : null)
+                : (nOut > 0 ? { text: '✗', out: true, warn: true }
+                            : { text: '✗ exit ' + r.exit, warn: true })
+  return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok, out: false } : null
+}
+function toggleRunOut(rec) {
+  if (rec._runs && rec._runs.length) rec._open = !rec._open
+}
+function runOutText(rec) {
+  return rec._runs.map((b) => b.lines.join('\n')).join('\n')
 }
 
 // 提案卡：只负责展示（diff + 逐文件勾选）；裁决走输入栏上方的决策坞（ZCode 式）。
@@ -79,18 +109,33 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <div class="msg u">{{ rec.text }}</div>
         </template>
 
-        <template v-else-if="rec.type === 'assistant' && (rec.text || '')">
-          <div class="who">Ithaca</div>
-          <div class="msg a" v-html="mdHtml(rec.text || '')"></div>
+        <template v-else-if="rec.type === 'assistant' && (rec.text || rec.reasoning)">
+          <!-- 收口记录的思考块：默认折叠可展开（reasoning 由宿主落盘，重放同样可回看） -->
+          <div v-if="rec.reasoning" class="think" :class="{ closed: !rec._thinkOpen }">
+            <div class="think-head" @click="rec._thinkOpen = !rec._thinkOpen">
+              <span class="ico">💭</span><span class="t">深度思考</span><span class="chev">▾</span>
+            </div>
+            <div v-if="rec._thinkOpen" class="think-body">{{ rec.reasoning }}</div>
+          </div>
+          <template v-if="rec.text">
+            <div class="who">Ithaca</div>
+            <div class="msg a" v-html="mdHtml(rec.text || '')"></div>
+          </template>
         </template>
 
         <template v-else-if="rec.type === 'tool_call' || rec.type === 'tool'">
-          <div class="toolline" :class="{ warn: rec.type === 'tool' && !rec.ok }"
-               v-html="'⚙ ' + toolHtml(rec)"></div>
-        </template>
-
-        <template v-else-if="rec.type === 'applied'">
-          <div class="toolline" v-html="appliedHtml(rec)"></div>
+          <!-- 过程两行制：调用行（跑了什么）+ 结果行（结局，独立弱色行） -->
+          <div class="toolline proc" :class="{ warn: toolFailed(rec) }" v-html="'⚙ ' + toolHtml(rec)"></div>
+          <template v-if="rec.type === 'tool_call'">
+            <div v-if="resRow(rec)" class="procres"
+                 :class="{ warn: resRow(rec).warn, click: resRow(rec).out, open: rec._open }"
+                 @click="resRow(rec).out && toggleRunOut(rec)">
+              └ {{ resRow(rec).text }}<span v-if="resRow(rec).out" class="chev">▸</span>
+            </div>
+            <div v-if="rec._open && rec._runs && rec._runs.length" class="runout">
+              <div class="runout-body">{{ runOutText(rec) }}</div>
+            </div>
+          </template>
         </template>
 
         <!-- 「本轮修改」汇总卡（记录流内伪记录：结算时已落位到自己轮次） -->
@@ -127,15 +172,20 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <div class="toolline">↩ 已撤销（剩 {{ rec.depth }} 组快照）</div>
         </template>
 
-        <template v-else-if="rec.type === 'run_line'">
-          <div class="msg">{{ rec.text }}</div>
-        </template>
-        <template v-else-if="rec.type === 'run_exit'">
-          <div class="toolline">⚙ run #{{ rec.run_id }} 退出（exit {{ rec.exit_code }}）</div>
+        <template v-else-if="rec.type === 'run_out'">
+          <!-- 无归属 run 的兜底块（映射缺失时自成一行）：同样默认折叠 -->
+          <div class="toolline proc click" :class="{ warn: rec.failed, open: rec._open }"
+               @click="rec._open = !rec._open">
+            <span class="chev">▸</span> run #{{ rec.run_id }} · {{ rec.lines.length }} 行输出<template v-if="rec.exit !== null"> · exit {{ rec.exit }}</template>
+          </div>
+          <div v-if="rec._open" class="runout">
+            <div class="runout-body">{{ rec.lines.join('\n') }}</div>
+          </div>
         </template>
 
         <template v-else-if="rec.type === 'subagent'">
-          <!-- 子代理工作记录视图：spawn 卡可点击开右栏过程视图（实时+可取消） -->
+          <!-- 子代理工作记录视图：spawn 卡可点击开右栏过程视图（实时+可取消）；
+              明细/完成行由 records 层过滤，这里只见 0 与 5 -->
           <div v-if="rec.phase === 0" class="subcard" title="点击在右栏查看工作过程"
                @click="S.subView = rec.turn_id">
             <span class="subtag">🤖 子代理[{{ rec.tool }}]</span>
@@ -145,19 +195,16 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
                  : S.subDone[rec.turn_id] >= 5 ? '已取消 · 点击查看' : '已完成 · 点击查看' }}
             </span>
           </div>
-          <div v-else-if="rec.phase === 2" class="toolline subtool"
-               v-html="'⚙ ' + esc(subLine(rec))"></div>
-          <div v-else-if="rec.phase === 3" class="toolline subtool"
-               :class="{ warn: (rec.text || '').startsWith('✗') }">⚙ {{ subLine(rec) }}</div>
-          <div v-else-if="rec.phase === 4" class="toolline subdone">✔ 子代理完成</div>
           <div v-else-if="rec.phase === 5" class="errcard">✗ 子代理失败：{{ rec.text }}</div>
         </template>
 
         <template v-else-if="rec.type === 'notice'">
           <div v-if="(rec.level || 0) >= 3" class="errcard">{{ rec.text }}</div>
+          <!-- 挂起等待动态行（单条、核销即撤）：与系统通告同款居中弱化 -->
+          <div v-else-if="rec._wait" class="sysline">⏳ {{ rec.text }}</div>
           <!-- 系统通告（sys=1）居中分隔；「模型已切换」「权限模式 = 」通告隐藏
               （选择器自身即反馈，写流属刷屏噪音——踩过：反复切换连发刷屏）；
-              子代理派出/完成通告已升级为结构化 subagent 卡，文本行隐藏 -->
+              「后台任务已启动」不落流（调用行已示，records 层已滤） -->
           <div v-else-if="rec.sys" class="sysline">── {{ rec.text }} ──</div>
           <div v-else-if="/^(模型已切换|权限模式 = |宿主停止|没有进行中的 turn|子代理已派出|子代理完成（|子代理失败: )/.test(rec.text || '')" style="display:none"></div>
           <div v-else class="msg">{{ rec.text }}</div>
@@ -183,11 +230,13 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         </template>
       </template>
 
-      <!-- 流式块：深度思考（可折叠）+ 正文 + 光标 -->
+      <!-- 流式块：深度思考（默认折叠；展开后超上限内部滚动）+ 正文 + 光标 -->
       <template v-if="S.live">
         <div v-if="S.live.reasoning" class="think" :class="{ closed: !S.live.open }">
-          <div class="think-head" @click="S.live.open = !S.live.open">💭 深度思考 ▾</div>
-          <div v-if="S.live.open" class="think-body">{{ S.live.reasoning }}</div>
+          <div class="think-head" :class="{ live: thinking }" @click="S.live.open = !S.live.open">
+            <span class="ico">💭</span><span class="t">{{ thinking ? '思考中…' : '深度思考' }}</span><span class="chev">▾</span>
+          </div>
+          <div v-if="S.live.open" ref="thinkEl" class="think-body">{{ S.live.reasoning }}</div>
         </div>
         <div v-if="S.live.text || !S.live.reasoning" class="who">Ithaca</div>
         <div v-if="S.live.text || !S.live.reasoning" class="msg a">{{ S.live.text }}<span class="cursor"></span></div>

@@ -11,6 +11,7 @@ export function resetView() {
   S.records = []; S.live = null; S.pending = null
   S.since = 0; S.lastId = -1; S.inFlight = false
   X.turnEdits = new Map(); X.turnEditsTurn = 0; X.lastTurnId = null
+  X.runs = new Map(); X.runCall = new Map()   // run 归属随会话走，跨会话残留会错配输出
 }
 /**
  * 进草稿态：＋新建后的空态引导。零请求——注册表/磁盘在首条消息前不动。

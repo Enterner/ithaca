@@ -4,7 +4,7 @@ import { reactive } from 'vue'
 
 export const S = reactive({
   records: [],          // 已定格记录（重放 + SSE 收口）
-  live: null,           // 流式块 {reasoning, text}（SSE 专属，不落盘）
+  live: null,           // 流式块 {reasoning, text, open}（SSE 专属，不落盘；open 默认折叠）
   since: 0, lastId: -1,
   conn: 'off',          // 'on' | 'off'
   inFlight: false,
@@ -49,4 +49,6 @@ export const X = {
   turnEditsTurn: 0,
   lastTurnId: null,       // 轮次边界判定（turn_id 变化 ⇒ 结算汇总卡）
   turnStart: 0, turnChars: 0,   // 输出速率窗口（liveStart 起表）
+  runs: new Map(),        // run_id → 输出块 {lines, exit, failed}（输出折叠进调用行，见 records）
+  runCall: new Map(),     // run_id → 归属的 runner.run 调用行（「已启动」通告时配对）
 }

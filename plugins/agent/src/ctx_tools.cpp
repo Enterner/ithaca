@@ -242,13 +242,10 @@ std::string AgentCtx::summarize_apply_ops(const json& args) {
     return out;
 }
 
-// diff 统计尾行 "（+A −R 行）" → "+A −R"（"（"=3 字节；无 ⇒ 空）
+// diff 统计尾行 "（+A −R 行）" → "+A −R"（"（"=3 字节；无 ⇒ 空）——实现收敛在
+// vcagent::diff_stats_short_str（context.hpp），此处只做名字面转发
 std::string AgentCtx::diff_stats_short(const std::string& d) {
-    const std::size_t head = d.rfind("（+");
-    if (head == std::string::npos) return "";
-    const std::size_t tail = d.find(" 行）", head);
-    if (tail == std::string::npos) return "";
-    return d.substr(head + 3, tail - head - 3);
+    return vcagent::diff_stats_short_str(d);
 }
 
 // 工具结果 → 人话摘要；失败点名首条错误；认不出的形态回退原 JSON 截断

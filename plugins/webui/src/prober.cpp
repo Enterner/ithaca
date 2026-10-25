@@ -86,8 +86,13 @@ void WebuiPlugin::stop_prober_() {
 
 // 实例瞬态状态落盘（聚合侧栏的徽标数据源：壳/兄弟实例只读磁盘，不互发 HTTP）
 void WebuiPlugin::persist_status_() {
+    bool pending = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        pending = pending_turn_ >= 0;
+    }
     std::ofstream f(home_ / "status.json", std::ios::binary | std::ios::trunc);
-    if (f) f << json{{"working", in_flight_.load()}, {"pending", pending_turn_ >= 0}}.dump();
+    if (f) f << json{{"working", in_flight_.load()}, {"pending", pending}}.dump();
 }
 
 /// GET /api/shell/sessions → 聚合会话清单（多实例壳模式）。数据全部来自磁盘：

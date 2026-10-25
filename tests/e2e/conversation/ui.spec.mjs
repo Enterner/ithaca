@@ -18,23 +18,21 @@ test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 
 
     // 用户消息渲染
     await expect(page.locator(".msg.u", { hasText: "创建 hello.txt" })).toBeVisible();
-    // 落盘事件行（applied 携带 diff）+ 新文件徽章
-    await expect(page.locator(".toolline", { hasText: "已更新" })).toBeVisible({ timeout: 15000 });
-    await expect(page.locator(".ntag", { hasText: "新文件" }).first()).toBeVisible();
-    // 「本轮修改」汇总卡与文件行
+    // 落盘 = 「本轮修改」汇总卡（applied 不再自成一行）+ 文件行 + 新文件徽章
     const edits = page.locator(".card.edits");
-    await expect(edits).toBeVisible();
+    await expect(edits).toBeVisible({ timeout: 15000 });
     await expect(edits.locator(".erow .p", { hasText: "hello.txt" })).toBeVisible();
+    await expect(edits.locator(".ntag", { hasText: "新文件" }).first()).toBeVisible();
     // assistant 收口 + 工作区真实产物（跨层断言）
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first())
         .toBeVisible({ timeout: 15000 });
     expect(fs.existsSync(hello(host))).toBe(true);
 
-    // 再对话：新 turn 重新落盘，对话连续性保持
+    // 再对话：新 turn 走通（剧本耗尽的透传文本也照常渲染），对话连续性保持
     await page.locator("textarea.in").fill("继续");
     await page.locator(".send-btn").click();
     await expect(page.locator(".msg.u", { hasText: "继续" })).toBeVisible();
-    await expect(page.locator(".toolline", { hasText: "已更新" }).first())
+    await expect(page.locator(".msg.a", { hasText: "MOCK_EXHAUSTED" }).first())
         .toBeVisible({ timeout: 15000 });
     expect(fs.existsSync(hello(host))).toBe(true);
 });
@@ -53,9 +51,10 @@ test("CONV2 决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起
     await expect(dock).toBeVisible({ timeout: 15000 });
     await expect(dock.locator("b", { hasText: "workspace.apply" })).toBeVisible();
 
-    // 批准（决策坞 Enter 键同款按钮）→ applied 落盘行 + 坞收起 + 磁盘产物
+    // 批准（决策坞 Enter 键同款按钮）→ 落盘（本轮修改汇总卡收口，applied 不再
+    // 自成一行）+ 坞收起 + 磁盘产物
     await dock.locator("button.y").click();
-    await expect(page.locator(".toolline", { hasText: "已更新" })).toBeVisible({ timeout: 15000 });
+    await expect(page.locator(".card.edits", { hasText: "本轮修改" })).toBeVisible({ timeout: 15000 });
     await expect(page.locator(".ddock")).toHaveCount(0);
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first())
         .toBeVisible({ timeout: 15000 });
@@ -159,16 +158,16 @@ test.describe("CONV10 工具行人性化", () => {
         await page.locator("textarea.in").fill("看看目录");
         await page.locator(".send-btn").click();
 
-        // 调用参数摘要
+        // 调用参数摘要（两行制：调用行只说跑了什么）
         await expect(page.locator(".toolline", { hasText: "列目录 .（深度 1）" }))
             .toBeVisible({ timeout: 15000 });
         await expect(page.locator(".toolline", { hasText: "搜索「hello」" })).toBeVisible();
         await expect(page.locator(".toolline", { hasText: "读取 api.txt" })).toBeVisible();
-        // read 内容带行号前缀，字节数随行数变化——断言稳定前缀而非具体数字
-        await expect(page.locator(".toolline", { hasText: "api.txt · " })).toBeVisible();
-        // 结果摘要
-        await expect(page.locator(".toolline", { hasText: "列出 1 项" })).toBeVisible();
-        await expect(page.locator(".toolline", { hasText: "命中 1 处 · 扫描 1 个文件" })).toBeVisible();
+        // read 结果（字节数随内容变化——断言稳定前缀而非具体数字）
+        await expect(page.locator(".procres", { hasText: "api.txt · " })).toBeVisible();
+        // 结果摘要（独立结果行 └）
+        await expect(page.locator(".procres", { hasText: "列出 1 项" })).toBeVisible();
+        await expect(page.locator(".procres", { hasText: "命中 1 处 · 扫描 1 个文件" })).toBeVisible();
         // 收口
         await expect(page.locator(".msg.a", { hasText: "看完了" }).first())
             .toBeVisible({ timeout: 15000 });

@@ -106,7 +106,7 @@ public:
             host.log(4, "ithaca.runner: 发布 vc.tool.runner 失败（同名服务已存在？）");
             return NOSTOS_ERR_FAILED;
         }
-        // 领取 poster的异步事件全部经它回流——漏掉 ⇒ post 空指针调用）
+        // 领取 poster——runner 的异步事件全部经它回流（漏掉 ⇒ post 空指针调用）。
         if (host.acquire_poster(&poster_) != NOSTOS_OK) {
             host.log(4, "ithaca.runner: 领取 poster 失败（宿主 ABI 过旧或未实现）");
             return NOSTOS_ERR_FAILED;
@@ -321,7 +321,9 @@ private:
         // 单行投递（主循环与收口终冲刷共用同一份净化/截断/超限纪律）
         const auto emit_line = [this, run_id, slot, entry](int stream, const std::string& raw) {
             std::string line = vcws::utf8_sanitize(raw);
-            if (line.size() > kLineCap) line = line.substr(0, kLineCap) + "…";
+            // 截断必须走码点边界——按字节切会劈开多字节字符，下游 json dump 抛
+            // type_error.316（全仓纪律：截断一律 trim_utf8，勿再按字节切）
+            if (line.size() > kLineCap) line = vcws::trim_utf8(line, kLineCap) + "…";
             if (entry->bytes.fetch_add(line.size() + 1) > kOutputCap) {
                 if (!entry->truncated.exchange(true)) {
                     nostos::kit::poster_submit(poster_, [this, run_id, slot] {
@@ -338,6 +340,7 @@ private:
             });
         };
         bool killed = false;
+        bool abandoned = false;   // 宽限期路径 detached 读取线程：条目保留不擦（UAF 防护）
         bool proc_gone_seen = false;
         std::chrono::steady_clock::time_point proc_gone_at{};
         for (;;) {
@@ -397,7 +400,11 @@ private:
             if (proc_gone_seen && !both_eof && take.empty() &&
                 std::chrono::steady_clock::now() - proc_gone_at >
                     std::chrono::seconds(2)) {
-                // 宽限期到仍无 EOF：句柄被孙进程继承等病理场景——放弃残余输出收口
+                // 宽限期到仍无 EOF：句柄被孙进程继承等病理场景——放弃残余输出收口。
+                // NOTE: detached 的读取线程被句柄关闭唤醒后仍会触碰 entry 成员
+                //（mu/buffered），本条目不得擦除（UAF）——abandoned 标记，保留到
+                // deactivate 清场（病态场景频度极低）
+                abandoned = true;
                 if (entry->rd_out.joinable()) entry->rd_out.detach();
                 if (entry->rd_err.joinable()) entry->rd_err.detach();
                 DWORD code = 0xFFFFFFFFu;
@@ -418,6 +425,19 @@ private:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
+        // 回收：经 poster 回宿主线程 join + 擦表——投递线程不能自 erase（会析构
+        // 自身这个 joinable 线程对象 ⇒ terminate）；宿主线程 join 已近完成的线程
+        // 合法且短暂（llm_cloud 同款回收纪律）。不回收则 runs_ 随命令数单调累积
+        // （长驻进程的内存与句柄缓慢增长）。deactivate 先行 clear 时 find 落空即
+        // no-op；abandoned 条目（读取线程已 detach）不擦——擦除即对已弃线程 UAF。
+        if (!abandoned)
+            nostos::kit::poster_submit(poster_, [this, run_id] {
+                std::lock_guard<std::mutex> lock(runs_mu_);
+                const auto it = runs_.find(run_id);
+                if (it == runs_.end()) return;
+                if (it->second.poster.joinable()) it->second.poster.join();
+                runs_.erase(it);
+            });
     }
 
     // ---- 状态 -----------------------------------------------------------------------

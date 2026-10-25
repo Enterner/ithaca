@@ -19,10 +19,11 @@ void WebuiPlugin::subscribe_() {
     subs_.push_back(host_.on(vc_api::tool_register, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolRegister*>(p);
         if (e->svc_name == nullptr ||
-            std::string_view(e->svc_name) != vcws::kToolSvcName || tools_ != nullptr)
+            std::string_view(e->svc_name) != vcws::kToolSvcName || tools_.load() != nullptr)
             return;
-        tools_ = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-        if (tools_ != nullptr) {
+        const vc_api::ToolTable* t = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
+        tools_.store(t);   // 原子：select 线程的 /api/fs/* 并发读
+        if (t != nullptr) {
             host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
             backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
         }
@@ -37,6 +38,7 @@ void WebuiPlugin::subscribe_() {
     subs_.push_back(host_.on(vc_api::llm_reasoning, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmReasoning*>(p);
         if (e->text == nullptr) return;
+        reasoning_buf_ += e->text;   // 与广播同源累积，llm_done 时并入 assistant 记录
         broadcast_({{"type", "assistant_reasoning"}, {"text", std::string(e->text)}});
     }));
     subs_.push_back(host_.on(vc_api::llm_done, [this](const void* p) {
@@ -62,15 +64,22 @@ void WebuiPlugin::subscribe_() {
         // 收口信号 = 无 tool_calls 的 done 或 error。
         in_flight_.store(!turn_done);
         persist_status_();
-        record_({{"type", "assistant"},
-                 {"text", content},
-                 {"usage", usage},
-                 {"turn_done", turn_done}});
+        json rec = {{"type", "assistant"},
+                    {"text", content},
+                    {"usage", usage},
+                    {"turn_done", turn_done}};
+        // 本轮思考并入收口记录（有才带字段——旧记录/无推理模型形状不变）
+        if (!reasoning_buf_.empty()) {
+            rec["reasoning"] = std::move(reasoning_buf_);
+            reasoning_buf_.clear();
+        }
+        record_(std::move(rec));
     }));
     subs_.push_back(host_.on(vc_api::llm_error, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
         in_flight_.store(false);
         persist_status_();
+        reasoning_buf_.clear();   // 失败轮的思考不残留到下一轮
         record_({{"type", "error"},
                  {"code", e->code},
                  {"msg", e->message != nullptr ? std::string(e->message) : ""}});
@@ -90,7 +99,11 @@ void WebuiPlugin::subscribe_() {
     }));
     subs_.push_back(host_.on(vc_api::edit_proposed, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditProposed*>(p);
-        pending_turn_ = e->turn_id;
+        {
+            // select 线程的 /api/decision 在另一侧读写同一字段
+            std::lock_guard<std::recursive_mutex> lock(data_mu_);
+            pending_turn_ = e->turn_id;
+        }
         persist_status_();   // 提案待裁决（聚合徽标同步）
         record_({{"type", "proposal"},
                  {"turn_id", e->turn_id},
@@ -176,6 +189,8 @@ void WebuiPlugin::subscribe_() {
         if (e->plugin == nullptr || e->schema_json == nullptr) return;
         json schema = json::parse(e->schema_json, nullptr, false);
         if (!schema.is_array()) return;
+        // 载荷三串均调用期有效——立即拷贝。select 线程的 /api/ui/registry 并发读
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
         ui_registry_[e->plugin] = {
             {"label", e->label != nullptr ? std::string(e->label) : std::string(e->plugin)},
             {"schema", std::move(schema)}};
@@ -189,10 +204,16 @@ void WebuiPlugin::subscribe_() {
 // tool_register 多次触发叠发。host_workspace_ 已在 switch_to_ 同步段被矫正为会话
 // 工作区，此处直接取用。
 void WebuiPlugin::backfill_workspace_() {
-    if (ws_backfilled_ || session_.empty() || host_workspace_.empty()) return;
+    std::string session, ws;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        session = session_;
+        ws = host_workspace_;
+    }
+    if (ws_backfilled_ || session.empty() || ws.empty()) return;
     ws_backfilled_ = true;
-    nostos::kit::poster_submit(poster_, [this] {
-        const vc_api::WorkspaceSet e{host_workspace_.c_str()};
+    nostos::kit::poster_submit(poster_, [this, ws] {
+        const vc_api::WorkspaceSet e{ws.c_str()};
         host_.emit(vc_api::workspace_set, &e);
     });
 }

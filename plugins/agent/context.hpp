@@ -113,7 +113,7 @@ inline std::string compact_result(const std::string& tool, const json& r,
                  r["errors"][0].is_object())
             detail = r["errors"][0].value("message", "");
         if (detail.empty()) detail = r.dump();
-        if (detail.size() > 2048) detail = detail.substr(0, 2048) + "…";
+        if (detail.size() > 2048) detail = vcws::trim_utf8(detail, 2048) + "…";
         return "{\"ok\":false,\"error\":" + json(detail).dump() + ref_field(ref) + "}";
     }
     const auto dot = tool.rfind('.');

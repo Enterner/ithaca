@@ -18,7 +18,11 @@
 //
 // 线程纪律：Handler::handle 在 select 线程（必须快——poster_submit/
 // 小文件写都非阻塞）；事件回调在宿主线程（drain_posted 串行化）；broadcast
-// 内核注明线程安全。锁：无（各线程只触碰自己的数据面）。
+// 内核注明线程安全。两线程共享的数据面（records_/session_/pending_turn_/index_/
+// out_/agent_logs_* 等，见 data_mu_）以递归互斥串行化；**锁内禁止 broadcast_ 与
+// host_.emit**——handle 在 kit select 循环内部锁内被调，持 data_mu_ 再广播/发射
+// = 与之成 ABBA 死锁（EDEADLOCK 同族）。config_ 只在 select 线程触碰（activate
+// 完成于服务起请求前），prober 面自带 probe_mu_。
 
 #pragma once
 
@@ -164,7 +168,8 @@ private:
     std::vector<nostos::abi::Host::Subscription> subs_;
 
     const vc_api::LlmTable* llm_ = nullptr;     // activate 时解析（模型热切用）
-    const vc_api::ToolTable* tools_ = nullptr;  // workspace 工具表（文件树后端，见 activate）
+    std::atomic<const vc_api::ToolTable*> tools_{nullptr};  // workspace 工具表：
+        // select 线程读（/api/fs/*）、宿主线程 tool_register 兜底写——原子装载
 
     // ---- 兄弟实例探测（聚合 alive 真值，见 start_prober_）----------------------
     std::thread prober_;
@@ -176,9 +181,16 @@ private:
     fs::path home_{};      // %USERPROFILE%\.ithaca
     fs::path web_root_{};  // SPA 目录
     std::string session_;          // 活跃会话 id；"" = 无会话态（前端草稿态兜底）
+    // select 线程（handle）与宿主线程（事件回调）共享面的互斥（递归：persist_ →
+    // save_index_ → session_entry_ 等调用链同线程重入）。守护：records_/session_/
+    // pending_turn_/index_/out_/agent_logs_/agent_log_seq_/host_workspace_/ui_registry_。
+    // 纪律：锁内禁止 broadcast_/host_.emit（ABBA 死锁，见文件头线程纪律）。
+    std::recursive_mutex data_mu_;
     json config_ = json::object();
     std::vector<json> records_;      // 会话记录（内存镜像 = 重放源）
     std::ofstream out_{};            // transcript 追加写
+    std::string reasoning_buf_;      // 当前轮深度思考累积（llm_reasoning 只广播不落盘，
+                                     // llm_done 收口时并入 assistant 记录——重放可回看）
     // 子代理明细存档的写句柄与序号水位（宿主线程串行化，事件回调专用；
     // 会话切换/删除时 close_agent_logs_ 统一收口）
     std::map<int, std::ofstream> agent_logs_;
