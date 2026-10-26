@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <regex>      // search 的 regex 模式（ECMAScript，icase 可选）
 #include <system_error>
 #include <functional>
 #include <memory>
@@ -52,6 +53,35 @@ constexpr int kListDepthCap = 6;               // list 递归深度上限
 constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
 constexpr int kSearchDepthCap = 8;
 constexpr std::size_t kSearchHitCap = 50;      // search 命中上限（默认值，参数可降）
+
+// diff 文本尾行的统计 "（+A −R 行）" → "+A −R"（diff.hpp 生成该尾行；无 ⇒ 空串）
+inline std::string diff_delta(const std::string& diff) {
+    const std::size_t pos = diff.rfind("（+");
+    if (pos == std::string::npos) return {};
+    const std::size_t end = diff.find(" 行）", pos);
+    if (end == std::string::npos) return {};
+    return diff.substr(pos + 3, end - pos - 3);   // 跳过全角括号"（"（3B），保留 "+A −R" 的加号
+}
+
+// 文件名通配匹配（* 任意串、? 单字符；大小写不敏感——Windows 名空间惯例）。
+// 迭代双指针 + 星号回溯，O(p+n)，无 locale 依赖（只折叠 ASCII 大写）
+inline std::string ascii_lower(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
+inline bool glob_match_ci(const std::string& pat, const std::string& name) {
+    const std::string p = ascii_lower(pat), n = ascii_lower(name);
+    std::size_t pi = 0, ni = 0, star = std::string::npos, mark = 0;
+    while (ni < n.size()) {
+        if (pi < p.size() && (p[pi] == '?' || p[pi] == n[ni])) { ++pi; ++ni; }
+        else if (pi < p.size() && p[pi] == '*') { star = pi++; mark = ni; }
+        else if (star != std::string::npos) { pi = star + 1; ni = ++mark; }
+        else return false;
+    }
+    while (pi < p.size() && p[pi] == '*') ++pi;
+    return pi == p.size();
+}
 constexpr std::size_t kDiffShowCap = 8 * 1024; // 单文件 diff 文本截断（结果体积护栏）
 
 class WorkspacePlugin {
@@ -143,22 +173,38 @@ private:
                                              {"description", "本次读取行数（默认/上限 2000）"}}}},
                                  json::array({"path"}))}},
              json{{"name", "list"},
-                  {"description", "列出目录内容（含子目录，默认深度 3，上限 500 条）"},
+                  {"description",
+                   "列出目录内容（含子目录，默认深度 3，上限 500 条）。可选："
+                   "pattern=文件名通配（* ?，大小写不敏感，只过滤文件、目录保留）；"
+                   "mode=\"aggregate\"=目录聚合视图（每目录一条：文件数/子目录数/"
+                   "字节量——数据集类大目录首选，同构文件折叠为计数）；"
+                   "per_dir=单目录文件条目上限（超出折叠为 omitted 标注）。"
+                   "返回含 listed（实际条数）与 truncated 标记"},
                   {"schema", object_with(
                                  {{"path", schema_path},
-                                  {"depth", {{"type", "integer"}, {"description", "1-6"}}}},
+                                  {"depth", {{"type", "integer"}, {"description", "1-6"}}},
+                                  {"pattern", {{"type", "string"}, {"description", "文件名通配，如 *.mp4"}}},
+                                  {"mode", {{"type", "string"}, {"description", "flat（默认）| aggregate"}}},
+                                  {"per_dir", {{"type", "integer"}, {"description", "单目录文件条目上限，0=不限"}}}},
                                  json::array())}},
              json{{"name", "search"},
-                  {"description", "工作区内按字面量子串搜索（大小写敏感，默认上限 50 命中）"},
+                  {"description",
+                   "工作区内搜索文本：默认字面量子串（大小写敏感）；regex=true 用 "
+                   "ECMAScript 正则，ignore_case=true 忽略大小写（两种模式均有效）。"
+                   "默认上限 50 命中，单文件 >1MB 跳过"},
                   {"schema", object_with(
                                  {{"query", {{"type", "string"}}},
-                                  {"max_hits", {{"type", "integer"}}}},
+                                  {"max_hits", {{"type", "integer"}}},
+                                  {"regex", {{"type", "boolean"}, {"description", "query 按正则解析"}}},
+                                  {"ignore_case", {{"type", "boolean"}, {"description", "忽略大小写"}}}},
                                  json::array({"query"}))}},
              json{{"name", "apply"},
                   {"description",
                    "编辑事务：write（整文件）+ replace（精确块，默认必须恰好命中一次，"
-                   "replace_all=true 全部替换）。"
-                   "dry_run=true 只校验并生成 diff、不落盘；正式落盘按 turn 记入撤销快照"},
+                   "replace_all=true 全部替换）。大段修改优先拆成多个 replace 分块提交"
+                   "（参数只携带变化块），write 留给新建文件或全文重写。"
+                   "dry_run=true 只校验并生成 diff、不落盘（diff 仅 dry_run 回传）；"
+                   "正式落盘按 turn 记入撤销快照，diff 经 applied 事件展示给用户"},
                   {"schema", object_with(
                                  {{"dry_run", {{"type", "boolean"}}},
                                   {"ops", {{"type", "array"}}}},
@@ -276,20 +322,27 @@ private:
         if (!fs::exists(full, ec) || !fs::is_directory(full, ec))
             return json{{"ok", false}, {"error", "目录不存在: " + (norm.empty() ? "." : norm)}};
         const int depth = std::min(args.value("depth", 3), kListDepthCap);
+        pattern_ = ascii_lower(args.value("pattern", ""));
+        aggregate_ = args.value("mode", "flat") == "aggregate";
+        per_dir_ = std::max(args.value("per_dir", 0), 0);
         entries_ = json::array();
         listed_ = 0;
         truncated_ = false;
-        walk(full, norm, depth);
+        if (aggregate_) walk_agg(full, norm, depth);
+        else walk(full, norm, depth, 0);
+        // listed 量化反馈：配合 truncated，模型能算出「看到了多少 / 还有多少量级」
         return json{{"ok", true},
                     {"entries", entries_},
+                    {"listed", listed_},
                     {"truncated", truncated_}};
     }
 
-    void walk(const fs::path& dir, const std::string& rel_prefix, int depth) {
+    void walk(const fs::path& dir, const std::string& rel_prefix, int depth, int dir_files) {
         if (depth <= 0 || listed_ >= kListEntriesCap) {
             truncated_ = truncated_ || listed_ >= kListEntriesCap;
             return;
         }
+        int omitted = 0;   // 本目录因 per_dir 被折叠的文件数
         std::error_code ec;
         fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
         for (; it != end && !truncated_; it.increment(ec)) {
@@ -297,30 +350,95 @@ private:
             std::error_code se;
             const bool is_dir = it->is_directory(se) && !se;
             if (it->is_symlink(se) && !se) continue;  // 重解析点不入遍历（防环、防出 jail）
+            const std::string name =
+                nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
             const std::string child_rel =
-                rel_prefix.empty() ? nostos::kit::win::wide_to_utf8(it->path().filename().c_str())
-                                   : rel_prefix + "/" +
-                                         nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
+                rel_prefix.empty() ? name : rel_prefix + "/" + name;
+            // pattern 只过滤文件（目录始终保留——结构信息不因过滤丢失）；不匹配
+            // 的文件不占 500 配额
+            if (!is_dir && !pattern_.empty() && !glob_match_ci(pattern_, name)) continue;
+            if (is_dir) {
+                entries_.push_back(json{{"path", child_rel}, {"type", "dir"}, {"size", 0}});
+                ++listed_;
+                if (listed_ >= kListEntriesCap) { truncated_ = true; return; }
+                walk(it->path(), child_rel, depth - 1, 0);
+                continue;
+            }
+            ++dir_files;
+            if (per_dir_ > 0 && dir_files > per_dir_) { ++omitted; continue; }
             std::uint64_t size = 0;
-            if (!is_dir) {
-                std::error_code ze;
-                size = static_cast<std::uint64_t>(it->file_size(ze));
-            }
+            std::error_code ze;
+            size = static_cast<std::uint64_t>(it->file_size(ze));
             entries_.push_back(
-                json{{"path", child_rel}, {"type", is_dir ? "dir" : "file"}, {"size", size}});
+                json{{"path", child_rel}, {"type", "file"}, {"size", size}});
             ++listed_;
-            if (listed_ >= kListEntriesCap) {
-                truncated_ = true;
-                return;
-            }
-            if (is_dir) walk(it->path(), child_rel, depth - 1);
+            if (listed_ >= kListEntriesCap) { truncated_ = true; return; }
         }
         if (ec) truncated_ = true;
+        if (omitted > 0)   // 每目录超限标注：省略数可量化（比裸 truncated 布尔可读）
+            entries_.push_back(json{{"path", rel_prefix.empty() ? "./*" : rel_prefix + "/*"},
+                                    {"type", "note"},
+                                    {"omitted", omitted}});
+    }
+
+    // aggregate 模式：每个目录一个条目（文件数/子目录数/字节量）——数据集类目录
+    // 的骨架视图：大量同构文件折叠成计数，结构一目了然
+    void walk_agg(const fs::path& dir, const std::string& rel_prefix, int depth) {
+        if (depth <= 0 || listed_ >= kListEntriesCap) {
+            truncated_ = truncated_ || listed_ >= kListEntriesCap;
+            return;
+        }
+        long long files = 0, bytes = 0;
+        int subdirs = 0;
+        std::error_code ec;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+        for (; it != end; it.increment(ec)) {
+            if (ec) break;
+            std::error_code se;
+            if (it->is_symlink(se) && !se) continue;
+            const bool is_dir = it->is_directory(se) && !se;
+            const std::string name =
+                nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
+            const std::string child_rel =
+                rel_prefix.empty() ? name : rel_prefix + "/" + name;
+            if (is_dir) {
+                ++subdirs;
+                walk_agg(it->path(), child_rel, depth - 1);
+                continue;
+            }
+            if (!pattern_.empty() && !glob_match_ci(pattern_, name)) continue;
+            std::error_code ze;
+            bytes += static_cast<long long>(it->file_size(ze));
+            ++files;
+        }
+        if (ec) truncated_ = true;
+        entries_.push_back(json{{"path", rel_prefix.empty() ? "." : rel_prefix},
+                                {"type", "dir"},
+                                {"files", files},
+                                {"subdirs", subdirs},
+                                {"bytes", bytes}});
+        ++listed_;
+        if (listed_ >= kListEntriesCap) truncated_ = true;
     }
 
     json search_tool(const json& args) {
         const std::string query = args.value("query", "");
         if (query.empty()) return fail("query 为空");
+        const bool use_re = args.value("regex", false);
+        const bool icase = args.value("ignore_case", false);
+        std::unique_ptr<std::regex> re;
+        std::string lit = query;
+        if (use_re) {
+            try {
+                auto flags = std::regex::ECMAScript;
+                if (icase) flags |= std::regex::icase;
+                re = std::make_unique<std::regex>(query, flags);
+            } catch (const std::regex_error& e) {
+                return fail(std::string("正则非法: ") + e.what());
+            }
+        } else if (icase) {
+            lit = ascii_lower(query);   // 小写副本上查找——与原串 1:1 映射，位置直用
+        }
         const int max_hits =
             std::min(std::max(args.value("max_hits", static_cast<int>(kSearchHitCap)), 1), 200);
         hits_ = json::array();
@@ -328,15 +446,32 @@ private:
         hit_count_ = 0;
         truncated_ = false;
         stop_ = false;
-        walk_search(jail_->root(), "", static_cast<int>(kSearchDepthCap), query, max_hits);
+        walk_search(jail_->root(), "", static_cast<int>(kSearchDepthCap), max_hits,
+                    use_re, re.get(), lit, icase && !use_re);
         return json{{"ok", true},
                     {"hits", hits_},
                     {"scanned", scanned_},
                     {"truncated", truncated_}};
     }
 
+    // 命中迭代：regex（icase 内建于标志）或字面子串（icase 走小写副本）。cb 返回
+    // false = 停止迭代（命中上限/停止旗）
+    void each_hit(const std::string& content, bool use_re, const std::regex* re,
+                  const std::string& lit, const std::function<bool(std::size_t)>& cb) const {
+        if (use_re) {
+            for (std::sregex_iterator it(content.begin(), content.end(), *re), end;
+                 it != end; ++it)
+                if (!cb(static_cast<std::size_t>(it->position()))) break;
+            return;
+        }
+        for (std::size_t pos = content.find(lit); pos != std::string::npos;
+             pos = content.find(lit, pos + lit.size()))
+            if (!cb(pos)) break;
+    }
+
     void walk_search(const fs::path& dir, const std::string& rel_prefix, int depth,
-                     const std::string& query, int max_hits) {
+                     int max_hits, bool use_re, const std::regex* re,
+                     const std::string& lit, bool lower_hay) {
         if (stop_ || depth <= 0) {
             if (depth <= 0) truncated_ = true;
             return;
@@ -353,7 +488,8 @@ private:
                                    : rel_prefix + "/" +
                                          nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
             if (is_dir) {
-                walk_search(it->path(), child_rel, depth - 1, query, max_hits);
+                walk_search(it->path(), child_rel, depth - 1, max_hits, use_re, re,
+                            lit, lower_hay);
                 continue;
             }
             if (++scanned_ > kSearchFilesCap) {
@@ -366,9 +502,12 @@ private:
             std::string content;
             if (!store_->read(it->path().wstring(), content)) continue;
             if (content.find('\0') != std::string::npos) continue;  // 二进制跳过
-            for (std::size_t pos = content.find(query);
-                 pos != std::string::npos && hit_count_ < max_hits;
-                 pos = content.find(query, pos + query.size())) {
+            // icase 字面匹配在「小写副本」上做——副本与原串 1:1 字符映射，命中
+            // 位置可直接用于原串取行；regex 的 icase 内建于标志，匹配原串
+            std::string lower_buf;
+            const std::string& hay =
+                lower_hay ? (lower_buf = ascii_lower(content)) : content;
+            each_hit(hay, use_re, re, lit, [&](std::size_t pos) {
                 std::size_t line_start = content.rfind('\n', pos);
                 line_start = line_start == std::string::npos ? 0 : line_start + 1;
                 std::size_t line_end = content.find('\n', pos);
@@ -381,7 +520,8 @@ private:
                                      {"line", line_no},
                                      {"text", vcws::trim_utf8(line_text, 200)}});
                 ++hit_count_;
-            }
+                return hit_count_ < max_hits;
+            });
             if (hit_count_ >= max_hits) {
                 stop_ = true;      // 命中满即停
                 truncated_ = true; // "可能还有更多"以 truncated 标注
@@ -401,15 +541,26 @@ private:
 
         json files = json::array();
         for (const auto& e : r.edits) {
-            std::string diff = e.diff;
-            if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
-            files.push_back(json{{"path", e.path},
-                                 {"is_new", e.is_new},
-                                 {"edits", e.ops_count},
-                                 {"diff", diff}});
+            json f{{"path", e.path},
+                   {"is_new", e.is_new},
+                   {"edits", e.ops_count}};
+            // 运行类/结果类分类策略：dry_run 的 diff 是模型的决策依据（结果类），
+            // 完整回传；正式落盘成功 = 运行类——只留落盘锚点（路径/编辑数），
+            // diff 正文不回灌（模型已知自己写了什么；diff 已随 applied 事件展示
+            // 给用户）。失败分支的错误全文回灌（自我纠错依据）
+            if (dry) {
+                std::string diff = e.diff;
+                if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
+                f["diff"] = diff;
+            } else {
+                f["delta"] = diff_delta(e.diff);   // 落盘量级（+A −B）——[tool] 卡与模型的锚点
+            }
+            files.push_back(std::move(f));
         }
         json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
         j["files"] = files;
+        if (r.ok && !dry)
+            j["note"] = "已落盘；diff 已随 applied 事件展示给用户，工具结果不再回传 diff 正文";
         if (!r.errors.empty()) j["errors"] = fail_json_errors(r.errors);
         if (r.ok && !dry) {
             std::vector<vcws::FileSnap> snaps;
@@ -535,6 +686,10 @@ private:
     std::size_t hit_count_ = 0;
     bool truncated_ = false;
     bool stop_ = false;
+    // list 的过滤/形态参数（list_tool 每次调用重置）
+    std::string pattern_;      // 文件名通配（已小写；空 = 不过滤）
+    bool aggregate_ = false;   // true = 目录聚合视图
+    int per_dir_ = 0;          // 单目录文件条目上限（0 = 不限）
 };
 
 }  // namespace

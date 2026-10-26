@@ -165,7 +165,7 @@ void SelftestHarness::m1_smoke_and_kick(nostos::Host<>& host) {
         step("write 新文件（turn 1）",
              call(1, "apply",
                   R"({"ops":[{"op":"write","path":"ithaca_smoke/hello.txt","content":"第一行\n第二行\n"}]})"),
-             true, "+ 第一行");
+             true, "ithaca_smoke/hello.txt");
         step("read 验证写入", call(1, "read", R"({"path":"ithaca_smoke/hello.txt"})"), true,
              "第二行");
         step("dry_run 校验（turn 2）",
@@ -177,7 +177,7 @@ void SelftestHarness::m1_smoke_and_kick(nostos::Host<>& host) {
         step("replace 正式落盘（turn 2）",
              call(2, "apply",
                   R"({"ops":[{"op":"replace","path":"ithaca_smoke/hello.txt","find":"第二行","replace":"第贰行"}]})"),
-             true, "第贰行");
+             true, "ithaca_smoke/hello.txt");
         step("undo 撤销 turn 2", call(1, "undo_turn", "{}"), true, "\"restored\"");
         step("read 验证还原", call(1, "read", R"({"path":"ithaca_smoke/hello.txt"})"), true,
              "第二行");

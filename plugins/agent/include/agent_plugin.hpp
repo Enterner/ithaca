@@ -89,13 +89,18 @@ inline constexpr int kMaxOverwindowResend = 2;
 inline constexpr int kMaxChildren = 4;
 inline constexpr int kMaxChildRounds = 30;
 
-// 内容型工具结果（read / task）的内联豁免上限（对齐主流形态：限制收口在工具
-// 侧——read 按行分页、task 报告即子代理的最终产出——结果一次内联回灌，不再走
-// 「外置→recall 分页」二跳；二者超 4KB 即外置会让主/子会话为拿到正文打几十次
-// recall，踩过）。超本上限的极端结果仍外置可回查。96KB 给行号前缀（每行 ≈7
-// 字节）留出余量，代码类内容 ≈25K token 上下；runner 输出等其他工具维持 4KB
-// 通用闸（构建日志类本就该瘦着进上下文）。
+// 内容型工具结果的分工具内联上限（对齐主流形态：限制收口在工具侧——read 按
+// 行分页、task 报告即子代理的最终产出）。
+// · read：96KB——正文是逐字工作素材（编辑依据），一次内联回灌，外置会让主/子
+//   会话为拿到正文打几十次 recall，踩过。96KB 给行号前缀（每行 ≈7 字节）留
+//   余量，代码类内容 ≈25K token。
+// · task：1KB——报告是「结论消费型」内容，而实测会话（24 轮/92K tok）五份
+//   报告 35.3KB 全文内联、折叠后模型仍以 4KB 满页 18 次整卷回读归档——内联 +
+//   回读双倍开销。超限走「外置 + 结论头」（报告首段即结论摘要，compact_result
+//   的 task 分支），细节按页 recall：内联恒小，回读只在真需要细节时发生。
+// · 其他工具维持 4KB 通用闸（runner 输出等构建日志类本就该瘦着进上下文）。
 inline constexpr std::size_t kContentInlineCap = 96 * 1024;
+inline constexpr std::size_t kTaskInlineCap = 1024;
 
 // 子代理类型（一个 .ithaca/agent/<名>.md；内置 general 恒在，同名 md 覆盖之）。
 // 类型只管提示词与工具面——子代理用哪个模型走配置链路（当前主模型的 sub_model
