@@ -3,7 +3,8 @@
 // 翻译单元职责地图（按功能切片，数据结构与类声明为本文件）：
 //   src/plugin.cpp   —— 生命周期（activate/reload_async_/deactivate）、状态回发
 //                       落盘（emit_status_）+ NOSTOS_PLUGIN 入口
-//   src/session.cpp  —— stdio 传输与 JSON-RPC 会话（ChildPipes/McpSession 方法定义）
+//   src/session.cpp  —— stdio 传输与 JSON-RPC 会话（McpSession 方法定义；子进程
+//                       原语 kit::PipedProcess，命令行拼装/引号策略在此）
 //   src/config.cpp   —— config.json 读取与 server 拉起握手（initialize + tools/list）
 //   src/tools.cpp    —— 统一工具表（list/execute thunk）+ 会话查找
 //
@@ -30,6 +31,8 @@
 #include "vc_tool.hpp"  // vc_api::ToolTable：统一工具表契约（publish 给宿主）
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/piped_process.hpp>  // kit::PipedProcess：子进程原语（三管道 +
+                                         // Job 树杀 + env 块合并，Win32 细节在 kit）
 #include <nostos/kit/poster.hpp>  // nostos_poster + poster_submit：状态回发 defer
 
 #include <nostos/nlohmann/json.hpp>
@@ -46,16 +49,6 @@
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>  // HANDLE：子进程管道句柄
-#endif
-
 namespace fs = std::filesystem;
 
 namespace vc_mcp {
@@ -65,35 +58,13 @@ using json = nlohmann::json;
 inline constexpr int kInitTimeoutMs = 30000;   // initialize/tools-list 握手超时（Windows npx/cmd 启动链可达 10s+）
 inline constexpr int kCallTimeoutMs = 120000;  // tools/call 超时（MVP 固定）
 
-// ---------- 子进程（stdio 管道重定向；MCP stdio 传输载体）--------------------
-
-struct ChildPipes {
-    HANDLE proc = nullptr;
-    HANDLE job = nullptr;        // Job 树杀容器（cmd /c npx 链真 server 是孙进程；
-                                 // 只杀直接子会留孤儿持管道写端 ⇒ 读线程永挂。可 null）
-    HANDLE stdin_w = nullptr;    // 写：JSON-RPC 请求/通知
-    HANDLE stdout_r = nullptr;   // 读：JSON-RPC 响应/通知
-    HANDLE stderr_r = nullptr;   // 读：server 诊断输出（独立管道，不污染 JSON 流）
-
-    bool spawn(const std::string& command, const std::vector<std::string>& args,
-               const json& env_over, const std::string& cwd);
-    bool write_line(const std::string& line);
-    void kill();
-
-#ifdef _WIN32
-private:
-    HANDLE stdin_r_ = nullptr;   // 子进程的 stdin 读端
-    HANDLE stdout_w_ = nullptr;  // 子进程的 stdout 写端
-    HANDLE stderr_w_ = nullptr;  // 子进程的 stderr 写端
-public:
-#endif
-};
-
 // ---------- 一个 MCP server 会话（进程 + 读线程 + 在途请求）-------------------
 
 struct McpSession {
     std::string name;                  // 配置名（工具全名 mcp.<name>__<tool>）
-    ChildPipes proc;
+    // 子进程原语（kit）：管道/Job 树杀/env 块的 Win32 细节全在 kit，插件只管
+    // 拉起参数与会话语义；句柄随对象析构收口（shared_ptr 保证析构晚于在飞调用）
+    nostos::kit::PipedProcess proc;
     std::thread reader;
     std::thread stderr_drain;
     std::atomic<long long> next_id{1};
@@ -104,6 +75,11 @@ struct McpSession {
     std::string diag;                  // 最后一次失败原因（状态/日志点名用）
     std::string stderr_log;            // server stderr 前 400 字节（失败诊断）
 
+    // 拉起 server 子进程：命令行拼装（引号策略在 session.cpp）+ env/cwd 透传；
+    // 失败返回 false 并把系统层原因写入 diag
+    bool spawn(const std::string& command, const std::vector<std::string>& args,
+               const json& env_over, const std::string& cwd);
+    bool write_line(const std::string& line);   // 一行 JSON-RPC 消息写入 stdin
     bool request(const std::string& method, const json& params, int timeout_ms, json& out);
     void feed(const std::string& line);   // 读线程：分发响应
     void start_reader();

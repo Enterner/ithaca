@@ -1,8 +1,8 @@
 # nostos 开发观察（活文档）
 
 > 规则见 AGENTS.md：只收开发过程真实触发的问题（每条绑定触发场景），只提方向与
-> 理由，是否实施由内核仓节奏决定。新批次覆盖式更新「当前发现」；已落地的结论
-> 压缩进「落地状态」。
+> 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
+> 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
 ## 当前发现（批次：task 结果内联分档 · 2026-10-26）
 
@@ -12,7 +12,7 @@
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
-| 2026-10-26 | kit::PipedProcess 缺「stdin 管道 + env 块覆盖」两个形态，mcp 插件收编不了：mcp 的 stdio 传输需要**主动写子进程 stdin**（JSON-RPC 请求通道，kit 现为继承父 stdin）与**env 覆盖**（server 配置的 env 字段），只能自带 ChildPipes；「cmd /c npx 链只杀直接子进程 ⇒ 孤儿 node 持管道写端 ⇒ 读线程永挂、热重载死锁」修复时，Job 树杀模式在插件层本地复制了一份（触发场景：MCP 边界实测撞上热重载死锁，对齐 kit 现有能力时发现缺口）。方向：kit::PipedProcess 加 stdin 管道选项与 env 覆盖（env 合并块须按名排序——kit 头文件自记的 gle=87 坑），mcp 的 ChildPipes 可整体收编消重 | 方向已记录，待内核仓评估 |
+| 2026-10-26 | kit::PipedProcess 缺「stdin 管道 + env 块覆盖」两个形态，mcp 插件收编不了：mcp 的 stdio 传输需要**主动写子进程 stdin**（JSON-RPC 请求通道，kit 现为继承父 stdin）与**env 覆盖**（server 配置的 env 字段），只能自带 ChildPipes；「cmd /c npx 链只杀直接子进程 ⇒ 孤儿 node 持管道写端 ⇒ 读线程永挂、热重载死锁」修复时，Job 树杀模式在插件层本地复制了一份（触发场景：MCP 边界实测撞上热重载死锁，对齐 kit 现有能力时发现缺口） | 已落地（内核 stdin_pipe / env_overrides_utf8 两形态 + 产品仓 ChildPipes 整体收编，插件层约 90 行 Win32 拷贝清退；mcp 侧只剩命令行拼装引号策略与 json→env 转换；副产品：旧 ChildPipes 无析构的管道句柄泄漏一并消除；边界/自然退出实盘 + check 全绿。内核侧待提交） |
 | 2026-10-26 | vendored json 挂载点去掉 third_party 目录层级（用户裁定）：include/nostos/third_party/nlohmann → include/nostos/nlohmann——ODR 防护不变（头仍在 nostos/ 名字空间内，不与消费者自带 nlohmann 顶名），撤掉的只是路径里冗余的出处标记 | 已落地（内核 f969511 + 本仓 10 处 include 跟迁 + 子模块指针前移） |
 | 2026-10-26 | 内核 7e0246c（审查修复批次）吸收：vendored nlohmann 移入 nostos/third_party 命名空间（本仓 10 处 include 跟迁，消 ODR 顶名隐患）、/utf-8 挂 core INTERFACE（本仓 host/单测两处重复旗标删除）、ABI 单层门控与事件单表/Scope::effect 修复经 wrapper 层自动受益（poster 均为 activate 期领取，in_session 新执法不咬） | 已落地（子模块指针前移 + 消费面跟随，check 全绿） |
 | 2026-10-25 | kit::http 缺「挂起-补响应」原语：webui 双线程共享数据面只能插件自备递归互斥，且「锁内禁 broadcast/emit」锁序纪律全靠人工维持（触发场景：修 webui 跨线程竞态时逐点核对）。方向：handler 返回挂起、经 poster 补发响应，插件面单线程化 | 方向已记录，待内核仓评估 |

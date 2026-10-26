@@ -78,8 +78,9 @@ void McpPlugin::start_server_(const std::string& name, const std::string& comman
                               const std::string& cwd) {
     auto s = std::make_unique<McpSession>();
     s->name = name;
-    if (!s->proc.spawn(command, args, env, cwd)) {
-        host_.log(3, "ithaca.mcp: server「" + name + "」拉起失败: " + command);
+    if (!s->spawn(command, args, env, cwd)) {
+        host_.log(3, "ithaca.mcp: server「" + name + "」拉起失败: " + command +
+                         "（" + s->diag + "）");
         return;
     }
     s->start_reader();
@@ -96,8 +97,8 @@ void McpPlugin::start_server_(const std::string& name, const std::string& comman
         s->shutdown();
         return;
     }
-    s->proc.write_line(json{{"jsonrpc", "2.0"},
-                            {"method", "notifications/initialized"}}.dump() + "\n");
+    s->write_line(json{{"jsonrpc", "2.0"},
+                       {"method", "notifications/initialized"}}.dump() + "\n");
 
     if (!s->request("tools/list", json::object(), init_timeout_ms_, resp) ||
         !resp.contains("result") || !resp["result"].contains("tools") ||
