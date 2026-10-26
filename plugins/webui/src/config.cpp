@@ -242,13 +242,26 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
                                        " / " + sm.value("model", "") +
                                        "（供应商不存在或模型未启用）"}});
             }
-        // current_provider：前端指定或保留；必须命中列表，否则回落第一个
+        // current_provider：前端指定或保留；必须命中列表**且供应商启用（带启用
+        // 模型）**——停用的供应商继续当当前项，输入栏/对话仍走它的凭据，停用
+        // 语义失真（踩过：停用当前供应商保存后，右下角选择器还挂着它的模型）。
+        // 不命中 ⇒ 回落第一个可用的；全都不可用才保留原名（前端显示「未选择
+        // 模型」，发送报缺 key 类错误，由用户去设置面启用）。
         std::string cur = config_.value("current_provider", "");
         if (in.contains("current_provider") && in["current_provider"].is_string())
             cur = in["current_provider"].get<std::string>();
+        const auto usable = [](const json& p) {
+            if (!p.is_object() || !p.value("enabled", false)) return false;
+            for (const auto& m : p.value("models", json::array()))
+                if (m.is_object() && m.value("enabled", false)) return true;
+            return false;
+        };
         bool cur_ok = false;
         for (const auto& p : cleaned)
-            if (p.value("name", "") == cur) { cur_ok = true; break; }
+            if (p.value("name", "") == cur) { cur_ok = usable(p); break; }
+        if (!cur_ok)
+            for (const auto& p : cleaned)
+                if (usable(p)) { cur = p.value("name", ""); cur_ok = true; break; }
         if (!cur_ok && !cleaned.empty()) cur = cleaned.front().value("name", "");
         {
             json merged = json::array();

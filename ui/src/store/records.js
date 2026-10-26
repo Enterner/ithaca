@@ -168,6 +168,13 @@ export function render(rec) {
         S.curWs = rec.path
       } else enterDraft(rec.path)
       return
+    case 'provider_models':
+      // 设置面「从 API 获取模型」的回执（瞬态事件，不落 transcript/记录流）：
+      // 转投 S 供 Settings.vue watch 消费——records 状态机不存非会话内容
+      S.provModelsEvt = { n: (S.provModelsEvt ? S.provModelsEvt.n : 0) + 1,
+                          ok: !!rec.ok, models: rec.models || [],
+                          error: rec.error || '' }
+      return
     case 'user':
       push(rec); S.live = null
       S.inFlight = true

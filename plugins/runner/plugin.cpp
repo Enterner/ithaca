@@ -160,10 +160,12 @@ private:
         const json tools = json::array({json{
             {"name", "run"},
             {"description",
-             "在工作区内执行命令（异步：立即返回 run_id，输出/退出码经事件回；"
-             "执行权限由三档权限模式管理）。命令经 Windows cmd 解析——支持 "
-             "&& | > 等 shell 语法与 cmd 内建（echo/dir）；目录枚举优先用 "
-             "workspace.list。dry_run=true 只解析不执行"},
+             "在工作区内执行命令并等待退出，返回退出码与合并输出（stderr 行带 "
+             "[stderr] 前缀；超长输出截断）。执行权限由三档权限模式管理。"
+             "命令经 Windows cmd 解析——支持 && | > 等 shell 语法与 cmd 内建"
+             "（echo/dir）；注意 cmd 的 && 链在中间命令失败时会静默中断后续段，"
+             "需要逐段执行时用 & 或拆开调用；目录枚举优先用 workspace.list。"
+             "dry_run=true 只解析不执行"},
             {"schema", json{{"type", "object"},
                             {"properties",
                              json::object({{"command_line", {{"type", "string"}}},

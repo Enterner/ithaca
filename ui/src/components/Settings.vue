@@ -5,9 +5,10 @@
 // MCP 工具页 = McpSettings 组件（server 两层配置，保存 → mcp 插件热重载）。
 // 插件贡献页 = PluginSettings（各插件 vc.ui.register 的 schema 动态生成，
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { NModal } from 'naive-ui'
-import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx } from '../store'
+import Cdl from '../Cdl.vue'
+import { S, api, saveConfig, loadPluginUi, fmtCtx, parseCtx } from '../store'
 import { confirmDialog } from '../confirm'
 import McpSettings from './McpSettings.vue'
 import PluginSettings from './PluginSettings.vue'
@@ -78,10 +79,19 @@ const PRESETS = [
     ] },
 ]
 const presetSel = ref('')
-function applyPreset() {
-  const t = PRESETS.find(x => x.key === presetSel.value)
-  presetSel.value = ''   // 选完即复位：选择器是动作入口，不是持久状态
-  if (!t) return
+// 下拉选项 + 「当前套用模板」的显示口径：选完不复位（用户要求能看到当前用的
+// 哪个模板）；重开面板/切换供应商时按 base_url 反推——套用后再手改 Base URL
+// 或模型表则显示不追改（这是来源提示，不是双向同步的状态）。
+const presetOptions = PRESETS.map(t => ({ label: t.name, value: t.key }))
+function inferPreset() {
+  const p = cur()
+  if (!p) { presetSel.value = ''; return }   // 清单未就绪/空：无处匹配，清空显示
+  presetSel.value = PRESETS.find(t => t.base_url === p.base_url)?.key || ''
+}
+watch(provSel, inferPreset)
+function applyPreset(key) {
+  const t = PRESETS.find(x => x.key === key)
+  if (!t) { inferPreset(); return }   // 清空选择 = 仅取消选中，不动配置
   const p = cur()
   if (!p.name) {
     p.name = t.name
@@ -90,13 +100,51 @@ function applyPreset() {
   }
   p.base_url = t.base_url
   p.models = t.models.map(m => ({ ...m, enabled: true }))
+  fetchMsg.value = `已套用「${t.name}」模板：Base URL + ${t.models.length} 个预设模型（可再手动增删）`
 }
+
+// 从 API 获取模型：浏览器直连平台 API 会被 CORS 拦，经后端代理发 OpenAI 兼容
+// GET /models；结果走 SSE provider_models 事件，在下方 watch 里合并。
+// key 时序两种都通：刚粘贴的（keyInputs）优先，留空则后端按名取已存的。
+const fetchingModels = ref(false)
+const fetchMsg = ref('')
+async function fetchModels() {
+  const p = cur()
+  if (p.type === 'mock') return
+  if (!p.base_url) { fetchMsg.value = '先填 Base URL 再获取'; return }
+  fetchingModels.value = true
+  fetchMsg.value = ''
+  const r = await api('/api/provider/models', {
+    name: p.name || '', base_url: p.base_url, api_key: keyInputs[p.name || ''] || ''
+  })
+  if (!r.ok) { fetchingModels.value = false; fetchMsg.value = r.error || '请求发送失败' }
+}
+watch(() => S.provModelsEvt, (e) => {
+  if (!e || !show.value) return   // 面板没开：事件作废（重开面板是新编辑态）
+  fetchingModels.value = false
+  if (!e.ok) { fetchMsg.value = '获取失败：' + e.error; return }
+  const p = cur()
+  const known = new Set(p.models.map(m => (m.id || '').toLowerCase()))
+  // 「最新 10 个」口径：模型 ID 尾部 6 位日期后缀（YYMMDD，ark 等平台惯例）
+  // 降序在前，无后缀的按平台返回原序排其后。ark /models 一次返回 138 个（混着
+  // 两年前的老模型），全收只会刷爆列表——只收前 10，其余仍可手动添加。
+  const dateOf = (s) => { const m = /(\d{6})\D*$/.exec(s); return m ? m[1] : '' }
+  const fresh = e.models.map(String).filter(id => !known.has(id.toLowerCase()))
+  fresh.sort((a, b) => (dateOf(b) || '000000').localeCompare(dateOf(a) || '000000'))
+  const pick = fresh.slice(0, 10)
+  for (const id of pick)
+    p.models.push({ id, context: 128000, enabled: true })   // 平台不给窗口值，落默认可再编辑
+  const clipped = fresh.length > pick.length ? `，已截取最新 ${pick.length} 个（其余 ${fresh.length - pick.length} 个可手动添加）` : ''
+  fetchMsg.value = `平台返回 ${e.models.length} 个模型，新增 ${pick.length} 个${clipped}`
+})
 
 async function openPanel() {
   // 从 store 深拷贝；api_key 输入框恒空（后端掩码，留空=保留旧值）
   detail.value = JSON.parse(JSON.stringify(S.providers)).map(p => ({ ...p, api_key: '', models: p.models || [] }))
   curName.value = S.current
   provSel.value = Math.max(0, detail.value.findIndex(p => p.name === S.current))
+  inferPreset()   // 模板选择器显示与当前 base_url 匹配的平台（切换供应商时经 watch 跟随）
+  fetchMsg.value = ''
   loadPluginUi()   // 插件贡献清单：每次打开拉最新（新插件激活后即现）
   show.value = true
 }
@@ -119,7 +167,6 @@ async function delProvider() {
   if (curName.value === p.name) curName.value = detail.value[0] ? detail.value[0].name : ''
   provSel.value = Math.max(0, Math.min(provSel.value, detail.value.length - 1))
 }
-function setCur() { if (cur().name) curName.value = cur().name }
 // 子 agent 模型候选：全部启用供应商的启用模型（排除正在编辑的模型自身——自己
 // 派生自己无意义）。选项值用 JSON 串做键：供应商名可含任意字符不会拆坏。
 const subOptions = computed(() => {
@@ -134,6 +181,19 @@ const subOptions = computed(() => {
       out.push({ key: JSON.stringify({ provider: p.name, model: m.id }),
                  label: p.name + ' / ' + m.id })
     }
+  }
+  return out
+})
+// 子 agent 模型候选的 Cdl 形态：默认项 + 失效引用项（存在才出现）+ 按供应商
+// 分组的候选（节头 = 供应商名，与输入栏选择器同一视觉）
+const subItems = computed(() => {
+  const out = [{ value: '', label: '默认（自己）' }]
+  if (mSubDangling.value)
+    out.push({ value: mSub.value, label: mSub.value + '（引用已失效）' })
+  for (const o of subOptions.value) {
+    let provider = ''
+    try { provider = JSON.parse(o.key).provider } catch {}
+    out.push({ value: o.key, label: o.label, group: provider })
   }
   return out
 })
@@ -209,7 +269,7 @@ async function onSave() {
                @click="provSel = detail.indexOf(p)">
             <span class="act" style="color: var(--acc); cursor: default">{{ p.type === 'mock' ? '⚙' : '◆' }}</span>
             <span>{{ p.name || '(未命名)' }}</span>
-            <span class="dot" :class="p.name === curName ? 'on' : 'off'" :title="p.name === curName ? '当前使用' : ''"></span>
+            <span class="dot" :class="p.enabled === false ? 'off' : 'on'" :title="p.enabled === false ? '未启用' : '已启用'"></span>
           </div>
           <div class="grp">自定义供应商</div>
           <div v-for="(p, i) in detail.filter(x => !x.builtin)" :key="'c' + i"
@@ -217,7 +277,7 @@ async function onSave() {
                @click="provSel = detail.indexOf(p)">
             <span class="act" style="color: var(--acc); cursor: default">◆</span>
             <span>{{ p.name || '(未命名)' }}</span>
-            <span class="dot" :class="p.name === curName ? 'on' : 'off'"></span>
+            <span class="dot" :class="p.enabled === false ? 'off' : 'on'" :title="p.enabled === false ? '未启用' : '已启用'"></span>
           </div>
           <div class="prov" style="color: var(--acc)" @click="addProvider">＋ 添加供应商</div>
         </div>
@@ -225,9 +285,6 @@ async function onSave() {
         <div class="pdetail" v-if="cur()">
           <div class="dhead">
             <span class="name">{{ cur().name || '（未命名供应商）' }}</span>
-            <span v-if="cur().name === curName" class="cur-chip">当前使用</span>
-            <span v-else-if="cur().name" class="cur-chip click" title="对话实际走该供应商（保存后热切）"
-                  @click="setCur">设为当前</span>
             <span class="spacer"></span>
             <span class="tgl" :class="{ off: !cur().enabled }" title="启用该供应商"
                   @click="cur().enabled = !cur().enabled"></span>
@@ -237,10 +294,9 @@ async function onSave() {
             <label>快速接入模板
               <span style="color:var(--dim)">（选平台自动填 Base URL 与常用模型，只需再粘贴 API Key；套用会覆盖模型列表）</span>
             </label>
-            <select v-model="presetSel" @change="applyPreset" style="width:100%">
-              <option value="">选择平台模板…（自定义平台可跳过直接手填）</option>
-              <option v-for="t in PRESETS" :key="t.key" :value="t.key">{{ t.name }}</option>
-            </select>
+            <Cdl block down bordered :items="presetOptions" v-model="presetSel"
+                 placeholder="选择平台模板…（自定义平台可跳过直接手填）"
+                 @select="applyPreset" style="width:100%" />
           </template>
           <label>名称</label>
           <input v-model="cur().name" :disabled="cur().builtin" spellcheck="false"
@@ -253,7 +309,13 @@ async function onSave() {
                    :placeholder="cur().has_key ? '已设置（留空 = 不修改）' : '未设置'">
           </template>
           <label style="display:flex; justify-content:space-between; align-items:center; margin-top:14px;">
-            <span>模型列表</span><span class="addm" @click="openModelDlg(-1)">＋ 添加模型</span>
+            <span>模型列表</span>
+            <span>
+              <span v-if="cur().type !== 'mock'" class="addm" style="margin-right:10px"
+                    title="按 Base URL + API Key 请求平台 GET /models（OpenAI 兼容），合并进列表"
+                    @click="fetchModels">{{ fetchingModels ? '⟳ 获取中…' : '⟳ 从 API 获取' }}</span>
+              <span class="addm" @click="openModelDlg(-1)">＋ 添加模型</span>
+            </span>
           </label>
           <div v-for="(m, mi) in cur().models" :key="mi" class="mrow">
             <span class="mid">{{ m.id }}</span>
@@ -264,6 +326,7 @@ async function onSave() {
             <span class="act" title="编辑模型配置" @click="openModelDlg(mi)">✎</span>
             <span class="act" title="删除模型" @click="cur().models.splice(mi, 1)">✕</span>
           </div>
+          <div v-if="fetchMsg" class="snote">{{ fetchMsg }}</div>
           <div v-if="!cur().models.length" class="snote">（还没有模型——点右上「＋ 添加模型」）</div>
         </div>
       </div>
@@ -289,11 +352,7 @@ async function onSave() {
         <label>上下文窗口 <span style="color:var(--dim)">（支持 1M / 256K / 131072 直接输入）</span></label>
         <input v-model="mCtx" spellcheck="false" @keydown.enter="saveModel">
         <label>子 agent 模型 <span style="color:var(--dim)">（该模型派发的子 agent 用哪个模型跑；默认 = 自己）</span></label>
-        <select v-model="mSub" style="width:100%">
-          <option value="">默认（自己）</option>
-          <option v-if="mSubDangling" :value="mSub">{{ mSubDangling }}（引用已失效）</option>
-          <option v-for="o in subOptions" :key="o.key" :value="o.key">{{ o.label }}</option>
-        </select>
+        <Cdl block bordered :items="subItems" v-model="mSub" style="width:100%" />
         <div v-if="mErr" style="color:var(--red); font-size:12px">{{ mErr }}</div>
         <div class="sops">
           <button @click="mDlg = false">取消</button>

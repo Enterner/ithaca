@@ -4,27 +4,19 @@
 > 理由，是否实施由内核仓节奏决定。新批次覆盖式更新「当前发现」；已落地的结论
 > 压缩进「落地状态」。
 
-## 当前发现（批次：MCP 实测 + 主流 LLM 接入 · 2026-10-26）
+## 当前发现（批次：task 结果内联分档 · 2026-10-26）
 
-1. kit::PipedProcess 缺「stdin 管道 + env 块覆盖」两个形态，mcp 插件收编不了：
-   mcp 的 stdio 传输需要**主动写子进程 stdin**（JSON-RPC 请求通道，kit 现为继承
-   父 stdin）与**env 覆盖**（server 配置的 env 字段），只能自带 ChildPipes；
-   本次「cmd /c npx 链只杀直接子进程 ⇒ 孤儿 node 持管道写端 ⇒ 读线程永挂、
-   热重载死锁」修复时，Job 树杀模式在插件层本地复制了一份（触发场景：MCP
-   边界实测撞上热重载死锁，对齐 kit 现有能力时发现缺口）。方向：kit::PipedProcess
-   加 stdin 管道选项与 env 覆盖（env 合并块须按名排序——kit 头文件自记的
-   gle=87 坑），mcp 的 ChildPipes 可整体收编消重。
-2. （复核维持）内核 abi 发布、kit poster 状态回发、kit::LineSplitter 流式分帧
-   两轮实测（MCP 四 server 并联 × 主流 npx 链 + 火山方舟真实云链路）零摩擦。
+本批次（agent 插件应用层：task 报告内联上限分档 + 结论头外置形态）无可优化点——全部改动收在应用层策略，未触碰内核能力面。
 
 ## 落地状态
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-26 | kit::PipedProcess 缺「stdin 管道 + env 块覆盖」两个形态，mcp 插件收编不了：mcp 的 stdio 传输需要**主动写子进程 stdin**（JSON-RPC 请求通道，kit 现为继承父 stdin）与**env 覆盖**（server 配置的 env 字段），只能自带 ChildPipes；「cmd /c npx 链只杀直接子进程 ⇒ 孤儿 node 持管道写端 ⇒ 读线程永挂、热重载死锁」修复时，Job 树杀模式在插件层本地复制了一份（触发场景：MCP 边界实测撞上热重载死锁，对齐 kit 现有能力时发现缺口）。方向：kit::PipedProcess 加 stdin 管道选项与 env 覆盖（env 合并块须按名排序——kit 头文件自记的 gle=87 坑），mcp 的 ChildPipes 可整体收编消重 | 方向已记录，待内核仓评估 |
 | 2026-10-26 | vendored json 挂载点去掉 third_party 目录层级（用户裁定）：include/nostos/third_party/nlohmann → include/nostos/nlohmann——ODR 防护不变（头仍在 nostos/ 名字空间内，不与消费者自带 nlohmann 顶名），撤掉的只是路径里冗余的出处标记 | 已落地（内核 f969511 + 本仓 10 处 include 跟迁 + 子模块指针前移） |
 | 2026-10-26 | 内核 7e0246c（审查修复批次）吸收：vendored nlohmann 移入 nostos/third_party 命名空间（本仓 10 处 include 跟迁，消 ODR 顶名隐患）、/utf-8 挂 core INTERFACE（本仓 host/单测两处重复旗标删除）、ABI 单层门控与事件单表/Scope::effect 修复经 wrapper 层自动受益（poster 均为 activate 期领取，in_session 新执法不咬） | 已落地（子模块指针前移 + 消费面跟随，check 全绿） |
 | 2026-10-25 | kit::http 缺「挂起-补响应」原语：webui 双线程共享数据面只能插件自备递归互斥，且「锁内禁 broadcast/emit」锁序纪律全靠人工维持（触发场景：修 webui 跨线程竞态时逐点核对）。方向：handler 返回挂起、经 poster 补发响应，插件面单线程化 | 方向已记录，待内核仓评估 |
-| 2026-10-25 | WinHTTP「GET 状态码探测」样板在本仓出现三份（shell HttpGetOk/ShutdownPort、webui prober 内联）：四层 open/connect/request/close 可收敛进 kit::win 薄探测小件（触发场景：审查冗余样板；当轮只修并发未消样板） | 方向已记录，待内核仓评估 |
+| 2026-10-25 | WinHTTP「GET 状态码探测」样板在本仓出现三份（shell HttpGetOk/ShutdownPort、webui prober 内联）：四层 open/connect/request/close 可收敛进 kit::win 薄探测小件（触发场景：审查冗余样板；当轮只修并发未消样板）。2026-10-26 第 4 份真实触发：webui「从 API 获取模型」需要 GET + Authorization 头 + 整读 body——比状态码探测更进一步，kit::win 小件若长成「一发 GET 收全文」形状可同时消四份 | 方向已记录，待内核仓评估 |
 | 2026-10-25 | svc 单槽发布互斥维持够用（add 拒绝重复 id；子档案旁路服役），per-类型子模型/多会话槽需求出现时再立项命名实例 | 观察维持，不立项 |
 | 2026-10-24 | EventHub 观测函数 slot 失明（knows/raw_listener_count 疑只统计广播通道）→ 复核确认两函数在 58dc137 里已并入 slot 通道计数（knows 探 slot_raw_、raw_listener_count 对全部 slot 槽位求和），观察条目当时未回收 | 已落地（随 58dc137 slot 路由同批实现，无需再动；per-slot 粒度的 slot_listener_count 无消费方，不立项） |
 | 2026-10-24 | nostos_test 测试源码从未进内核 git 历史、已不可恢复（陈旧 exe 可跑通 18 例但源头丢失；旧路径 D:\CODE 已删除；远端当时不可达），CI 纪律与 README 引用悬空 → 裁决不重建：删除 README/src README 悬空指路与陈旧构建产物，两仓工作区指令同步摘除 nostos_test 要求 | 已清理（内核 b9cb9b4；产品仓 AGENTS.md/测试规范/本文档同步；内核后续如需回归，用例随真实批次重新立项） |

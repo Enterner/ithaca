@@ -65,6 +65,8 @@
 
 **Never（不做）**：
 - 未经用户明确要求写测试用例
+- **未经用户明确允许不做 git 提交**（本仓与内核仓 `external/nostos` 一并适用——
+  改完代码/check 全绿也只停在工作区，用户开口才 commit）
 - 直接改动内核仓 `E:\Project\c++\nostos`（可优化点只进观察文档，见强制规则第 5 条）
 - 破坏性 git 操作（reset --hard 丢弃工作区、force push）除非用户明确要求
 - 新建 doc 文件直接放 `docs/` 根下——**默认一律 `docs/temp/`**（用户明确要求放 docs/
@@ -75,7 +77,7 @@
 - 内核仓：`E:\Project\c++\nostos`（独立 git 仓，有完整提交历史；旧路径 D:\CODE\c++\nostos
   已废弃。产品仓经 `external/nostos` 子模块消费；内核无自带测试套件，验证随本仓
   `npm run build` 与内核独立构建进行）。
-- 本仓 git：本地提交，不推远端。
+- 本仓 git：提交需用户明确允许（见边界 Never），不推远端。
 - MSBuild 对大小写成对代理变量敏感（HTTP_PROXY/http_proxy 同时在环境会抛
   MSB6001）——构建前清掉；Node 侧防御已内置在 `scripts/build.mjs`。
 - 机器本地指令链：`.gitignore` 排除 AGENTS.md 与 docs/（clone 不携带规范，属刻意设计）。

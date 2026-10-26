@@ -9,7 +9,7 @@
 //   src/config.cpp     —— 供应商两层配置（共享 + 实例覆盖层）+ /api/config
 //   src/fs_watcher.cpp —— 文件树真监听（ReadDirectoryChangesW → fs_changed 广播）
 //   src/prober.cpp     —— 兄弟实例健康探测（聚合 alive 真值）+ /api/shell/sessions
-//   src/api.cpp        —— 输入/裁决/模型/选目录/文件树/MCP 状态端点
+//   src/api.cpp        —— 输入/裁决/模型/选目录/文件树/MCP 状态/模型清单/上下文构成端点
 //
 // 总职责：kit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
 // JSONL 持久化 + SSE 广播；输入/裁决经 poster 回总线。会话持久化的两层：
@@ -153,6 +153,8 @@ private:
     http::Response api_decision_(const std::string& body);
     http::Response api_permission_mode_(const std::string& body);
     http::Response api_model_(const std::string& body);
+    http::Response api_provider_models_(const std::string& body);   // 拉平台模型清单（SSE 回发）
+    http::Response api_context_breakdown_();   // 上下文构成分解（悬停指示器的数据源）
     http::Response api_pick_folder_();
     http::Response api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
     http::Response api_fs_list_(const std::string& target);
@@ -210,6 +212,12 @@ private:
     // ---- 插件 UI 贡献（vc.ui.register 累积；内存态，/api/ui/registry 数据源）----
     // 插件重发随 vc.ui.query 补拉兜底，重启后由各插件 activate 重建，无需落盘。
     std::map<std::string, json> ui_registry_;   // 插件名 → {label, schema:[…]}
+
+    // ---- 上下文构成分解缓存（/api/context/breakdown）---------------------------
+    // key = 会话文件路径@mtime：同一版本文件只解析一次（select 线程必须快）。
+    std::mutex bd_mu_;
+    std::string bd_key_;
+    json bd_cache_;
 };
 
 }  // namespace vc_webui

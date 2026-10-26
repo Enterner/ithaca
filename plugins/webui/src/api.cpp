@@ -8,6 +8,7 @@
 #include "vc_events.hpp"  // vc_api::TurnInput/TurnDecision/PermissionMode + normalize_permission_mode
 
 #include <objbase.h>  // CoInitializeEx/CoUninitialize：选目录线程的 COM 初始化
+#include <winhttp.h>  // WinHttp*：供应商模型清单的 GET 请求
 
 #include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
 
@@ -106,6 +107,20 @@ http::Response WebuiPlugin::api_model_(const std::string& body) {
     json in = parse_body_(body);
     std::string model = in.value("model", "");
     if (model.empty()) return json_resp({{"ok", false}, {"error", "模型为空"}});
+    // 跨供应商切换（输入栏模型选择器，body 带 provider）：存在且启用才切——
+    // current_provider 一改，下方未知模型建档、persist、post_llm_set_active_
+    // （按当前供应商快照凭据/窗口）自然全部落在新供应商上，无需旁路逻辑。
+    const std::string provider = in.value("provider", "");
+    if (!provider.empty()) {
+        bool usable = false;
+        for (const auto& p : config_.value("providers", json::array()))
+            if (p.is_object() && p.value("name", "") == provider) {
+                usable = p.value("enabled", true);
+                break;
+            }
+        if (!usable) return json_resp({{"ok", false}, {"error", "供应商不存在或未启用"}});
+        config_["current_provider"] = provider;
+    }
     const auto* llm = llm_;   // activate 时已解析（select 线程不能 service）
     bool live = false;
     std::string diag;
@@ -142,6 +157,243 @@ http::Response WebuiPlugin::api_model_(const std::string& body) {
         nostos::kit::poster_submit(poster_, [this, rec] { broadcast_(rec); });
     }
     return json_resp({{"ok", true}, {"live", live}});
+}
+
+// ---- 供应商模型清单拉取（OpenAI 兼容 GET /models）---------------------------
+
+// UTF-8 → UTF-16（key/base_url 进 WinHTTP 只吃宽字符；插件内联小件——llm_cloud
+// 那份是 SSE 全套客户端，这里只需要一发 GET，不值得为此抽公共件）。
+static std::wstring utf8_to_wide_(const std::string& s) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
+                                      static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+
+// WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
+// 两插件无公共 TU，抽件得进 kit，见观察文档 WinHTTP 样板条目）。
+static std::string winhttp_error_text_() {
+    switch (GetLastError()) {
+        case ERROR_WINHTTP_TIMEOUT: return "超时";
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
+        case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
+        case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
+        default: return "WinHTTP 错误 " + std::to_string(GetLastError());
+    }
+}
+
+/// POST /api/provider/models {name, base_url, api_key?} → 请求平台的 OpenAI 兼容
+/// GET /models，把模型 ID 清单经 SSE provider_models 事件回设置面（自动填充模型
+/// 表）。select 线程只做参数解析与 key 定位（api_key 非空 = 刚粘贴未保存；留空 =
+/// 按 name 取后端已存——前端掩码拿不到明文，明文只在 config_），网络在 detach
+/// 线程：外网往返秒级，同步做会拖死 select 循环上的全部 HTTP 服务（与 pick-folder
+/// 的异步模式同构）。瞬态事件不落 transcript（folder_picked 同款）。
+http::Response WebuiPlugin::api_provider_models_(const std::string& body) {
+    json in = parse_body_(body);
+    const std::string name = in.value("name", "");
+    std::string base = in.value("base_url", "");
+    std::string key = in.value("api_key", "");
+    if (base.empty()) return json_resp({{"ok", false}, {"error", "Base URL 为空"}});
+    if (key.empty())   // select 线程读 config_（线程纪律见头文件）
+        for (const auto& p : config_.value("providers", json::array()))
+            if (p.is_object() && p.value("name", "") == name) {
+                key = p.value("api_key", "");
+                break;
+            }
+    if (key.empty())
+        return json_resp({{"ok", false},
+                          {"error", "API Key 为空——先粘贴 key，或该供应商已保存过 key"}});
+    std::thread([this, base = std::move(base), key = std::move(key)] {
+        // base 尾斜杠归一后拼 /models；llm_cloud 同款四段解析口径
+        std::string url = base;
+        while (!url.empty() && url.back() == '/') url.pop_back();
+        url += "/models";
+        const std::wstring wurl = utf8_to_wide_(url);
+        const std::wstring wkey = utf8_to_wide_(key);
+        json result = {{"ok", false}, {"error", std::string("请求未发起")}};
+        HINTERNET ses = WinHttpOpen(L"ithaca-models/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (ses == nullptr) {
+            result["error"] = winhttp_error_text_();
+        } else {
+            URL_COMPONENTS uc{};
+            uc.dwStructSize = sizeof(uc);
+            uc.dwSchemeLength = 1;
+            uc.dwHostNameLength = 1;
+            uc.dwUrlPathLength = 1;
+            HINTERNET con = nullptr, req = nullptr;
+            if (WinHttpCrackUrl(wurl.c_str(), static_cast<DWORD>(wurl.size()), 0, &uc) &&
+                (con = WinHttpConnect(ses, std::wstring(uc.lpszHostName,
+                                      uc.dwHostNameLength).c_str(), uc.nPort, 0)) != nullptr &&
+                (req = WinHttpOpenRequest(con, L"GET",
+                                          std::wstring(uc.lpszUrlPath,
+                                                       uc.dwUrlPathLength).c_str(),
+                                          nullptr, WINHTTP_NO_REFERER,
+                                          WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                          uc.nScheme == INTERNET_SCHEME_HTTPS
+                                              ? WINHTTP_FLAG_SECURE : 0)) != nullptr) {
+                // 短超时：清单拉取是设置面动作，用户在等，失败要快回
+                WinHttpSetTimeouts(req, 5000, 5000, 10000, 30000);
+                const std::wstring hdr = L"Authorization: Bearer " + wkey;
+                WinHttpAddRequestHeaders(req, hdr.c_str(), static_cast<DWORD>(-1),
+                                         WINHTTP_ADDREQ_FLAG_ADD);
+                DWORD status = 0;
+                std::string resp;
+                if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                       WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                    WinHttpReceiveResponse(req, nullptr)) {
+                    DWORD sz = sizeof(status);
+                    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE |
+                                                 WINHTTP_QUERY_FLAG_NUMBER,
+                                        WINHTTP_HEADER_NAME_BY_INDEX, &status,
+                                        &sz, WINHTTP_NO_HEADER_INDEX);
+                    for (;;) {   // 整读 body（256KB 封顶——清单异常大按截断解析）
+                        DWORD avail = 0;
+                        if (!WinHttpQueryDataAvailable(req, &avail) || avail == 0) break;
+                        std::string chunk(avail, '\0');
+                        DWORD got = 0;
+                        if (!WinHttpReadData(req, chunk.data(), avail, &got) || got == 0)
+                            break;
+                        resp.append(chunk, 0, got);
+                        if (resp.size() > 256 * 1024) break;
+                    }
+                }
+                if (status == 0) {
+                    result["error"] = winhttp_error_text_();
+                } else {
+                    const json doc = json::parse(resp, nullptr,
+                                                 /*allow_exceptions=*/false);
+                    if (status == 200 && doc.is_object() && doc.contains("data") &&
+                        doc["data"].is_array()) {
+                        json ids = json::array();
+                        for (const auto& m : doc["data"])
+                            if (m.is_object() && m.contains("id") && m["id"].is_string())
+                                ids.push_back(m["id"].get<std::string>());
+                        result = {{"ok", true}, {"models", std::move(ids)}};
+                    } else {
+                        // 错误消息人话化：平台 OpenAI 形态 error.message 优先，
+                        // 原文兜底（截 200 字节防超长错误体刷屏）
+                        std::string msg;
+                        if (doc.is_object()) {
+                            if (doc.contains("error") && doc["error"].is_object())
+                                msg = doc["error"].value("message", "");
+                            else if (doc.contains("message") && doc["message"].is_string())
+                                msg = doc["message"].get<std::string>();
+                        }
+                        if (msg.empty()) msg = resp.substr(0, 200);
+                        result = {{"ok", false},
+                                  {"error", "HTTP " + std::to_string(status) +
+                                                (msg.empty() ? "" : "：" + msg)}};
+                    }
+                }
+            } else {
+                result["error"] = winhttp_error_text_();
+            }
+            if (req != nullptr) WinHttpCloseHandle(req);
+            if (con != nullptr) WinHttpCloseHandle(con);
+            WinHttpCloseHandle(ses);
+        }
+        json evt = {{"type", "provider_models"}};
+        evt.merge_patch(result);
+        broadcast_(std::move(evt));   // kit 层线程安全（pick-folder 线程同款直调）
+    }).detach();
+    return json_resp({{"ok", true}, {"pending", true}});
+}
+
+// UTF-8 字符数折算 token 的粗估：ASCII ≈ 4 字符/token，非 ASCII（CJK 为主）
+// ≈ 0.7 token/字。仅用于构成占比——卡片上明确标「分段估算」；总量以 LLM 返回
+// 的实测 last_prompt_tokens 为准（分段按占比等比修正，合计不失真）。
+static size_t utf8_tokens(const std::string& s) {
+    size_t ascii = 0, non = 0;
+    for (const unsigned char b : s) {
+        if ((b & 0xC0) == 0x80) continue;   // UTF-8 后续字节
+        if (b < 0x80) ++ascii; else ++non;
+    }
+    return ascii / 4 + static_cast<size_t>(non * 0.7);
+}
+
+/// GET /api/context/breakdown → 上下文构成分解（悬停指示器的数据源）。
+/// 读活跃会话 state.json（agent 写的 LLM 上下文），messages 按 role 分四桶：
+/// 系统提示(system) / 用户消息(user) / 模型回复(assistant 正文) /
+/// 工具调用(tool_calls 参数 + tool 结果——用户口径合并为一段)。
+/// 分段为估算，实测总量存在时（last_prompt_tokens>0）按各桶占比等比修正使
+/// 合计=实测；舍入漂移记入最大的工具桶。mtime 缓存：同一版本文件只解析一次。
+http::Response WebuiPlugin::api_context_breakdown_() {
+    std::string session;
+    {
+        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        session = session_;
+    }
+    if (session.empty())
+        return json_resp({{"ok", false}, {"error", "无活跃会话"}});
+    const fs::path f = home_ / "sessions" / (session + ".state.json");
+    std::error_code ec;
+    if (!fs::exists(f, ec))
+        return json_resp({{"ok", false}, {"error", "会话文件不存在"}});
+    const auto mtime = fs::last_write_time(f, ec);
+    const std::string key = f.string() + "@" +
+        std::to_string(mtime.time_since_epoch().count());
+    {
+        std::lock_guard<std::mutex> lock(bd_mu_);
+        if (bd_key_ == key && !bd_cache_.is_null()) return json_resp(bd_cache_);
+    }
+    std::ifstream in(f, std::ios::binary);
+    const json st = json::parse(in, nullptr, /*allow_exceptions=*/false);
+    if (!st.is_object())
+        return json_resp({{"ok", false}, {"error", "会话文件解析失败"}});
+    const auto toklen = [](const json& c) -> size_t {
+        if (c.is_string()) return utf8_tokens(c.get<std::string>());
+        if (c.is_null()) return 0;
+        return utf8_tokens(c.dump());   // 结构化内容（分段文本等）整体折算
+    };
+    size_t sys = 0, user = 0, asst = 0, call = 0, tool = 0;
+    size_t n_sys = 0, n_user = 0, n_asst = 0, n_calls = 0, n_tool = 0;
+    if (st.contains("messages") && st["messages"].is_array())
+        for (const auto& m : st["messages"]) {
+            if (!m.is_object()) continue;
+            const std::string role = m.value("role", "");
+            if (role == "system") { sys += toklen(m.value("content", json())); ++n_sys; }
+            else if (role == "user") { user += toklen(m.value("content", json())); ++n_user; }
+            else if (role == "assistant") {
+                asst += toklen(m.contains("content") ? m["content"] : json());
+                ++n_asst;
+                if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
+                    call += utf8_tokens(m["tool_calls"].dump());
+                    n_calls += m["tool_calls"].size();
+                }
+            } else if (role == "tool") {
+                tool += toklen(m.value("content", json()));
+                ++n_tool;
+            }
+        }
+    const size_t sum = sys + user + asst + call + tool;
+    const long long measured_ll = st.value("last_prompt_tokens", 0LL);
+    const bool measured = measured_ll > 0 && sum > 0;
+    const auto scale = [&](size_t v) -> long long {
+        if (!measured) return static_cast<long long>(v);
+        return static_cast<long long>(
+            static_cast<double>(v) * static_cast<double>(measured_ll) / sum + 0.5);
+    };
+    long long s_sys = scale(sys), s_user = scale(user), s_asst = scale(asst), s_call = scale(call);
+    // 舍入漂移记入工具桶（四段里通常最大，漂移占比最小）
+    long long s_tool = measured ? measured_ll - (s_sys + s_user + s_asst + s_call)
+                                : static_cast<long long>(tool);
+    if (s_tool < 0) s_tool = 0;
+    const long long total = measured ? measured_ll : static_cast<long long>(sum);
+    // 输出四段（用户口径）：工具调用 = tool_calls 参数 + tool 结果合并
+    json out = {{"ok", true}, {"total", total}, {"measured", measured},
+                {"segs", json{{"sys", s_sys}, {"user", s_user},
+                              {"asst", s_asst}, {"tool", s_call + s_tool}}},
+                {"counts", json{{"sys", n_sys}, {"user", n_user}, {"asst", n_asst},
+                                {"calls", n_calls}, {"tools", n_tool}}}};
+    {
+        std::lock_guard<std::mutex> lock(bd_mu_);
+        bd_key_ = key;
+        bd_cache_ = out;
+    }
+    return json_resp(std::move(out));
 }
 
 /// POST /api/pick-folder → 原生目录对话框（独立线程弹，防模态阻塞），结果经
@@ -209,7 +461,10 @@ http::Response WebuiPlugin::api_fs_list_(const std::string& target) {
     const vc_api::ToolTable* tools = tools_.load();
     if (tools == nullptr) return json_resp({{"ok", false}, {"error", "workspace 不在"}});
     const json args = json{{"path", rel},
-                           {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)}};
+                           {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)},
+                           {"pattern", query_val(target, "pattern")},
+                           {"mode", query_val(target, "mode")},
+                           {"per_dir", std::atoi(query_val(target, "per_dir").c_str())}};
     const char* out_json = nullptr;
     // 直调工具表（线程安全见上）：NOSTOS_OK + {ok:false} = 工具级失败，原样透传
     const nostos_status st = tools->execute(tools->self, "list", args.dump().c_str(), 0,

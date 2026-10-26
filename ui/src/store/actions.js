@@ -72,9 +72,16 @@ export async function decide(d, paths, msg) {
   return r
 }
 
-/** 模型热切（后端持久化；缺槽/失败重启生效）。 */
-export async function setModel(model) {
-  await api('/api/model', { model })
+/**
+ * 模型热切：provider 缺省 = 当前供应商内切换；带 provider = 跨供应商热切
+ * （后端校验存在并启用，随 /api/model 一并持久化 + 凭据/窗口热切）。
+ * 成功后回拉配置对齐（current/model/掩码），失败静默——后端会落盘通告。
+ */
+export async function setModel(model, provider) {
+  const body = { model }
+  if (provider) body.provider = provider
+  const r = await api('/api/model', body)
+  if (r.ok) cfgFromServer(await api('/api/config'))
 }
 /** 权限模式切换（通告由 agent 在值真正变化时发，这里不重复发）。 */
 export async function setMode(mode) {

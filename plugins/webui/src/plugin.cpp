@@ -291,6 +291,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/input") return api_input_(req.body);
     if (m == "POST" && t == "/api/decision") return api_decision_(req.body);
     if (m == "POST" && t == "/api/model") return api_model_(req.body);
+    if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req.body);
     if (m == "GET" && t == "/api/permission-mode")
         return json_resp({{"mode", vc_api::normalize_permission_mode(
                                         config_.value("permission_mode", "auto-edit"))}});
@@ -302,6 +303,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "GET" && t.rfind("/api/fs/read", 0) == 0) return api_fs_read_(req.target);
     if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_();
     if (m == "GET" && t == "/api/mcp/status") return api_mcp_status_();
+    if (m == "GET" && t == "/api/context/breakdown") return api_context_breakdown_();
     if (m == "GET" && t == "/api/ui/registry") return api_ui_registry_();
     if (m == "GET" && t.rfind("/api/shell/sessions", 0) == 0)
         return api_shell_sessions_();

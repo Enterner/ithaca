@@ -4,7 +4,7 @@
 // （头部按钮或 Ctrl+B），全屏/缩小时栏宽不变、内容区自适应。
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { NConfigProvider, NTooltip, darkTheme } from 'naive-ui'
-import { S, boot, pickFolder, newSession, api } from './store'
+import { S, boot, pickFolder, newSession, api, fmtK } from './store'
 import { themeOverrides } from './theme'
 import Sidebar from './components/Sidebar.vue'
 import Stream from './components/Stream.vue'
@@ -115,7 +115,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
           </template>
           设置
         </n-tooltip>
-        <span>累计 <b>{{ S.fTurns.toLocaleString() }}</b> 轮，<b>{{ S.fTokens.toLocaleString() }}</b> tokens</span>
+        <span>累计 <b>{{ fmtK(S.fTurns) }}</b> 轮，<b>{{ fmtK(S.fTokens) }}</b> tokens</span>
       </div>
       <div class="side-drag" title="拖拽调宽" @mousedown="startDrag"></div>
     </aside>

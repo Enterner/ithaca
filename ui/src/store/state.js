@@ -40,6 +40,9 @@ export const S = reactive({
   // 插件 UI 贡献：registry = 各插件 schema（/api/ui/registry，设置面板
   // 打开时拉取）；pluginVals = 各插件设置值（/api/config 的 plugins 节）。
   pluginUi: [], pluginVals: {},
+  // 设置面「从 API 获取模型」的回执（SSE provider_models 瞬态事件，records 转
+  // 投于此；Settings.vue watch 消费）。n 单调递增防同值吞 watch。
+  provModelsEvt: null,
 })
 
 // 非响应式转态（记录游标/汇总卡聚合/速率窗口）：SSE 与重放两路径共用的

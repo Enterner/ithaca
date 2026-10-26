@@ -50,6 +50,15 @@ export function cfgFromServer(cfg) {
     }))
   }))
   S.current = cfg.current_provider || (S.providers[0] && S.providers[0].name) || ''
+  // 当前供应商停用/无启用模型 ⇒ 回落第一个「启用且带启用模型」的供应商（与后端
+  // 保存路径同口径——磁盘遗留的停用当前项也在此纠正显示）；全都不可用 = 空当前
+  // （选择器显示「未选择模型」）
+  const usable = p => p && p.enabled !== false &&
+                      (p.models || []).some(m => m.enabled !== false)
+  if (!usable(S.providers.find(p => p.name === S.current))) {
+    const first = S.providers.find(usable)
+    S.current = first ? first.name : ''
+  }
   S.model = cfg.model || 'deepseek-flash'
   S.pmode = cfg.permission_mode || 'auto-edit'
   S.pluginVals = cfg.plugins || {}   // 各插件 schema 的值域（编辑在设置面板）
@@ -59,12 +68,42 @@ export function cfgFromServer(cfg) {
 }
 
 /**
+ * 粗略 k 化（全项目 token 值统一口径）：≥1000 → 一位小数截尾 k（整数去 .0）；
+ * ≥1e6 → M。例：9355→9.3k、12000→12k、1817969→1.8M；999 以内原样。
+ */
+export function fmtK(n) {
+  n = n || 0
+  if (n >= 1e6) {
+    const m = Math.floor(n / 1e5) / 10
+    return (Number.isInteger(m) ? String(m) : m.toFixed(1)) + 'M'
+  }
+  if (n >= 1000) {
+    const k = Math.floor(n / 100) / 10
+    return (Number.isInteger(k) ? String(k) : k.toFixed(1)) + 'k'
+  }
+  return String(n)
+}
+
+/**
  * fetch JSON 助手：带 body ⇒ POST JSON，无 body ⇒ GET。
  * NOTE: POST 端点必须显式传 {}——无 body 会发 GET（踩过：pickFolder 404 静默无效）。
  */
 export async function api(path, body) {
   const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined)
   return r.json()
+}
+
+/**
+ * 设置面「从 API 获取模型」：请后端代理请求平台 GET /models（CORS 挡浏览器
+ * 直连）。结果经 SSE provider_models 事件回设置面，不在本调用的返回值里。
+ */
+export function fetchProviderModels(name, baseUrl, apiKey) {
+  return api('/api/provider/models', { name, base_url: baseUrl, api_key: apiKey })
+}
+
+/** 上下文构成分解（悬停指示器拉取；后端读活跃会话 state.json 估算+实测修正）。 */
+export function fetchCtxBreakdown() {
+  return api('/api/context/breakdown')
 }
 
 /** 壳消息通道（WebView2 宿主）；浏览器/单实例模式下为空操作。 */

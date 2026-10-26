@@ -4,6 +4,7 @@
 // SSE folder_picked，那是会话语义，接进来会误触草稿/开新会话）。
 // 编辑在本地副本（vals）进行，保存时整节写回 S.pluginVals → /api/config。
 import { reactive, watch, ref } from 'vue'
+import Cdl from '../Cdl.vue'
 import { S, savePluginVals } from '../store'
 
 const vals = reactive({})   // {[plugin]: {[key]: value}} 编辑副本
@@ -51,9 +52,9 @@ async function onSave() {
       <div class="secT">{{ p.label }}</div>
       <div v-for="f in p.schema" :key="f.key" class="frow">
         <label>{{ f.label }}</label>
-        <select v-if="f.type === 'select'" v-model="vals[p.plugin][f.key]">
-          <option v-for="o in f.options || []" :key="o" :value="o">{{ o }}</option>
-        </select>
+        <Cdl v-if="f.type === 'select'" block down bordered
+             :items="(f.options || []).map(o => ({ value: o, label: o }))"
+             v-model="vals[p.plugin][f.key]" />
         <span v-else-if="f.type === 'bool'" class="tglwrap">
           <span class="tgl" :class="{ off: !vals[p.plugin][f.key] }"
                 :title="f.label"
