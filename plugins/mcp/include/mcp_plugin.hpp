@@ -32,7 +32,7 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/poster.hpp>  // nostos_poster + poster_submit：状态回发 defer
 
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -69,6 +69,8 @@ inline constexpr int kCallTimeoutMs = 120000;  // tools/call 超时（MVP 固定
 
 struct ChildPipes {
     HANDLE proc = nullptr;
+    HANDLE job = nullptr;        // Job 树杀容器（cmd /c npx 链真 server 是孙进程；
+                                 // 只杀直接子会留孤儿持管道写端 ⇒ 读线程永挂。可 null）
     HANDLE stdin_w = nullptr;    // 写：JSON-RPC 请求/通知
     HANDLE stdout_r = nullptr;   // 读：JSON-RPC 响应/通知
     HANDLE stderr_r = nullptr;   // 读：server 诊断输出（独立管道，不污染 JSON 流）

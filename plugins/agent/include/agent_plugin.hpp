@@ -51,7 +51,7 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 #include <set>
 #include <string>
 #include <string_view>

@@ -37,7 +37,8 @@ target_include_directories(ithaca_unit_tests PRIVATE
 target_link_libraries(ithaca_unit_tests PRIVATE nostos::core nostos::kit)
 
 if(MSVC)
-    target_compile_options(ithaca_unit_tests PRIVATE /W4 /utf-8 /EHsc /permissive-)
+    # /utf-8 /EHsc /permissive- 经 nostos::core INTERFACE 传递（内核 7e0246c 起）
+    target_compile_options(ithaca_unit_tests PRIVATE /W4)
 else()
     target_compile_options(ithaca_unit_tests PRIVATE -Wall -Wextra)
 endif()

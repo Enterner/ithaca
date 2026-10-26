@@ -6,7 +6,7 @@
 //   data: {...}\n\n            事件（本插件逐行处理，多行 data 的合并语义用不上）
 //   data: [DONE]\n\n           结束标记
 //   以 \n 或 \r\n 结尾；网络分块不保证对齐行尾——解析器内部缓冲拼行。
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <cstddef>
 #include <functional>

@@ -4,7 +4,7 @@
 // 工具命名约定：LLM 看到的工具名 = "<工具集>.<工具>"，其中工具集 =
 // 工具表 svc 名去掉 "ithaca.tool." 前缀（vc.tool.workspace → workspace）。
 // agent 因此对任意新工具插件零硬编码：拿到表就能拼 tools，拿到 tool_call 就能回表。
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <algorithm>
 #include <string>

@@ -14,7 +14,7 @@
 
 #include <nostos/plugin_scope.hpp>
 
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <algorithm>
 #include <string>

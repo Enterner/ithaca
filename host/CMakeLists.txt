@@ -31,8 +31,8 @@ target_include_directories(ithaca_host PRIVATE
     "${NOSTOS_ROOT}/include")
 
 if(MSVC)
-    # /utf-8：源码与控制台输出都是 UTF-8；GCC/Clang 默认即 UTF-8。
-    target_compile_options(ithaca_host PRIVATE /permissive- /EHsc /utf-8)
+    # /permissive- /EHsc /utf-8 经 nostos::core INTERFACE 传递（loader PUBLIC 链
+    # core），此处不再重复——utf-8 旗标源于内核 7e0246c 起。
 else()
     target_compile_options(ithaca_host PRIVATE -Wall -Wextra)
 endif()

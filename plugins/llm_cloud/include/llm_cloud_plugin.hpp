@@ -31,7 +31,7 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/poster.hpp>
 
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include <atomic>
 #include <cstdint>

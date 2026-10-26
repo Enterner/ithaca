@@ -24,6 +24,74 @@ const mSub = ref('')          // 子 agent 模型选中值（JSON 串 {provider,
 const mSubDangling = ref('')  // 失效引用的展示名（供应商/模型已删；保存时后端会拦截）
 const keyInputs = reactive({})   // 临时输入的 key（不回显，仅保存时带上）
 
+// 主流平台快速接入模板：选平台 → 粘贴 API Key → 保存即用（Base URL 与模型表
+// 预置，模型清单可再增删改）。火山 Coding Plan 已实测（注意必须用 coding 专用
+// base_url 才走套餐额度）；其余平台的旗舰模型 ID 随平台迭代可能过期，以官方
+// 模型列表为准。
+const PRESETS = [
+  { key: 'ark-coding', name: '火山方舟 Coding Plan',
+    base_url: 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    models: [
+      { id: 'doubao-seed-2.1-pro', context: 256000 },
+      { id: 'doubao-seed-2.1-lite', context: 256000 },
+      { id: 'doubao-seed-2.0-mini', context: 256000 },
+      { id: 'glm-5.3', context: 200000 },
+      { id: 'glm-5.3-flash', context: 200000 },
+      { id: 'deepseek-v4.1-flash', context: 128000 },
+      { id: 'kimi-k3', context: 256000 },
+    ] },
+  { key: 'ark', name: '火山方舟 按量付费',
+    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    models: [
+      { id: 'doubao-seed-2-1-pro-260915', context: 256000 },
+      { id: 'doubao-seed-2-1-lite-260915', context: 256000 },
+      { id: 'deepseek-v4-1-flash-261017', context: 128000 },
+      { id: 'glm-5-3-flash-260828', context: 200000 },
+    ] },
+  { key: 'deepseek', name: 'DeepSeek 官方', base_url: 'https://api.deepseek.com',
+    models: [
+      { id: 'deepseek-flash', context: 1000000 },
+      { id: 'deepseek-v4-pro', context: 128000 },
+      { id: 'deepseek-reasoner', context: 128000 },
+    ] },
+  { key: 'kimi', name: 'Kimi（月之暗面）', base_url: 'https://api.moonshot.cn/v1',
+    models: [
+      { id: 'kimi-k3.1-pro', context: 256000 },
+      { id: 'kimi-k2.5', context: 256000 },
+    ] },
+  { key: 'glm', name: '智谱 GLM', base_url: 'https://open.bigmodel.cn/api/paas/v4',
+    models: [
+      { id: 'glm-5.3', context: 200000 },
+      { id: 'glm-5.2', context: 200000 },
+    ] },
+  { key: 'qwen', name: '阿里云百炼 Qwen',
+    base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    models: [
+      { id: 'qwen3.8-max', context: 256000 },
+      { id: 'qwen3.8-flash', context: 256000 },
+      { id: 'qwen3.7-max', context: 256000 },
+    ] },
+  { key: 'openai', name: 'OpenAI', base_url: 'https://api.openai.com/v1',
+    models: [
+      { id: 'gpt-5.2', context: 400000 },
+      { id: 'gpt-5.2-thinking', context: 400000 },
+    ] },
+]
+const presetSel = ref('')
+function applyPreset() {
+  const t = PRESETS.find(x => x.key === presetSel.value)
+  presetSel.value = ''   // 选完即复位：选择器是动作入口，不是持久状态
+  if (!t) return
+  const p = cur()
+  if (!p.name) {
+    p.name = t.name
+    // key 输入以 name 为键：模板补名后迁移，避免先粘的 key 悬空丢失
+    if (keyInputs['']) { keyInputs[t.name] = keyInputs['']; delete keyInputs[''] }
+  }
+  p.base_url = t.base_url
+  p.models = t.models.map(m => ({ ...m, enabled: true }))
+}
+
 async function openPanel() {
   // 从 store 深拷贝；api_key 输入框恒空（后端掩码，留空=保留旧值）
   detail.value = JSON.parse(JSON.stringify(S.providers)).map(p => ({ ...p, api_key: '', models: p.models || [] }))
@@ -165,9 +233,18 @@ async function onSave() {
                   @click="cur().enabled = !cur().enabled"></span>
             <span v-if="!cur().builtin" class="act" title="删除供应商" @click="delProvider">✕</span>
           </div>
+          <template v-if="cur().type !== 'mock'">
+            <label>快速接入模板
+              <span style="color:var(--dim)">（选平台自动填 Base URL 与常用模型，只需再粘贴 API Key；套用会覆盖模型列表）</span>
+            </label>
+            <select v-model="presetSel" @change="applyPreset" style="width:100%">
+              <option value="">选择平台模板…（自定义平台可跳过直接手填）</option>
+              <option v-for="t in PRESETS" :key="t.key" :value="t.key">{{ t.name }}</option>
+            </select>
+          </template>
           <label>名称</label>
           <input v-model="cur().name" :disabled="cur().builtin" spellcheck="false"
-                 :placeholder="cur().builtin ? undefined : '如：火山引擎'">
+                 :placeholder="cur().builtin ? undefined : '如：火山方舟 Coding Plan'">
           <template v-if="cur().type !== 'mock'">
             <label>Base URL</label>
             <input v-model="cur().base_url" spellcheck="false" placeholder="https://api.deepseek.com">

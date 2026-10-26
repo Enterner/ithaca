@@ -15,7 +15,7 @@
 //
 // 纯 json 进出，单测直接驱动。阶段二~五（评测闭环/规则化覆盖/结构树/KV 指令层）
 // 后续扩展按测量数据决定，不在本层预建。
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 
 #include "../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 

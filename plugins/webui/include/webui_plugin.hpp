@@ -43,7 +43,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -178,6 +178,7 @@ private:
     std::map<std::string, std::pair<bool, int>> probe_cache_;   // key → {alive, port}
     fs::path manifest_path_;
     std::string llm_mode_ = "cloud";   // 供应商模式：mock（测试）| cloud（默认，见 activate）
+    bool mcp_reload_pending_ = false;  // mcp/plugins 节变化 → 落盘成功后才发射 McpReload（时序见 config.cpp 踩过②）
     fs::path home_{};      // %USERPROFILE%\.ithaca
     fs::path web_root_{};  // SPA 目录
     std::string session_;          // 活跃会话 id；"" = 无会话态（前端草稿态兜底）

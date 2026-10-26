@@ -37,7 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <nlohmann/json.hpp>
+#include <nostos/nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <thread>

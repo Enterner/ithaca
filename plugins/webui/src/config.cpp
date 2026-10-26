@@ -305,17 +305,23 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
     // NOTE: mcp/plugins 任一变化即发 McpReload——mcp 插件收到后重读 config
     //（超时类值随 reload 生效）。踩过：只置 mcp_changed 不发射，设置面板保存
     // server 清单后热重载从未生效（死机制）。
+    // 踩过②：发射必须排在 persist_config_() 之后——mcp 插件 reload 读的是磁盘
+    // 文件，poster 排水抢在落盘前会让它读到旧清单、原样重启旧 server 组。
     if (mcp_changed || plugins_changed) {
-        nostos::kit::poster_submit(poster_, [this] {
-            const vc_api::McpReload r{};
-            host_.emit(vc_api::mcp_reload, &r);   // poster 排水后宿主线程发射
-        });
+        mcp_reload_pending_ = true;
     }
     if (!persist_config_()) {
         const std::string cfg_path = config_path_().string();
         return json_resp({{"ok", false},
                           {"error", "数据目录不可写：" + cfg_path +
                                         " —— 重启宿主时加 -DataHome 参数换个位置"}});
+    }
+    if (mcp_reload_pending_) {
+        mcp_reload_pending_ = false;
+        nostos::kit::poster_submit(poster_, [this] {
+            const vc_api::McpReload r{};
+            host_.emit(vc_api::mcp_reload, &r);   // poster 排水后宿主线程发射
+        });
     }
     // 当前使用供应商热切：广播 vc.llm.set_active（provider 名=type、key、
     // base_url——尾部追加）——即时生效，无需重启。

@@ -33,7 +33,16 @@ bool ChildPipes::spawn(const std::string& command, const std::vector<std::string
     SetHandleInformation(stderr_r, HANDLE_FLAG_INHERIT, 0);
 
     std::wstring cmd = L"\"" + wide(command) + L"\"";
-    for (const auto& a : args) cmd += L" \"" + wide(a) + L"\"";
+    // 参数只在含空白时加引号（CreateProcess 常规约定）：cmd /c 型命令（npx 系
+    // MCP server 的 Windows 标准接法）对全参数加引号有「剥首尾引号」改写规则，
+    // 会把命令行改写坏（踩过：cmd /c npx 链上 npm 前缀解析炸掉）
+    for (const auto& a : args) {
+        const std::wstring w = wide(a);
+        if (w.find_first_of(L" \t") != std::wstring::npos)
+            cmd += L" \"" + w + L"\"";
+        else
+            cmd += L" " + w;
+    }
 
     std::wstring env_block;
     const bool has_env = env_over.is_object() && !env_over.empty();
@@ -77,6 +86,22 @@ bool ChildPipes::spawn(const std::string& command, const std::vector<std::string
     if (!ok) return false;
     CloseHandle(pi.hThread);
     proc = pi.hProcess;
+    // Job Object 树杀（与内核 kit::PipedProcess 同款模式）：直接子入 job 后，其
+    // 后代（npx 链的 node 等）自动随 job；kill 走 TerminateJobObject 整树终止。
+    // 创建/指派失败不致命——退回 kill() 只杀直接子的旧行为。
+    job = ::CreateJobObjectW(nullptr, nullptr);
+    if (job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jli{};
+        jli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jli,
+                                      sizeof(jli)) &&
+            ::AssignProcessToJobObject(job, proc)) {
+            // KILL_ON_JOB_CLOSE：本句柄关闭也是兜底树杀（防 kill 未及调用即泄漏）
+        } else {
+            CloseHandle(job);
+            job = nullptr;
+        }
+    }
     return true;
 #else
     (void)command; (void)args; (void)env_over; (void)cwd;
@@ -97,7 +122,19 @@ bool ChildPipes::write_line(const std::string& line) {
 
 void ChildPipes::kill() {
 #ifdef _WIN32
-    if (proc != nullptr) TerminateProcess(proc, 1);
+    // Job 优先整树终止（cmd /c npx 链的 node 孙进程一并死，管道随之断裂，
+    // 读线程才能退出——踩过：只杀直接子 ⇒ 孤儿持写端 ⇒ 读线程永挂热重载死锁）
+    if (job != nullptr) {
+        TerminateJobObject(job, 1);
+        CloseHandle(job);
+        job = nullptr;
+    } else if (proc != nullptr) {
+        TerminateProcess(proc, 1);
+    }
+    if (proc != nullptr) {
+        CloseHandle(proc);
+        proc = nullptr;
+    }
 #endif
 }
 
