@@ -11,16 +11,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ROOT, presetArg, hostExe, pluginDlls } from "./common.mjs";
 import { MOCK_EVAL } from "./plugins.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const preset = process.argv.includes("--preset")
-    ? process.argv[process.argv.indexOf("--preset") + 1]
-    : "debug";
-const bin = path.join(root, "build", preset, "bin");
-const hostExe = path.join(bin, "ithaca_host.exe");
-const outDir = path.join(root, "tests", ".tmp", "eval");
+const preset = presetArg();
+const exe = hostExe(preset);
+const outDir = path.join(ROOT, "tests", ".tmp", "eval");
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -81,17 +77,16 @@ async function runOnce(scenario, arm, tag) {
     fs.writeFileSync(path.join(home, "config.json"), JSON.stringify({ provider: "mock" }));
 
     const port = 8797;
-    const plugins = MOCK_EVAL
-        .map((n) => path.join(bin, `${n}_plugin.dll`));
+    const plugins = pluginDlls(MOCK_EVAL, preset);
     const logLines = [];
     let proc = null;
     const startHost = () => {
-        proc = spawn(hostExe, ["--seconds", "900", ...plugins], {
+        proc = spawn(exe, ["--seconds", "900", ...plugins], {
             cwd: ws,
             env: {
                 ...process.env,
                 ITHACA_WEBUI_HOME: home,
-                ITHACA_WEBUI_WEB: path.join(root, "ui", "dist"),
+                ITHACA_WEBUI_WEB: path.join(ROOT, "ui", "dist"),
                 ITHACA_WEBUI_PORT: String(port),
                 ITHACA_WORKSPACE_DIR: ws,
                 ITHACA_LLM_ACTIVE: "mock",

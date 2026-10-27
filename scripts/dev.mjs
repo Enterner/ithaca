@@ -6,14 +6,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ROOT, flag, hostExe, pluginDlls } from "./common.mjs";
 import { MOCK_FULL, CLOUD_FULL } from "./plugins.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-function flag(name) {
-    const i = process.argv.indexOf(name);
-    return i >= 0 ? process.argv[i + 1] : undefined;
-}
 const has = (name) => process.argv.includes(name);
 
 // 启动前清场：隐藏窗口启动的宿主不可见、易残留——抢 8790 端口、并发写同一
@@ -22,8 +17,8 @@ spawnSync("taskkill", ["/F", "/IM", "ithaca_host.exe"], { stdio: "ignore" });
 
 const preset = flag("--preset") ?? "debug";
 const provider = flag("--provider") === "mock" ? "mock" : "cloud"; // 只由启动参数决定，config.json 的旧 provider 值不作依据
-const dataHome = flag("--data-home") ?? path.join(root, ".ithaca-data"); // 便携式默认跟仓库走（仓库目录被安全软件放行）
-const webDir = flag("--web-dir") ?? path.join(root, "ui", "dist");
+const dataHome = flag("--data-home") ?? path.join(ROOT, ".ithaca-data"); // 便携式默认跟仓库走（仓库目录被安全软件放行）
+const webDir = flag("--web-dir") ?? path.join(ROOT, "ui", "dist");
 const openBrowser = !has("--no-browser");
 
 // 数据目录 + 一次性迁移：旧位置（%USERPROFILE%\.ithaca）的配置与会话搬到新家
@@ -86,16 +81,9 @@ cfg.provider = provider;
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
 // 两个 provider 同时装载：热切 = 撤旧发布 + 发新发布（ithaca.llm.set_active，webui 设置里即时切换）
-const bin = path.join(root, "build", preset, "bin");
-const hostExe = path.join(bin, "ithaca_host.exe");
-if (!fs.existsSync(hostExe)) {
-    console.error(`✗ 找不到宿主 ${hostExe} —— 先构建：npm run build`);
-    process.exit(1);
-}
 // 供应商模式决定装载（产品拍板：mock 仅测试，两 llm 插件互斥——热切竞态随之消失）
-const plugins = (provider === "mock" ? MOCK_FULL : CLOUD_FULL)
-    .map((n) => path.join(bin, `${n}_plugin.dll`))
-    .filter((p) => fs.existsSync(p));
+const exe = hostExe(preset);
+const plugins = pluginDlls(provider === "mock" ? MOCK_FULL : CLOUD_FULL, preset);
 
 const port = env.ITHACA_WEBUI_PORT;
 console.log(`Ithaca Web UI：http://127.0.0.1:${port}`);
@@ -106,7 +94,7 @@ if (openBrowser) {
 console.log("宿主前台运行中——Ctrl+C 停止。日志：");
 
 // 前台运行：日志持续输出到本控制台，Ctrl+C 触发宿主的干净停用链（子进程同控制台组，自动收到事件）。
-const child = spawn(hostExe, plugins, { stdio: "inherit" });
+const child = spawn(exe, plugins, { stdio: "inherit" });
 child.on("exit", (code) => {
     if (code) console.log(`宿主退出码 ${code}`);
 });

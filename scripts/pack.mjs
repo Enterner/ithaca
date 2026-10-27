@@ -5,27 +5,22 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ROOT, flag } from "./common.mjs";
 import { ALL } from "./plugins.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-function flag(name) {
-    const i = process.argv.indexOf(name);
-    return i >= 0 ? process.argv[i + 1] : undefined;
-}
 const preset = flag("--preset") ?? "release";
 const withRedist = process.argv.includes("--with-redist");
-const bin = path.join(root, "build", preset, "bin");
+const bin = path.join(ROOT, "build", preset, "bin");
 
 let version = flag("--version") ?? "";
 if (!version) {
     // 从顶层 CMakeLists 读 project(ithaca VERSION x.y.z ...)
-    const m = fs.readFileSync(path.join(root, "CMakeLists.txt"), "utf8")
+    const m = fs.readFileSync(path.join(ROOT, "CMakeLists.txt"), "utf8")
         .match(/project\(ithaca VERSION ([0-9.]+)/);
     if (!m) { console.error("读不到版本号（顶层 CMakeLists project VERSION）"); process.exit(1); }
     version = m[1];
 }
-const pack = path.join(root, "pack");
+const pack = path.join(ROOT, "pack");
 const stage = path.join(pack, `Ithaca-${version}-x64`);
 fs.rmSync(stage, { recursive: true, force: true });
 
@@ -42,11 +37,11 @@ for (const f of need) {
     }
     fs.copyFileSync(path.join(bin, f), path.join(stage, f.endsWith("_plugin.dll") ? "plugins" : "", f));
 }
-fs.cpSync(path.join(root, "ui", "dist"), path.join(stage, "web", "dist"), { recursive: true });
+fs.cpSync(path.join(ROOT, "ui", "dist"), path.join(stage, "web", "dist"), { recursive: true });
 
 // 启动宿主.cmd：受信入口（cmd 链）先拉起宿主，ithaca.exe 再附着
 // （企业管控软件按父进程信任链拦截未知程序的子进程——cmd 签名父进程可放行）
-fs.copyFileSync(path.join(root, "scripts", "启动宿主.cmd"), path.join(stage, "启动宿主.cmd"));
+fs.copyFileSync(path.join(ROOT, "scripts", "启动宿主.cmd"), path.join(stage, "启动宿主.cmd"));
 
 const readme = [
     "Ithaca —— 代码的归途", "",
@@ -105,8 +100,8 @@ async function buildInstaller() {
     const isccArgs = [`/DAppVersion=${version}`, `/DStageDir=${stage}`, `/DPackDir=${pack}`];
     if (withRedist) isccArgs.push("/DWithRedist");
     console.log(`== 编译安装包（${iscc}）==`);
-    const r2 = spawnSync(iscc, [...isccArgs, path.join(root, "scripts", "installer.iss")],
-        { stdio: "inherit", shell: false, cwd: root });
+    const r2 = spawnSync(iscc, [...isccArgs, path.join(ROOT, "scripts", "installer.iss")],
+        { stdio: "inherit", shell: false, cwd: ROOT });
     if (r2.status !== 0) { console.error(`✗ ISCC 编译失败（退出码 ${r2.status}）`); process.exit(r2.status ?? 1); }
     return true;
 }

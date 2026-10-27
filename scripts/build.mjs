@@ -5,23 +5,18 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { ROOT, flag, presetArg } from "./common.mjs";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const preset = flag("--preset") ?? "debug";
+const preset = presetArg();
 const testOnly = process.argv.includes("--test-only");
 
-function flag(name) {
-    const i = process.argv.indexOf(name);
-    return i >= 0 ? process.argv[i + 1] : undefined;
-}
 function run(cmd, args, opts = {}) {
     const env = { ...process.env };
     for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
         delete env[k];
         delete env[k.toLowerCase()];
     }
-    const r = spawnSync(cmd, args, { stdio: "inherit", shell: false, env, cwd: root, ...opts });
+    const r = spawnSync(cmd, args, { stdio: "inherit", shell: false, env, cwd: ROOT, ...opts });
     if (r.status !== 0) {
         console.error(`✗ ${cmd} ${args.join(" ")} 退出码 ${r.status}`);
         process.exit(r.status ?? 1);
@@ -30,8 +25,8 @@ function run(cmd, args, opts = {}) {
 
 if (!testOnly) {
     // 内核子模块没初始化（普通 git clone 而非 --recurse-submodules）就先补上
-    if (!fs.existsSync(path.join(root, "external", "nostos", "CMakeLists.txt")) &&
-        fs.existsSync(path.join(root, ".git"))) {
+    if (!fs.existsSync(path.join(ROOT, "external", "nostos", "CMakeLists.txt")) &&
+        fs.existsSync(path.join(ROOT, ".git"))) {
         run("git", ["submodule", "update", "--init"]);
     }
     run("cmake", ["--preset", preset]);
@@ -39,10 +34,10 @@ if (!testOnly) {
     // 前端 dist：pack/dev/e2e 都直接消费 ui/dist——构建链必须产出它，否则换机
     // 克隆后 npm run build 全绿而前端缺失/陈旧（dist 不入 git，见 .gitignore）。
     // vite 经 node 直调（npm 是 .cmd 批处理，无 shell spawn 会被 Node 拒绝）
-    const uiDir = path.join(root, "ui");
+    const uiDir = path.join(ROOT, "ui");
     if (!fs.existsSync(path.join(uiDir, "node_modules"))) {
         const r = spawnSync(`"${process.execPath}" "${path.join(process.execPath, "..", "npm-cli.js")}" ci --prefix "${uiDir}"`,
-            { stdio: "inherit", shell: true, env: { ...process.env }, cwd: root });
+            { stdio: "inherit", shell: true, env: { ...process.env }, cwd: ROOT });
         if (r.status !== 0) {
             console.error("✗ ui 依赖安装失败（npm ci）——先在 ui/ 下手动 npm ci");
             process.exit(r.status ?? 1);
@@ -53,7 +48,7 @@ if (!testOnly) {
         { cwd: uiDir });
 }
 
-const tests = path.join(root, "build", preset, "bin", "ithaca_unit_tests.exe");
+const tests = path.join(ROOT, "build", preset, "bin", "ithaca_unit_tests.exe");
 if (!fs.existsSync(tests)) {
     console.error(`✗ 找不到 ${tests} —— 先构建：npm run build`);
     process.exit(1);
