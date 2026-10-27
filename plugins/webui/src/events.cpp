@@ -95,7 +95,9 @@ void WebuiPlugin::subscribe_() {
         record_({{"type", "tool"},
                  {"tool", e->tool != nullptr ? std::string(e->tool) : ""},
                  {"ok", e->ok},
-                 {"brief", e->result_brief != nullptr ? std::string(e->result_brief) : ""}});
+                 {"brief", e->result_brief != nullptr ? std::string(e->result_brief) : ""},
+                 // 后台 ack 归属信号（尾部追加字段；旧生产者组合恒 0）
+                 {"run_id", e->run_id}});
     }));
     subs_.push_back(host_.on(vc_api::edit_proposed, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditProposed*>(p);
@@ -146,7 +148,11 @@ void WebuiPlugin::subscribe_() {
         record_({{"type", "notice"},
                  {"level", e->level},
                  {"text", e->text != nullptr ? std::string(e->text) : ""},
-                 {"sys", e->sys}});
+                 {"sys", e->sys},
+                 // 机器路由元数据（尾部追加字段；旧生产者组合 kind 为空串）
+                 {"kind", e->kind != nullptr ? std::string(e->kind) : ""},
+                 {"run_id", e->run_id},
+                 {"count", e->count}});
     }));
     // 子代理事件三路分流（agent 广播）：phase 1 = 流式增量只广播；phase 2/3 =
     // 工具明细 → 独立存档（sessions/agents/…）+ 广播，**不进主 transcript**——

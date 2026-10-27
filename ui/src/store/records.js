@@ -258,12 +258,14 @@ export function render(rec) {
           push(rec); return
         }
         if (call.tool === 'runner.run') {
-          // 转后台 ack 直接吃掉不留行；ack 自带 run#N——决策坞批准路径不发
-          // 「已启动」通告，ack 是两条派发路径唯一共带的归属信号，映射在此建立
-          const ack = /^已转后台（run#(\d+)）/.exec(rec.brief || '')
-          if (ack) {
-            call._runId = Number(ack[1])
-            X.runCall.set(call._runId, call)
+          // 转后台 ack 直接吃掉不留行——ack 是两条派发路径唯一共带的归属信号，
+          // 映射在此建立（决策坞批准路径不发「已启动」通告）。run_id 走契约
+          // ToolResult 尾部追加字段；文案反解只兜旧会话重放（字段前时代的转录）
+          const rid = rec.run_id > 0 ? rec.run_id
+            : Number((/^已转后台（run#(\d+)）/.exec(rec.brief || '') || [])[1] || 0)
+          if (rid > 0) {
+            call._runId = rid
+            X.runCall.set(rid, call)
             return
           }
           if (/^exit -1/.test(rec.brief || '')) return   // 旧数据 ack（无 run_id）：归属靠通告
@@ -326,24 +328,34 @@ export function render(rec) {
       }
       return
     }
-    case 'notice':
-      // 后台 run 启动通告不落流（调用行已示）；归属主要靠 ack 的 run#N 建立，
-      // 通告只兜旧数据（其 ack 是不带 run_id 的 exit -1）——已有映射不覆盖
-      { const started = /^后台任务 run#(\d+) 已启动/.exec(rec.text || '')
-        if (started) {
-          const rid = Number(started[1])
-          if (!X.runCall.has(rid)) X.runCall.set(rid, lastOpenCall('runner.run'))
-          return
-        } }
-      // 挂起等待信号：agent 在派发尾部仍有未决子代理/后台任务时发「等待 N 个…」
-      // （run 单独等待与 task/混合等待同款式）。取消级联的「已取消 N 个在途子代理」
-      // 即挂起终结信号。等待行 upsert 成单条动态行，核销即撤
-      { const m = /^等待 (\d+) 个/.exec(rec.text || '')
-        if (m) { S.waitingSince = Date.now(); S.waitingLeft = Number(m[1]); upsertWaitline(rec.text); return }
-        else if (/^已取消 \d+ 个在途子代理/.test(rec.text || '')) {
-          S.waitingSince = 0; S.waitingLeft = 0; removeWaitline()
-        } }
+    case 'notice': {
+      // 机器路由优先（Notice 尾部追加 kind 字段）；prose 正则只兜旧会话重放。
+      // 后台 run 启动通告不落流（调用行已示），归属主要靠 ack 的 run_id 建立，
+      // 通告只兜旧数据——已有映射不覆盖
+      if (rec.kind === 'bg_run_started') {
+        if (rec.run_id > 0 && !X.runCall.has(rec.run_id))
+          X.runCall.set(rec.run_id, lastOpenCall('runner.run'))
+        return
+      }
+      // 挂起等待信号：agent 在派发尾部仍有未决子代理/后台任务时发（run 单独
+      // 等待与 task/混合等待同款式）。等待行 upsert 成单条动态行，核销即撤
+      if (rec.kind === 'waiting') {
+        S.waitingSince = Date.now(); S.waitingLeft = rec.count || 0
+        upsertWaitline(rec.text); return
+      }
+      const started = /^后台任务 run#(\d+) 已启动/.exec(rec.text || '')
+      if (started) {
+        const rid = Number(started[1])
+        if (!X.runCall.has(rid)) X.runCall.set(rid, lastOpenCall('runner.run'))
+        return
+      }
+      const m = /^等待 (\d+) 个/.exec(rec.text || '')
+      if (m) {
+        S.waitingSince = Date.now(); S.waitingLeft = Number(m[1])
+        upsertWaitline(rec.text); return
+      }
       push(rec); return
+    }
     case 'error':
       push(rec); flushTurnEdits(); return
   }

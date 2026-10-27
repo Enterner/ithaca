@@ -307,6 +307,10 @@ struct AgentCtx {
     // ctx 自身发出的记录同号：spawn 发生在父 ctx，须传子的 turn_no 而非父的
     void emit_subagent_(int turn_id, int phase, const char* tool, const std::string& text);
     void notice(const std::string& text, int sys = 0);
+    // 带机器路由元数据的通告（vc_api::Notice 尾部追加字段）：kind 标类别，前端
+    // 状态机按它路由（text 仅供人读）；run_id/count 按 kind 语义填充
+    void notice_meta(const std::string& text, std::string_view kind,
+                     long long run_id = 0, int count = 0);
     static std::string trim(const std::string& s, std::size_t cap);
     // apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空，回退）
     // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）

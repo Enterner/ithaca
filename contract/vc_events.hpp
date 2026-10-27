@@ -106,6 +106,10 @@ struct ToolResult {
     const char* tool = nullptr;
     int ok = 0;
     const char* result_brief = nullptr;
+    // 尾部追加：非零 = 本结果是后台长任务（runner.run）的受理 ack，值为 run 编号
+    // ——消费方据此建立「调用行 ↔ run 输出」归属（真实退出码随 vc.run.exit 归流
+    // 另行回卡）。前台执行与其他工具恒 0。
+    long long run_id = 0;
 };
 
 // 编辑提案 / 应用 / 撤销。diff 由 workspace 生成，agent 只转述。
@@ -169,11 +173,19 @@ struct RunExit {
 // 状态栏级提示（任意 → tui）。level：0=trace 1=debug 2=info 3=warn 4=error。
 // sys（尾部追加，M-W10）：系统状态通告（如权限模式切换）——webui 渲染为居中
 // 分隔样式、与对话内容区分；0/缺省 = 普通对话行。
+// kind（尾部追加）：机器路由用的通告类别——"bg_run_started"=后台任务已启动、
+// "waiting"=等待后台/子代理收口；null = 普通通告。text 恒供人读，消费方的
+// 状态机只按 kind 路由、不从 text 文案反解。
+// run_id/count（尾部追加）：按 kind 语义填充（bg_run_started → run 编号 /
+// waiting → 在途数），其他类别恒 0。
 struct Notice {
     static constexpr std::string_view name = "vc.notice";
     int level = 0;
     const char* text = nullptr;
     int sys = 0;
+    const char* kind = nullptr;  // 调用期有效，要留存必须拷贝
+    long long run_id = 0;
+    int count = 0;
 };
 
 // 会话切换（webui → agent）：加载指定 state 文件（M6 格式：messages/turns/usage），

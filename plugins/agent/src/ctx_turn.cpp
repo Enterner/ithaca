@@ -229,8 +229,9 @@ void AgentCtx::dispatch_loop() {
     for (const auto& [rid, run] : runs_)
         if (!run.exited) all_exited = false;
     if (all_exited && child_pends_.empty()) return try_finish_tools();
-    notice("等待 " + std::to_string(runs_.size() + child_pends_.size()) +
-           " 个后台任务/子代理完成…");
+    const int pending = static_cast<int>(runs_.size() + child_pends_.size());
+    notice_meta("等待 " + std::to_string(pending) + " 个后台任务/子代理完成…",
+                "waiting", 0, pending);
 }
 
 // 单条调用分发（dispatch_loop 的 try 保护体）：emit 调用卡 → 内置工具拦截 →
@@ -319,7 +320,8 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
     // 本条消息的其余工具照常分发（runner 侧并发、run_id 归流）。
     if (const int rid = parse_run_id(ctx.result); rid > 0) {
         runs_[rid] = AsyncRun{dispatched_ - 1, "", false, 0};
-        notice("后台任务 run#" + std::to_string(rid) + " 已启动");
+        notice_meta("后台任务 run#" + std::to_string(rid) + " 已启动",
+                    "bg_run_started", rid);
     }
     return false;
 }

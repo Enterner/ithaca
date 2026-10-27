@@ -154,14 +154,32 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
     // 结果摘要人话化：apply → 「路径（新文件/N 处编辑）+A −B」；run → 「exit N｜首行」；
     // 失败 → 首条错误点名。解析不出就回退原 JSON 截断（前向兼容）
     nostos::kit::Scratch scratch;
+    // 后台受理 ack 的归属信号随事件下发（ToolResult 尾部追加 run_id 字段）——
+    // 消费方按字段建「调用行 ↔ run」映射，不从 brief 文案反解。仅 ack 形态
+    // （run_id>0 且无 exit_code）填充——前台执行一次性完成，无归属意义
+    long long ack_run = 0;
+    {
+        const json r = json::parse(brief, nullptr, /*allow_exceptions=*/false);
+        if (r.is_object() && r.value("run_id", 0) > 0 && !r.contains("exit_code"))
+            ack_run = r.value("run_id", 0LL);
+    }
     const vc_api::ToolResult e{turn_no_, scratch.hold(name), ok ? 1 : 0,
-                               scratch.hold(summarize_result(tool_last(name), brief))};
+                               scratch.hold(summarize_result(tool_last(name), brief)),
+                               ack_run};
     host_.emit(vc_api::tool_result, &e);
 }
 
 void AgentCtx::notice(const std::string& text, int sys) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
     const vc_api::Notice e{2, text.c_str(), sys};
+    host_.emit(vc_api::notice, &e);
+}
+
+void AgentCtx::notice_meta(const std::string& text, std::string_view kind,
+                           long long run_id, int count) {
+    if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
+    const std::string k(kind);   // 事件载荷调用期有效——拷贝保活到 emit 返回
+    const vc_api::Notice e{2, text.c_str(), 0, k.c_str(), run_id, count};
     host_.emit(vc_api::notice, &e);
 }
 
