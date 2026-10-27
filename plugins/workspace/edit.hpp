@@ -182,6 +182,15 @@ inline bool validate_op(const EditOp& op, const std::string* current, FileEdit& 
 // **不用模型原文**——路径写法变体（"./x"、大小写、反斜杠）指向同一真实文件，
 // 按原文做键会让编辑静默丢失。同文件多 op 折叠为一条
 // planned（before=批前原状，after=末次结果，ops_count 计数），diff 随之只出一张。
+inline ApplyResult rejected_midway(ApplyResult r, std::vector<FileEdit> planned,
+                                   int index, const std::string& path,
+                                   const std::string& message) {
+    r.ok = false;
+    r.errors.push_back({index, path, message});
+    r.edits = std::move(planned);
+    return r;
+}
+
 inline ApplyResult apply_ops(const Jail& jail, TextStore& store, const std::vector<EditOp>& ops,
                              bool dry_run) {
     ApplyResult r;
@@ -259,11 +268,25 @@ inline ApplyResult apply_ops(const Jail& jail, TextStore& store, const std::vect
     // 回滚原语：内核 Scope（plugin_scope.hpp 门面，F9 落地）。每个首次触碰的文件
     // 登记一个 defer（成功后 committed=true 使其变空操作）；失败 ⇒ undo.reset()
     // 逆序全量还原。
+    // 写前 dirty-check：校验（读 before）与写盘之间文件可能被外部改动（runner 里
+    // 的命令/用户编辑器——agent 的命令就在同一工作区跑）。静默覆盖会①丢外部改动
+    // ②让 diff/撤销快照记错原状（undo 把外部编辑一起抹掉）。现盘 ≠ before ⇒ 拒绝
+    // 本批（零写盘），错误点名让模型重读后再改。
     nostos::Scope undo;
     bool committed = false;
     std::vector<std::wstring> touched;  // 首次触碰去重（还原依据 = 批前原状）
     for (std::size_t k = 0; k < planned.size(); ++k) {
         const FileEdit& edit = planned[k];
+        if (!edit.is_new || store.exists(edit.full)) {
+            std::string now;
+            const bool still = store.read(edit.full, now);
+            if (!still)
+                return rejected_midway(r, std::move(planned), k, edit.path,
+                                       "文件在编辑期间被删除（外部改动）——请重读后再改");
+            if (now != edit.before)
+                return rejected_midway(r, std::move(planned), k, edit.path,
+                                       "文件在编辑期间被外部修改——本批拒绝以免覆盖外部改动，请重读后再改");
+        }
         if (std::find(touched.begin(), touched.end(), edit.full) == touched.end()) {
             touched.push_back(edit.full);
             std::wstring full = edit.full;
