@@ -349,6 +349,118 @@ json WebuiPlugin::api_context_breakdown_() {
     return std::move(out);
 }
 
+// ---- 附件上传与会话级命令 ----------------------------------------------------
+
+// base64 解码（标准字母表 + padding；含空白容忍——浏览器 FileReader 出的是干净
+// 串，这里按宽容口径处理）。失败返回 false。
+static bool base64_decode(const std::string& in, std::string& out) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    out.clear();
+    out.reserve(in.size() / 4 * 3);
+    unsigned buf = 0;
+    int bits = 0;
+    for (const char c : in) {
+        if (c == '=') break;
+        const int v = val(c);
+        if (v < 0) {
+            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+            return false;
+        }
+        buf = (buf << 6) | static_cast<unsigned>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((buf >> bits) & 0xFF));
+        }
+    }
+    return true;
+}
+
+/// POST /api/upload {name, data(base64)} → 附件落盘到工作区 .ithaca/uploads/，
+/// 返回 {ok, path}（jail 内相对路径——附件的后续消费走 read 工具）。
+/// 直接写盘不经 apply 提案：上传是用户自己的文件进场，不是对既有内容的修改。
+/// select 线程只解析，写盘在宿主线程闭包（webui 数据面纪律同其他端点）。
+http::Response WebuiPlugin::api_upload_(const http::Request& req) {
+    try {
+        json in = parse_body_(req.body);
+        std::string name = in.value("name", "");
+        const std::string data = in.value("data", "");
+        // 文件名净化：只取文件名组件（防路径穿越），去 Windows 非法字符与控制符
+        {
+            const std::size_t slash = name.find_last_of("/\\");
+            if (slash != std::string::npos) name = name.substr(slash + 1);
+            std::string clean;
+            for (const unsigned char c : name)
+                if (c >= 0x20 && c != '<' && c != '>' && c != ':' && c != '"' &&
+                    c != '|' && c != '?' && c != '*')
+                    clean.push_back(static_cast<char>(c));
+            while (!clean.empty() && (clean.back() == '.' || clean.back() == ' ')) clean.pop_back();
+            name = clean;
+        }
+        if (name.empty())
+            return json_resp({{"ok", false}, {"error", "附件名为空"}});
+        if (name.size() > 120)
+            return json_resp({{"ok", false}, {"error", "附件名过长（>120 字节）"}});
+        if (data.size() > 28 * 1024 * 1024)   // base64 形态的上限（解码 ≈21MB）
+            return json_resp({{"ok", false}, {"error", "附件过大（>20MB）"}});
+        return defer_(req, [this, name = std::move(name),
+                            data = std::move(data)](std::uint64_t conn) mutable {
+            if (host_workspace_.empty())
+                return server_->respond(conn, json_resp(
+                    {{"ok", false},
+                     {"error", "没有工作区——请先发送首条消息创建会话再上传附件"}}));
+            std::string bytes;
+            if (!base64_decode(data, bytes))
+                return server_->respond(conn, json_resp(
+                    {{"ok", false}, {"error", "附件数据不是有效的 base64"}}));
+            if (bytes.size() > 20ull * 1024 * 1024)
+                return server_->respond(conn, json_resp(
+                    {{"ok", false}, {"error", "附件过大（>20MB）"}}));
+            std::error_code ec;
+            const fs::path dir = fs::path(host_workspace_) / ".ithaca" / "uploads";
+            fs::create_directories(dir, ec);
+            // 撞名加序号（在扩展名前插 " (n)"——下载的文件名习惯，不破坏类型）
+            fs::path target = dir / name;
+            const std::wstring stem = fs::path(name).stem().wstring();
+            const std::wstring ext = fs::path(name).extension().wstring();
+            for (int n = 1; fs::exists(target, ec) && n < 1000; ++n)
+                target = dir / (stem + L" (" + std::to_wstring(n) + L")" + ext);
+            std::ofstream out(target, std::ios::binary);
+            if (!out)
+                return server_->respond(conn, json_resp(
+                    {{"ok", false}, {"error", "附件写盘失败：" + target.string()}}));
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            out.close();
+            if (!out) return server_->respond(conn, json_resp(
+                {{"ok", false}, {"error", "附件写盘失败（写中途错误）：" + target.string()}}));
+            // 相对路径回前端（/ 分隔——模型与 read 工具同口径）
+            std::string rel = ".ithaca/uploads/" + target.filename().string();
+            server_->respond(conn, json_resp({{"ok", true}, {"path", rel}}));
+        });
+    } catch (const std::exception& e) {
+        return json_resp({{"ok", false}, {"error", e.what()}});
+    }
+}
+
+/// POST /api/session/cmd {cmd} → 会话级命令转发（契约尾部追加事件 vc.session.cmd；
+/// 当前 cmd=1 压缩上下文）。agent 侧按 Idle/主会话门卫受理，结果以 notice 回流。
+http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
+    json in = parse_body_(req.body);
+    const int cmd = in.value("cmd", 0);
+    return defer_(req, [this, cmd](std::uint64_t conn) {
+        const vc_api::SessionCmd e{cmd};
+        host_.emit(vc_api::session_cmd, &e);
+        server_->respond(conn, json_resp({{"ok", true}}));
+    });
+}
+
 /// POST /api/pick-folder → 原生目录对话框（独立线程弹，防模态阻塞），结果经
 /// SSE folder_picked 事件返回。ITHACA_TEST_PICK_PATH 时跳过对话框直接返回
 /// （零共享态，同步直答）。

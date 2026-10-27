@@ -181,6 +181,8 @@ private:
     http::Response api_model_(const http::Request& req);
     http::Response api_provider_models_(const http::Request& req);   // 拉平台模型清单（SSE 回发）
     json api_context_breakdown_();   // 上下文构成分解（悬停指示器的数据源）
+    http::Response api_upload_(const http::Request& req);   // 附件上传（base64 → 工作区 .ithaca/uploads）
+    http::Response api_session_cmd_(const http::Request& req);   // 会话级命令（vc.session.cmd 转发）
     http::Response api_pick_folder_(const http::Request& req);
     json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
     http::Response api_fs_list_(const http::Request& req);

@@ -205,6 +205,9 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         port = config_.value("port", 8790);
     std::string err;
     http::ServerOptions opts;
+    // 默认 2MB 只够对话输入——附件上传走 base64 JSON（约 4/3 膨胀），按 20MB
+    // 附件上限抬到 32MB；本机回环服务，请求缓冲随请求分配，非常驻
+    opts.max_request = 32ull * 1024 * 1024;
     server_ = std::make_shared<http::Server>(static_cast<std::uint16_t>(port), *this,
                                              opts, &err);
     if (server_ == nullptr || !server_->ok()) {
@@ -302,6 +305,8 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/session/rename") return api_session_rename_(req);
     if (m == "POST" && t == "/api/input") return api_input_(req);
     if (m == "POST" && t == "/api/decision") return api_decision_(req);
+    if (m == "POST" && t == "/api/upload") return api_upload_(req);
+    if (m == "POST" && t == "/api/session/cmd") return api_session_cmd_(req);
     if (m == "POST" && t == "/api/model") return api_model_(req);
     if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req);
     if (m == "GET" && t == "/api/permission-mode") {
