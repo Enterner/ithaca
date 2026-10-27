@@ -88,6 +88,23 @@ const segWidths = computed(() => {
   return SEG_META.map(s => Math.min(100, ctxCard.value.segs[s.key] / ctxWin.value * 100))
 })
 const freePct = computed(() => Math.max(0, 100 - segWidths.value.reduce((a, b) => a + b, 0)))
+// ---- 会话用量与输出速率（卡内新增块）------------------------------------------
+// 用量源 = transcript 里 assistant 记录自带的 usage（每轮回报；provider 未回报时
+// 形状为空对象 ⇒ 全 0，重放同样可重建）。输入/输出 = 会话累计；缓存命中 = 累计
+// 命中 tokens 及占累计输入的比例（缺失时整段不显示）。速率读 S.rate——records
+// 的滚动窗口维护（含静默期归零），此处纯展示。
+const usage = computed(() => {
+  let prompt = 0, completion = 0, cache = 0
+  for (const r of S.records)
+    if (r.type === 'assistant' && r.usage && typeof r.usage.total_tokens === 'number') {
+      prompt += r.usage.prompt_tokens || 0
+      completion += r.usage.completion_tokens || 0
+      cache += r.usage.cache_tokens || 0
+    }
+  return { prompt, completion, cache }
+})
+const cachePct = computed(() =>
+  usage.value.prompt > 0 ? Math.round(usage.value.cache / usage.value.prompt * 100) : 0)
 function segCount(key) {
   const c = (ctxCard.value && ctxCard.value.counts) || {}
   if (key === 'tool') {
@@ -205,6 +222,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
                 <span class="pc">{{ (ctxCard.segs[s.key] / Math.max(1, ctxCard.total) * 100).toFixed(1) }}%</span>
               </div>
             </div>
+            <!-- 会话用量（输入含缓存命中 / 输出）+ 输出速率：原左下角速率行与
+                 侧栏「累计 tokens」的收编处——计量语境都在上下文卡里 -->
+            <div class="usage">
+              <div class="urow">
+                <span class="ulab">输入</span><b class="un">{{ fmt(usage.prompt) }}</b>
+                <small v-if="usage.cache" class="uextra">缓存命中 {{ fmt(usage.cache) }}（{{ cachePct }}%）</small>
+              </div>
+              <div class="urow">
+                <span class="ulab">输出</span><b class="un">{{ fmt(usage.completion) }}</b>
+                <small class="uextra">速率 {{ S.rate }} tok/s</small>
+              </div>
+            </div>
             <div class="foot">
               <span><span class="est">分段估算</span><template v-if="!ctxCard.measured">（无实测回报，总量同为估算）</template></span>
               <span>余量 <b :class="{ red: ctxHot }">{{ fmt(Math.max(0, ctxSizeOf(S.model) - ctxCard.total)) }} tok</b></span>
@@ -222,6 +251,5 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
     </div>
     </div>
-    <div class="rate">输出速率 <b>{{ S.rate }}</b> tok/s</div>
   </div>
 </template>

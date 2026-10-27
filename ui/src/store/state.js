@@ -17,7 +17,6 @@ export const S = reactive({
   sessions: [], curSession: '', curWs: '', sessTitle: '',
   draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
-  fTurns: 0, fTokens: 0,
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
   // 代码查看器（右栏文件态 ⇄ 查看态）：{path, content, truncated, loading, error}；
   // null = 右栏显示文件树。纯展示态——内容由 App.vue 经 /api/fs/read 拉取，不经 actions 层
@@ -51,7 +50,6 @@ export const X = {
   turnEdits: new Map(),   // 当前轮编辑聚合（apply/applied 累计，flushTurnEdits 结算）
   turnEditsTurn: 0,
   lastTurnId: null,       // 轮次边界判定（turn_id 变化 ⇒ 结算汇总卡）
-  turnStart: 0, turnChars: 0,   // 输出速率窗口（liveStart 起表）
   runs: new Map(),        // run_id → 输出块 {lines, exit, failed}（输出折叠进调用行，见 records）
   runCall: new Map(),     // run_id → 归属的 runner.run 调用行（「已启动」通告时配对）
 }

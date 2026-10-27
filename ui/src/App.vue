@@ -4,7 +4,7 @@
 // （头部按钮或 Ctrl+B），全屏/缩小时栏宽不变、内容区自适应。
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { NConfigProvider, NTooltip, darkTheme } from 'naive-ui'
-import { S, boot, pickFolder, newSession, fetchFile, fmtK } from './store'
+import { S, boot, pickFolder, newSession, fetchFile } from './store'
 import { themeOverrides } from './theme'
 import Sidebar from './components/Sidebar.vue'
 import Stream from './components/Stream.vue'
@@ -94,7 +94,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
       <button class="new-chat" @click="newSession()">+ 新会话</button>
       <Sidebar style="display:flex; flex-direction:column; min-height:0; flex:1;" />
-      <!-- 齿轮与统计同行（行内布局）：曾绝对定位 bottom:30px，与 side-foot 的 border-top 重叠 -->
+      <!-- 齿轮（行内布局）：曾绝对定位 bottom:30px，与 side-foot 的 border-top 重叠；
+           会话累计 tokens 已并入输入栏的上下文构成卡（那里才是语境所在） -->
       <div class="side-foot">
         <n-tooltip placement="top" :show-arrow="false">
           <template #trigger>
@@ -102,7 +103,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
           </template>
           设置
         </n-tooltip>
-        <span>累计 <b>{{ fmtK(S.fTurns) }}</b> 轮，<b>{{ fmtK(S.fTokens) }}</b> tokens</span>
       </div>
       <div class="side-drag" title="拖拽调宽" @mousedown="startDrag"></div>
     </aside>

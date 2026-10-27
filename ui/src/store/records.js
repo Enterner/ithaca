@@ -173,8 +173,7 @@ export function render(rec) {
       //（思考体的跟随滚动由 Stream.vue 接管——内部滚，不动页面）
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
       S.live.text += rec.text
-      X.turnChars += rec.text.length
-      S.rate = String(Math.round(X.turnChars / Math.max(1, (Date.now() - X.turnStart) / 1000)))
+      pushRateSample(rec.text)
       return
     case 'assistant_reasoning':
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
@@ -192,8 +191,6 @@ export function render(rec) {
       S.rate = '0'
       if (rec.usage && rec.usage.total_tokens) {
         S.lastPrompt = rec.usage.prompt_tokens || 0
-        S.fTokens += rec.usage.total_tokens
-        S.fTurns += 1
       }
       { const done = rec.turn_done !== undefined ? rec.turn_done : !!rec.text
         if (done) flushTurnEdits() }
@@ -350,6 +347,36 @@ export function render(rec) {
   }
 }
 
+// ---- 输出速率（滚动窗口）------------------------------------------------------
+// tok/s ≈ 增量字符的粗估折算（ASCII ≈ 4 字符/token、CJK ≈ 0.7 token/字，与后端
+// breakdown 的 utf8_tokens 同口径）在 6s 滚动窗口上的均值。整轮平均会随轮变长被
+// 稀释成「平均速度」；滚动窗口才是「当前输出速度」。SSE 静默期（思考/工具执行）
+// 无增量，由周期器把窗口排空归零。
+const RATE_WIN_MS = 6000
+const rateSamples = []   // { t: 采样时刻, k: 该增量的粗估 token 数 }
+function rateTok(text) {
+  let ascii = 0, non = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.codePointAt(i)
+    if (c > 0xffff) i++   // 代理对按一个码点计
+    if (c < 0x80) ascii++; else non++
+  }
+  return ascii / 4 + non * 0.7
+}
+function computeRate() {
+  const now = Date.now()
+  while (rateSamples.length && now - rateSamples[0].t > RATE_WIN_MS) rateSamples.shift()
+  if (!rateSamples.length) { S.rate = '0'; return }
+  const span = Math.max(1, Math.min(RATE_WIN_MS, now - rateSamples[0].t))
+  const toks = rateSamples.reduce((a, s) => a + s.k, 0)
+  S.rate = String(Math.round(toks / (span / 1000)))
+}
+function pushRateSample(text) {
+  rateSamples.push({ t: Date.now(), k: rateTok(text) })
+  computeRate()
+}
+setInterval(computeRate, 500)   // 静默期归零；后台标签页被节流也无碍（回来即纠正）
+
 // ---- 数据通道 ----------------------------------------------------------------
 
 /** 重放/补洞：HTTP 拉取 after 起的记录并逐条渲染（SSE 只管实时）。 */
@@ -367,7 +394,8 @@ export async function pollOnce() {
   } catch (e) { /* 对账端点失联：游标已推进，下次补洞继续 */ }
 }
 
-/** 发送即开始计时（输出速率窗口）。 */
+/** 发送即重置速率窗口（上轮残留不清会把旧速度带进新轮的开头）。 */
 export function liveStart() {
-  X.turnStart = Date.now(); X.turnChars = 0
+  rateSamples.length = 0
+  S.rate = '0'
 }
