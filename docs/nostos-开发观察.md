@@ -4,23 +4,25 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：全仓代码审查修复 · 2026-10-28）
+## 当前发现（批次：对话流顺序修复与上下文卡聚合 · 2026-10-28）
 
-两条 kit 职责边界内的方向（触发场景：审查收编「kit 已有件仍手写」与同仓重复实现时撞上）：
+两条总线/投递语义层的方向（触发场景：修「工具调用记录恒落在思考块上方」撞上）：
 
-- **kit::win 可补「可中断睡眠」小件**：webui prober 与 shell WorkerLoop 各手写
-  「20×100ms 分片睡眠 + 每片查停机旗标」——阻塞探测线程不能用宿主 poster/timer
-  （http_fetch 800ms 超时不能占宿主排水），kit 若提供 `sleep_until(flag, ms)`
-  形态的原语，两处手写可收编。不紧迫（两处共 ~6 行）， Listed 供内核节奏裁决。
-- **env 块构建小件**：shell 的 BuildEnvBlock 与 runner proc.hpp 的
-  sandbox_env_block 同仓两份手写 GetEnvironmentStringsW 遍历合并——kit 的
-  env 覆盖埋在 PipedProcess 内部，裸 CreateProcessW 的调用方（壳直启宿主、
-  沙箱自构 env）复用不了；kit::win 若出一个「父 env + overrides → env 块」
-  的纯函数，两份收敛一份。
+- **EventHub 同步递归派发的兄弟订阅者顺序无文档化保证**：llm_done 的订阅者
+  （agent）在其回调内同步 emit 工具事件，另一订阅者（webui）能否先看到 llm_done
+  完全取决于插件装载顺序——产品侧已用 poster 把 dispatch 推迟一拍绕开，但这是
+  「结果序正确、语义靠约定」的 workaround。内核若在 EventHub 文档里写明「回调内
+  emit 的事件在当前事件对全部订阅者派发完成后才可见」或提供显式的「当前事件排空
+  后再派发」原语，跨插件的事件因果序就不必靠装载顺序与推迟一拍维持。
+- **poster 缺 owner 级失效原语**：闭包捕获 `this` 后只有 end_session 的整会话
+  on_drop 一级回收——agent 子会话 ctx 随 turn 销毁（children_ 唯一指针），这类
+  短命对象投 poster 不安全（析构后闭包仍可能执行），产品侧只能把推迟一拍收窄到
+  「与插件同生命周期的主 ctx」。poster 若支持 owner 绑定（owner 作废时未执行任务
+  逐条丢弃，复用现有 dispose 通路），子会话分发等一切亚生命周期投递都能安全化。
 
-产品侧已自行收编、无需内核动的同类项（留档供对照）：llm_cloud 的 SseParser
-已收编 kit::LineSplitter（逐字符相同的私有拷贝清退）；webui/shell 的宽窄字符
-转换已收编 kit::win；一发 HTTP 已收编 kit::win::http_fetch。
+**挂账（上一批两条 kit 小件，未落地维持观察）**：kit::win 可中断睡眠小件
+（prober/shell 各手写分片睡眠查旗标）与 env 块构建纯函数（shell/runner 两份
+GetEnvironmentStringsW 合并）——细节随 git 历史（fe994c4）。
 
 **挂账：runner shell 路线调研与 MXC 观察项（2026-10-27，仍有效）**
 
