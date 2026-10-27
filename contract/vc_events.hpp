@@ -100,6 +100,11 @@ struct ToolCall {
     int turn_id = 0;
     const char* tool = nullptr;        // "workspace.apply" 形态（<工具表名>.<工具名>）
     const char* args_brief = nullptr;  // 参数摘要，调用期有效
+    // 尾部追加：完整调用参数（compact JSON 文本，调用期有效；超长截断，尾部带
+    // 截断标记）。UI「工具调用展开详情」的数据源——args_brief 是一行卡的人话
+    // 摘要，本字段供展开后的原始形态。null/空 = 无参数或旧生产者组合（消费方
+    // 以非空探测，缺失时只显示摘要）。
+    const char* args_json = nullptr;
 };
 struct ToolResult {
     static constexpr std::string_view name = "vc.tool.result";

@@ -137,7 +137,14 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // task 调用卡不落对话流：spawn 卡与其同信息（描述/类型全含），一次派发
     // 只显示一张卡（对齐成熟 CLI 的单 Task 块形态）
     if (tool_last(name) == "task") return;
-    const vc_api::ToolCall e{turn_no_, scratch.hold(name), scratch.hold(brief)};
+    // 调用参数原始形态（UI 展开详情的数据源，ToolCall 尾部追加字段）：compact
+    // dump + 8KB 护栏截断（按码点切，防劈开 UTF-8）。展开是低频动作，详情超长
+    // 只会拖累落盘与重放；截断尾巴带标记，前端解析不了 JSON 就按原文显示
+    std::string args_json = args.dump();
+    if (args_json.size() > 8192)
+        args_json = vcws::trim_utf8(args_json, 8192) + "\n…（参数过长，已截断）";
+    const vc_api::ToolCall e{turn_no_, scratch.hold(name), scratch.hold(brief),
+                             scratch.hold(args_json)};
     host_.emit(vc_api::tool_call, &e);
 }
 

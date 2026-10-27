@@ -88,7 +88,10 @@ void WebuiPlugin::subscribe_() {
         const auto* e = static_cast<const vc_api::ToolCall*>(p);
         record_({{"type", "tool_call"},
                  {"tool", e->tool != nullptr ? std::string(e->tool) : ""},
-                 {"brief", e->args_brief != nullptr ? std::string(e->args_brief) : ""}});
+                 {"brief", e->args_brief != nullptr ? std::string(e->args_brief) : ""},
+                 // 调用参数原始形态（尾部追加字段；旧生产者组合为 null ⇒ 空串，
+                 // 前端以非空探测决定是否出「展开看参数」）
+                 {"args", e->args_json != nullptr ? std::string(e->args_json) : ""}});
     }));
     subs_.push_back(host_.on(vc_api::tool_result, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolResult*>(p);
