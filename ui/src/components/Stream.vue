@@ -67,6 +67,14 @@ function resRow(rec) {
                             : { text: '✗ exit ' + r.exit, warn: true })
   return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok, out: false } : null
 }
+// 每渲染周期每条调用卡只算一次结果行（模板里 7 处取用——直接调 resRow 会对
+// rec._runs 反复 reduce；Map 按 record 对象取，O(1)）
+const resRows = computed(() => {
+  const m = new Map()
+  for (const rec of S.records) if (rec.type === 'tool_call') m.set(rec, resRow(rec))
+  return m
+})
+function rowOf(rec) { return resRows.value.get(rec) ?? null }
 function toggleRunOut(rec) {
   if (rec._runs && rec._runs.length) rec._open = !rec._open
 }
@@ -127,10 +135,10 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <!-- 过程两行制：调用行（跑了什么）+ 结果行（结局，独立弱色行） -->
           <div class="toolline proc" :class="{ warn: toolFailed(rec) }" v-html="'⚙ ' + toolHtml(rec)"></div>
           <template v-if="rec.type === 'tool_call'">
-            <div v-if="resRow(rec)" class="procres"
-                 :class="{ warn: resRow(rec).warn, click: resRow(rec).out, open: rec._open }"
-                 @click="resRow(rec).out && toggleRunOut(rec)">
-              └ {{ resRow(rec).text }}<span v-if="resRow(rec).out" class="chev">▸</span>
+            <div v-if="rowOf(rec)" class="procres"
+                 :class="{ warn: rowOf(rec).warn, click: rowOf(rec).out, open: rec._open }"
+                 @click="rowOf(rec).out && toggleRunOut(rec)">
+              └ {{ rowOf(rec).text }}<span v-if="rowOf(rec).out" class="chev">▸</span>
             </div>
             <div v-if="rec._open && rec._runs && rec._runs.length" class="runout">
               <div class="runout-body">{{ runOutText(rec) }}</div>

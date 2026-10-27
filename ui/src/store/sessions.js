@@ -58,16 +58,11 @@ export async function loadSessions() {
   if (S.shell) {
     const r = await api('/api/shell/sessions')
     if (r.shell) S.sessions = r.sessions || []
-    const meta = await api('/api/session')
-    S.curSession = meta.id
-    S.curWs = meta.workspace || ''
-    sessionMeta(meta)
-    syncPendingWithServer(!!meta.pending)
-    return
+  } else {
+    S.sessions = (await api('/api/sessions')) || []
   }
-  const list = await api('/api/sessions')
+  // 元数据对齐两分支同链（meta → 顶栏/统计/决策坞门卫）
   const meta = await api('/api/session')
-  S.sessions = list || []
   S.curSession = meta.id
   S.curWs = meta.workspace || ''
   sessionMeta(meta)

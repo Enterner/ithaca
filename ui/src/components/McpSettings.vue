@@ -18,7 +18,7 @@ const cur = () => servers.value[sel.value]
 
 async function load() {
   const cfg = await api('/api/config')
-  servers.value = JSON.parse(JSON.stringify(cfg.mcp?.servers || []))
+  servers.value = structuredClone(cfg.mcp?.servers || [])
   await refreshStatus()
 }
 async function refreshStatus() {

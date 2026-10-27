@@ -4,7 +4,7 @@
 import { S, X } from './state'
 import { api, shellMsg } from './api'
 import { mdHtml } from '../md'
-import { diffFiles, diffStats, diffIsNew } from '../diff'
+import { diffFiles, diffStats, diffIsNew, parseAppliedDiff } from '../diff'
 import { loadSessions, enterDraft, resetView } from './sessions'
 
 function push(rec) { S.records.push(rec) }
@@ -63,29 +63,19 @@ function runBlock(runId) {
 
 // ---- 汇总卡聚合（edit-diff 批次语义）-----------------------------------------
 
-// applied 的 diff_text = 每文件一段「── path（N 处编辑）\n<diff>」；按段头切开，
-// 段序与 paths/files 一致，段体 = 该文件的 hunk diff（不含段头）。
-function splitAppliedDiff(diffText) {
-  const segs = []
-  let cur = null
-  for (const line of diffText.split('\n')) {
-    if (line.startsWith('── ')) { if (cur) segs.push(cur); cur = [] }
-    else if (cur) cur.push(line)
-  }
-  if (cur) segs.push(cur)
-  return segs.map((g) => g.join('\n'))
-}
+// applied 的 diff_text = 每文件一段「── path（N 处编辑）\n<diff>」，切段与
+// 路径提取统一走 diff.js 的 parseAppliedDiff（单点）
 function accumulateApplied(rec) {
   // 统计与 is_new 以事件的结构化字段为准（EditApplied.files_json）——diff_text 是
   // 展示文本且可能被 8KB 护栏截断（截断砍掉的是文本尾行统计，从它反解会让大
   // diff 的修改卡恒 +0−0，踩过）；旧记录（历史 transcript 重放，无 files 字段）
   // 回退展示文本反解。
   const structured = Array.isArray(rec.files) && rec.files.length ? rec.files : null
-  const bodies = splitAppliedDiff(rec.diff || '')
+  const segs = parseAppliedDiff(rec.diff || '')
   if (structured) {
     structured.forEach((f, i) => {
       const e = X.turnEdits.get(f.path) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
-      e.applies.push(bodies[i] ?? '')
+      e.applies.push(segs[i]?.body ?? '')
       e.n++
       e.add += f.add || 0
       e.rem += f.rem || 0
@@ -94,12 +84,11 @@ function accumulateApplied(rec) {
     })
   } else {
     const st = diffStats(rec.diff) || { add: 0, rem: 0 }
-    const m = (rec.diff || '').match(/^── (.+)$/m)
     const paths = rec.paths || []
-    const p = paths.length === 1 ? paths[0] : (m ? m[1].replace(/（[^）]*）\s*$/, '').trim() : '?')
+    const p = paths.length === 1 ? paths[0] : (segs[0]?.path ?? '?')
     const isNew = diffIsNew(rec.diff || '')
     const e = X.turnEdits.get(p) || { applies: [], n: 0, add: 0, rem: 0, isNew: false }
-    e.applies.push(bodies[0] ?? (rec.diff || ''))
+    e.applies.push(segs[0]?.body ?? (rec.diff || ''))
     e.n++
     e.add += st.add
     e.rem += st.rem

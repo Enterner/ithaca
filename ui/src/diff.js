@@ -37,13 +37,23 @@ export function diffStats(diffText) {
 export function diffIsNew(diffText) {
   return diffText.includes('@@ -0,0 +')
 }
+/** applied/proposal 的 diff_text → [{path, body}]：按段头「── path（…）」切开，
+ * path 去括号尾，body = 该文件的 hunk diff（不含段头）。段序与文件序一致；
+ * 路径提取/去括号的规则单点在此——records 聚合与逐文件批准共用。 */
+export function parseAppliedDiff(diffText) {
+  const segs = []
+  let cur = null
+  for (const line of (diffText || '').split('\n')) {
+    if (line.startsWith('── ')) {
+      if (cur) segs.push(cur)
+      cur = { path: line.substring(3).replace(/（[^）]*）\s*$/, '').trim(), body: [] }
+    } else if (cur) cur.body.push(line)
+  }
+  if (cur) segs.push(cur)
+  return segs.map((s) => ({ path: s.path, body: s.body.join('\n') }))
+}
 export function diffFiles(diffText) {   // "── path（…）" 行 → 路径数组（逐文件批准用）
-  const files = []
-  diffText.split('\n').forEach((l) => {
-    if (l.startsWith('── '))
-      files.push(l.substring(3).replace(/（[^）]*）\s*$/, '').trim())
-  })
-  return files
+  return parseAppliedDiff(diffText).map((s) => s.path)
 }
 export function stripHeads(diffText) {   // 多文件提案：头部行改由 Vue 复选框渲染
   return diffText.split('\n').filter(l => !l.startsWith('──')).join('\n')

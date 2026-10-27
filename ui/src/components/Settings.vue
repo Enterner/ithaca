@@ -139,8 +139,9 @@ watch(() => S.provModelsEvt, (e) => {
 })
 
 async function openPanel() {
-  // 从 store 深拷贝；api_key 输入框恒空（后端掩码，留空=保留旧值）
-  detail.value = JSON.parse(JSON.stringify(S.providers)).map(p => ({ ...p, api_key: '', models: p.models || [] }))
+  // 从 store 深拷贝（structuredClone：纯数据，JSON 往返对 undefined/循环引用更脆）；
+  // api_key 输入框恒空（后端掩码，留空=保留旧值）
+  detail.value = structuredClone(S.providers).map(p => ({ ...p, api_key: '', models: p.models || [] }))
   curName.value = S.current
   provSel.value = Math.max(0, detail.value.findIndex(p => p.name === S.current))
   inferPreset()   // 模板选择器显示与当前 base_url 匹配的平台（切换供应商时经 watch 跟随）

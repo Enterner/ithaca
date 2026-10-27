@@ -81,8 +81,13 @@ export async function setModel(model, provider) {
   const body = { model }
   if (provider) body.provider = provider
   const r = await api('/api/model', body)
-  if (r.ok) cfgFromServer(await api('/api/config'))
+  if (r.ok) await reloadConfig()
 }
+/** 重新拉取 /api/config 并对齐前端形状（setModel/saveConfig/savePluginVals 共用）。 */
+async function reloadConfig() {
+  cfgFromServer(await api('/api/config'))
+}
+
 /** 权限模式切换（通告由 agent 在值真正变化时发，这里不重复发）。 */
 export async function setMode(mode) {
   await api('/api/permission-mode', { mode })
@@ -99,7 +104,7 @@ export async function saveConfig(providers, current) {
   }
   const r = await api('/api/config', body)
   if (!r.ok) return { ok: false, error: r.error }
-  cfgFromServer(await api('/api/config'))   // 与后端对齐（掩码/回落）
+  await reloadConfig()   // 与后端对齐（掩码/回落）
   loadSessions()   // 成功反馈 = 面板关闭；不向对话流插行
   return { ok: true }
 }
@@ -121,6 +126,6 @@ export async function loadPluginUi() {
 /** 保存各插件设置值（plugins 节整节回传；后端透传并触发对应插件 reload）。 */
 export async function savePluginVals() {
   const r = await api('/api/config', { plugins: S.pluginVals })
-  if (r.ok) cfgFromServer(await api('/api/config'))   // 与磁盘对齐（防并发漂移）
+  if (r.ok) await reloadConfig()   // 与磁盘对齐（防并发漂移）
   return r
 }

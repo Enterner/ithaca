@@ -21,57 +21,45 @@ const curWs = computed(() => S.curWs ? S.curWs : '(未设置)')
 // 点击主会话的子代理卡 ⇒ 右栏自动展开到过程视图
 watch(() => S.subView, (v) => { if (v) filesOpen.value = true })
 
-// ---- 会话栏折叠/调宽（VSCode 式）---------------------------------------------
-const sideW = ref(248)
-const collapsed = ref(false)
-try {
-  const saved = JSON.parse(localStorage.getItem('vcSidebar') || '{}')
-  if (saved.w >= 180 && saved.w <= 420) sideW.value = saved.w
-  collapsed.value = !!saved.collapsed
-} catch (e) {}
-function persistSide() {
-  localStorage.setItem('vcSidebar', JSON.stringify({ w: sideW.value, collapsed: collapsed.value }))
-}
-function toggleSide() { collapsed.value = !collapsed.value; persistSide() }
-function startDrag(e) {   // 拖拽右缘调宽
-  e.preventDefault()
-  const move = (ev) => { sideW.value = Math.min(420, Math.max(180, ev.clientX)) }
-  const up = () => {
-    window.removeEventListener('mousemove', move)
-    window.removeEventListener('mouseup', up)
-    persistSide()
+// ---- 左右栏的宽度/折叠记忆与拖拽（两栏同构，一个工厂出两套）----------------
+// 差异只在持久化键、边界、指针→宽度换算与布尔字段名（左栏存 collapsed、右栏
+// 存 open——沿用旧 localStorage 形态，升级不清掉用户的既有记忆）
+function makePane({ lsKey, field, init, min, max, calc, initFlag }) {
+  const w = ref(init)
+  const on = ref(initFlag)
+  try {
+    const saved = JSON.parse(localStorage.getItem(lsKey) || '{}')
+    if (saved.w >= min && saved.w <= max) w.value = saved.w
+    on.value = !!saved[field]
+  } catch (e) {}
+  function persist() { localStorage.setItem(lsKey, JSON.stringify({ w: w.value, [field]: on.value })) }
+  function toggle() { on.value = !on.value; persist() }
+  function startDrag(e) {
+    e.preventDefault()
+    const move = (ev) => { w.value = Math.min(max, Math.max(min, calc(ev))) }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      persist()
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
   }
-  window.addEventListener('mousemove', move)
-  window.addEventListener('mouseup', up)
+  return { w, on, toggle, startDrag }
 }
+// 会话栏（拖右缘调宽）与文件树右栏（栏在右侧：宽 = 窗口宽 - 指针 x，拖左缘）
+const { w: sideW, on: collapsed, toggle: toggleSide, startDrag } = makePane({
+  lsKey: 'vcSidebar', field: 'collapsed', init: 248, min: 180, max: 420,
+  calc: (ev) => ev.clientX, initFlag: false,
+})
+const { w: filesW, on: filesOpen, toggle: toggleFiles, startDrag: startFilesDrag } = makePane({
+  lsKey: 'vcFiles', field: 'open', init: 232, min: 200, max: 1000,
+  calc: (ev) => window.innerWidth - ev.clientX, initFlag: false,
+})
 function onWinKey(e) {
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
     toggleSide(); e.preventDefault()
   }
-}
-
-// ---- 文件树右栏（可折叠/可拖宽，与左栏同构；只读视图）------------------------
-const filesW = ref(232)
-const filesOpen = ref(false)   // 默认收起（用户拍板）；localStorage 显式存 true 才展开
-try {
-  const saved = JSON.parse(localStorage.getItem('vcFiles') || '{}')
-  if (saved.w >= 200 && saved.w <= 1000) filesW.value = saved.w
-  filesOpen.value = !!saved.open
-} catch (e) {}
-function persistFiles() {
-  localStorage.setItem('vcFiles', JSON.stringify({ w: filesW.value, open: filesOpen.value }))
-}
-function toggleFiles() { filesOpen.value = !filesOpen.value; persistFiles() }
-function startFilesDrag(e) {   // 拖左缘调宽（栏在右侧：宽 = 窗口宽 - 指针 x）
-  e.preventDefault()
-  const move = (ev) => { filesW.value = Math.min(1000, Math.max(200, window.innerWidth - ev.clientX)) }
-  const up = () => {
-    window.removeEventListener('mousemove', move)
-    window.removeEventListener('mouseup', up)
-    persistFiles()
-  }
-  window.addEventListener('mousemove', move)
-  window.addEventListener('mouseup', up)
 }
 
 // ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
