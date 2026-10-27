@@ -154,7 +154,14 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
     };
     freePort(8794);
     freePort(8795);
-    await new Promise((r) => setTimeout(r, 800));
+    // 等事实不等时间：taskkill 后端口要等 OS 收尾才可重绑——轮询 netstat 直到
+    // 两端点都无 LISTENING（固定 sleep 在慢机/负载下不够，踩过：残留监听吃住
+    // 8794 ⇒ webui 回退随机端口，baseA 失配整用例空转）
+    for (let i = 0; i < 50; i++) {
+        const out = spawnSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8" }).stdout ?? "";
+        if (!out.split("\n").some((l) => /:(8794|8795) /.test(l) && l.includes("LISTENING"))) break;
+        await new Promise((r) => setTimeout(r, 100));
+    }
 
     // 现场双实例共享 manifest（聚合端点按 manifest.parent/hosts/<key> 解析实例 home）
     const dir = path.join(root, "tests", ".tmp", "switch");
