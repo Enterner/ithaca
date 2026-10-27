@@ -110,8 +110,6 @@ private:
     void start_server_(const std::string& name, const std::string& command,
                        const std::vector<std::string>& args, const json& env,
                        const std::string& cwd);
-    // 插件 UI 贡献：向 webui 声明本插件设置 schema（握手/调用超时）
-    void emit_ui_register_();
 
     // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；mu_ 串行化）-------
 

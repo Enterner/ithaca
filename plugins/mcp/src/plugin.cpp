@@ -32,10 +32,6 @@ nostos_status McpPlugin::activate(const nostos::abi::Host& host) {
     }
     // 配置热重载（设置面板保存 → webui 发 vc.mcp.reload）
     subs_.push_back(host_.on(vc_api::mcp_reload, [this](const void*) { reload_async_(); }));
-    // 插件 UI 贡献：activate 时声明设置 schema；webui 后启动的场景由
-    // vc.ui.query 补拉（收到即重发）。载荷为静态串，调用期有效纪律天然满足。
-    subs_.push_back(host_.on(vc_api::ui_query, [this](const void*) { emit_ui_register_(); }));
-    emit_ui_register_();
     reload_async_();   // 后台拉起：MCP 是可选能力，绝不阻塞宿主激活与后续插件
     return NOSTOS_OK;
 }
@@ -65,17 +61,10 @@ void McpPlugin::deactivate() noexcept {
     host_.log(2, "ithaca.mcp: 已停用");
 }
 
-// 插件 UI 贡献：本插件设置 schema——握手/调用超时（ms）。webui 据此
-// 动态生成设置节，值存 config.json 的 plugins.mcp（本插件启动/reload 时读取）。
-void McpPlugin::emit_ui_register_() {
-    static constexpr const char* kSchema =
-        R"([{"key":"init_timeout_ms","label":"握手超时（毫秒）","type":"number","default":30000},)"
-        R"({"key":"call_timeout_ms","label":"工具调用超时（毫秒）","type":"number","default":120000}])";
-    const vc_api::UiRegister e{"mcp", "MCP 超时", kSchema};
-    host_.emit(vc_api::ui_register, &e);
-}
-
 // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；mu_ 串行化）-------
+// NOTE: 不再贡献设置 UI（原「MCP 超时」节已撤）——超时回落内置默认值，
+// config.json 的 plugins.mcp.init_timeout_ms/call_timeout_ms 手改仍生效
+// （config.cpp 读取面不变）。
 
 void McpPlugin::emit_status_() {
     // 停用后不再回发/落盘：deactivate 清场期间在飞的 reload 线程可能走到这里
