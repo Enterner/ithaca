@@ -22,6 +22,11 @@
 // （records_/session_/pending_turn_/index_/out_/agent_logs_*/ui_registry_/
 // config_ 等）全部收敛宿主线程：poster 闭包与事件回调同经宿主排水串行化，
 // 无共享无锁（data_mu_ 已随迁移退役）。prober 线程自持 probe_mu_ 守护探测缓存。
+// 例外：两条一次性 detach 线（供应商模型清单、选目录对话框）——网络往返/模态
+// 对话框不能占宿主排水，停机也不可为它们 join（对话框要等人点）。停机纪律 =
+// 线程对插件零触碰：spawn 前在宿主线程快照 server_（shared_ptr 值捕获），广播
+// 直调快照；deactivate 的 server_.reset() 与之无竞态（快照保活，stop 后
+// broadcast 为 no-op——连接表已清）。
 
 #pragma once
 
@@ -186,7 +191,8 @@ private:
 
     nostos::abi::Host host_{};
     nostos_poster poster_{};
-    std::shared_ptr<http::Server> server_;   // shared：pick 线程持有引用防悬垂
+    std::shared_ptr<http::Server> server_;   // deactivate reset；两条 detach 线
+        // spawn 前各自快照持引用（线程纪律见文件头）
     std::vector<nostos::abi::Host::Subscription> subs_;
 
     const vc_api::LlmTable* llm_ = nullptr;     // activate 时解析（模型热切用）

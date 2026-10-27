@@ -222,7 +222,11 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
             return server_->respond(conn, json_resp(
                 {{"ok", false},
                  {"error", "API Key 为空——先粘贴 key，或该供应商已保存过 key"}}));
-        std::thread([this, base = std::move(base), key = std::move(key)] {
+        // 停机纪律（见 webui_plugin.hpp 文件头）：detach 线对插件零触碰——spawn
+        // 前在宿主线程快照 server_ 值捕获，广播直调快照；deactivate 的 reset 不
+        // 与本线程竞态（快照保活，stop 后 broadcast 为安全 no-op）
+        std::shared_ptr<http::Server> srv = server_;
+        std::thread([srv, base = std::move(base), key = std::move(key)] {
         // base 尾斜杠归一后拼 /models；llm_cloud 同款四段解析口径
         std::string url = base;
         while (!url.empty() && url.back() == '/') url.pop_back();
@@ -265,7 +269,7 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
         }
         json evt = {{"type", "provider_models"}};
         evt.merge_patch(result);
-        broadcast_(std::move(evt));   // kit 层线程安全（pick-folder 线程同款直调）
+        if (srv) srv->broadcast(evt.dump());   // kit 层线程安全；已停实例 = no-op
     }).detach();
         server_->respond(conn, json_resp({{"ok", true}, {"pending", true}}));
     });
@@ -369,14 +373,17 @@ http::Response WebuiPlugin::api_pick_folder_(const http::Request& req) {
     }
     return defer_(req, [this, initial = config_.value("workspace", "")](
                            std::uint64_t conn) mutable {
-        std::thread([this, initial = std::move(initial)] {
+        // 停机纪律同 api_provider_models_：快照 server_ 值捕获，零触碰插件状态
+        std::shared_ptr<http::Server> srv = server_;
+        std::thread([srv, initial = std::move(initial)] {
         HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         const bool com = SUCCEEDED(hr);
         const std::string picked =
             com ? pick_folder_dialog("选择工作文件夹", initial)
                 : std::string();
         if (com) CoUninitialize();
-        if (!picked.empty()) broadcast_({{"type", "folder_picked"}, {"path", picked}});
+        if (!picked.empty() && srv)
+            srv->broadcast(json{{"type", "folder_picked"}, {"path", picked}}.dump());
     }).detach();
         server_->respond(conn, json_resp({{"ok", true}}));
     });

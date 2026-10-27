@@ -388,7 +388,9 @@ http::Response WebuiPlugin::file_(const std::string& rel) {
     return r;
 }
 
-// 只广播不落盘（流式增量；完整内容在 LlmDone 时以 assistant 记录收口）
+// 只广播不落盘（流式增量；完整内容在 LlmDone 时以 assistant 记录收口）。
+// NOTE: detach 线禁用本函数（读 server_ 成员与停机 reset 竞态）——用 spawn 前
+// 的快照直调 Server::broadcast（停机纪律见 webui_plugin.hpp 文件头）。
 void WebuiPlugin::broadcast_(json rec) { if (server_) server_->broadcast(rec.dump()); }
 
 }  // namespace vc_webui
