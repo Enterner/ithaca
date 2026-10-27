@@ -4,11 +4,25 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：工具体验优化 · 2026-10-27）
+## 当前发现（批次：全仓代码审查修复 · 2026-10-28）
 
-本批次无可内核优化点——agent 实测反馈集中在 list/recall 工具体验，全部产品侧落地。
+两条 kit 职责边界内的方向（触发场景：审查收编「kit 已有件仍手写」与同仓重复实现时撞上）：
 
-**挂账：runner shell 路线调研与 MXC 观察项（2026-10-27）**
+- **kit::win 可补「可中断睡眠」小件**：webui prober 与 shell WorkerLoop 各手写
+  「20×100ms 分片睡眠 + 每片查停机旗标」——阻塞探测线程不能用宿主 poster/timer
+  （http_fetch 800ms 超时不能占宿主排水），kit 若提供 `sleep_until(flag, ms)`
+  形态的原语，两处手写可收编。不紧迫（两处共 ~6 行）， Listed 供内核节奏裁决。
+- **env 块构建小件**：shell 的 BuildEnvBlock 与 runner proc.hpp 的
+  sandbox_env_block 同仓两份手写 GetEnvironmentStringsW 遍历合并——kit 的
+  env 覆盖埋在 PipedProcess 内部，裸 CreateProcessW 的调用方（壳直启宿主、
+  沙箱自构 env）复用不了；kit::win 若出一个「父 env + overrides → env 块」
+  的纯函数，两份收敛一份。
+
+产品侧已自行收编、无需内核动的同类项（留档供对照）：llm_cloud 的 SseParser
+已收编 kit::LineSplitter（逐字符相同的私有拷贝清退）；webui/shell 的宽窄字符
+转换已收编 kit::win；一发 HTTP 已收编 kit::win::http_fetch。
+
+**挂账：runner shell 路线调研与 MXC 观察项（2026-10-27，仍有效）**
 
 agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探针），结论与挂账：
 
@@ -53,9 +67,9 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 | 2026-10-24 | 插件事件回调内抛出被 emit_thunk 静默吞掉、且 EventHub 派发循环无订阅者隔离——同事件其余订阅者（如 UI 落盘）不再执行、无任何痕迹（排障触发：子代理任务回灌段异常后 turn 悬停，transcript 只有调用卡没有结果卡）。内核 on/on_slot 注册的订阅回调改为逐个隔离 + 吞掉必落 error 日志（log_swallowed noexcept 出口）；emit/emit_slot 机制级异常同样落日志，原生 C++ 异常语义不动 | 已落地（内核 c016617；产品仓同步加固：agent 事件处理器与回灌/发送续段统一异常兜底转 fail_turn 终态、开轮即落盘防重启丢请求、悬挂 tool_calls 尾巴清理防 400 错误循环） |
 | 2026-10-24 | 事件总线无源标注（子代理事件隔离只能靠载荷尾追标志，run_line 泄漏产品侧不可修）→ 内核 slot 路由原语（on_slot/emit_slot，slot=0 广播兼容）+ 产品仓全量迁移（runner/llm 按槽发射、agent 槽订阅替代扇出、标志退役） | 已落地（内核 58dc137 + 产品仓迁移，提案与评审记录见 docs/temp/内核事件slot路由-提案.md） |
 | 2026-10-21 | kit::process 缺管道能力 → 新增 `kit::PipedProcess`（stdout/stderr 管道 + Job 树杀 + LineSplitter，header-only，env 覆盖按「原语跟第一个真实消费方」先例延后）+ runner 非沙箱 spawn 收编（proc.hpp 只剩沙箱安全策略切片；产品 test_proc 四例成为该原语的行为回归） | 已落地（内核子模块工作树，随内核仓提交） |
-| 2026-10-21 | 上下文压缩批次一（爆窗死局止血：硬保护独立/段内兜底/超窗自救/收口判定）与 UI e2e 修复（坏导入/桩面/全局杀/等待竞态 + 前端 /help 应答）——内核零改动 | 已落地（随批次实施，见 docs/上下文压缩-待办.md） |
-| 2026-10-14 | 前端代码查看器（Monaco 只读 + /api/fs/read 代理）与查看器 diff 模式（反向重建对照） | 已落地（随批次实施，见 docs/查看器diff模式-方案.md） |
-| 2026-10-08 | 上下文压缩阶段二（动态阈值 0.9×W + LLM 自总结折叠）与 llm 标签制并发——批次内直接实施，内核零改动 | 已落地（随批次实施，见 docs/ 两份方案） |
+| 2026-10-21 | 上下文压缩批次一（爆窗死局止血：硬保护独立/段内兜底/超窗自救/收口判定）与 UI e2e 修复（坏导入/桩面/全局杀/等待竞态 + 前端 /help 应答）——内核零改动 | 已落地（随批次实施；方案文件已随批次归档删除） |
+| 2026-10-14 | 前端代码查看器（Monaco 只读 + /api/fs/read 代理）与查看器 diff 模式（反向重建对照） | 已落地（随批次实施；方案文件已随批次归档删除） |
+| 2026-10-08 | 上下文压缩阶段二（动态阈值 0.9×W + LLM 自总结折叠）与 llm 标签制并发——批次内直接实施，内核零改动 | 已落地（随批次实施；方案文件已随批次归档删除） |
 | 2026-10-08 | plugin_module.cmake 的 NOSTOS_ROOT 双语义（asan_runtime include 按 `${NOSTOS_ROOT}/nostos/cmake/` 拼路径；唯一消费方按内核仓根引用）——内核自身构建不经过此文件故 CI 不暴露，只咬外部插件消费方 | 已落地：统一为内核仓根语义，头注释用法示例同步（内核 aeedd2f） |
 | 2026-10-06 | 跨插件同步服务调用无 SDK 便利件 | 已落地：kit `poster_submit_await`（内核 0236c61）——同步投递 + 丢弃路径唤醒等待方 + kit 块内自我等待防御；文件树批次消费 |
 | 2026-10-06 | UI 形状原语不进内核（边界裁决：原语跟着第一个真实消费方走） | 已落地：pick_folder_dialog 下沉 webui 插件（置顶修复随迁），open_file_dialog/has_native_picker 零消费方直接删除，win.hpp 收窄为 UTF-8↔宽字符转换（内核 123f938） |
