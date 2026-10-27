@@ -93,8 +93,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <button class="side-toggle" title="折叠会话栏 (Ctrl+B)" @click="toggleSide">⟨</button>
       </div>
       <button class="new-chat" @click="newSession()">+ 新会话</button>
-      <Sidebar :class="{ inflight: S.inFlight }"
-               style="display:flex; flex-direction:column; min-height:0; flex:1;" />
+      <Sidebar style="display:flex; flex-direction:column; min-height:0; flex:1;" />
       <!-- 齿轮与统计同行（行内布局）：曾绝对定位 bottom:30px，与 side-foot 的 border-top 重叠 -->
       <div class="side-foot">
         <n-tooltip placement="top" :show-arrow="false">

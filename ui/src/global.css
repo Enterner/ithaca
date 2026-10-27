@@ -223,7 +223,6 @@ div.li { line-height: 1.55; }
 .send-btn:hover { filter: brightness(1.12); }
 .send-btn:active { transform: scale(.94); }
 .send-btn:disabled { opacity: .5; cursor: default; }
-.inflight .sess-list { opacity: .5; pointer-events: none; }
 .rate { color: var(--dim); font-size: 12px; margin: 4px 0 0 0; }   /* 左缘与输入卡边缘严格对齐 */
 .rate b { color: var(--text); }
 

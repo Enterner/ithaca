@@ -58,8 +58,8 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
     const wsPath = path.join(host.ws, "real-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "原会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);
-    // 等创建 turn 收口（in_flight 原子真值）——不收口时点＋新建会被前端 inFlight
-    // 门卫吞掉（newSession 直接 return），hero 永不出现
+    // 等创建 turn 收口（in_flight 原子真值）——本用例只测草稿语义，不等收口
+    // 而点＋新建会触发「切走即取消」副作用，污染被测面
     await expect
         .poll(async () => (await getJson(host.base, "/api/session")).body.in_flight, { timeout: 20000 })
         .toBe(false);
