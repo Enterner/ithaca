@@ -49,20 +49,6 @@ inline std::string delta_reasoning_of(const json& chunk) {
     return rc->get<std::string>();
 }
 
-// 末块的 usage（DeepSeek 默认在最后一个 chunk 携带）→ 人类可读摘要；无 ⇒ 空串。
-inline std::string usage_of(const json& chunk) {
-    if (!chunk.is_object()) return {};
-    const auto usage = chunk.find("usage");
-    if (usage == chunk.end() || !usage->is_object()) return {};
-    const auto get = [&usage](const char* key) -> long long {
-        const auto it = usage->find(key);
-        return it != usage->end() && it->is_number_unsigned() ? static_cast<long long>(it->get<std::uint64_t>()) : 0;
-    };
-    return "tokens: total " + std::to_string(get("total_tokens")) + " (prompt " +
-           std::to_string(get("prompt_tokens")) + " + completion " +
-           std::to_string(get("completion_tokens")) + ")";
-}
-
 // 末块的 usage → 结构化对象；无 ⇒ null。
 inline json usage_obj_of(const json& chunk) {
     if (!chunk.is_object()) return json();

@@ -302,11 +302,7 @@ private:
             }
             p.write_stdin(cmd.data(), cmd.size());
             p.close_stdin();
-            const nostos::kit::PipedHandles h = p.release_handles();
-            child->process = static_cast<HANDLE>(h.process);
-            child->stdout_read = static_cast<HANDLE>(h.stdout_read);
-            child->stderr_read = static_cast<HANDLE>(h.stderr_read);
-            child->job = static_cast<HANDLE>(h.job);
+            vcrun::ChildPipes::adopt(p, *child);
         } else {
             // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
             // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"

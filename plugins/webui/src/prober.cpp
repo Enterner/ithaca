@@ -10,6 +10,19 @@
 
 namespace vc_webui {
 
+// manifest 行解析（探测线程与聚合端点共用一份口径）：剥 CR/尾空格 → 找 TAB 分隔
+// → 跳 ACTIVE 指示行。返回 false = 空行/格式行/ACTIVE（调用方 continue）
+static bool parse_manifest_line(std::string& line, std::string& key, std::string& ws) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    if (line.empty()) return false;
+    const size_t t1 = line.find('\t');
+    if (t1 == std::string::npos) return false;
+    key = line.substr(0, t1);
+    if (key == "ACTIVE") return false;
+    ws = line.substr(t1 + 1);
+    return true;
+}
+
 // ---- 兄弟实例健康探测（多实例聚合 alive 真值）------------------------------
 // 背景：聚合端点原以 port 文件存在判 alive——宿主死亡后文件残留 ⇒ 死会话被标
 // 存活，前端整页导航到死端口（踩过：切换会话 nav FAIL 循环）。本线程每 2s 对
@@ -25,13 +38,10 @@ void WebuiPlugin::start_prober_() {
             std::ifstream in(manifest_path_, std::ios::binary);
             std::string line;
             std::map<std::string, std::pair<bool, int>> fresh;
+            std::string ws;
             while (std::getline(in, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-                if (line.empty()) continue;
-                const size_t t1 = line.find('\t');
-                if (t1 == std::string::npos) continue;
-                const std::string key = line.substr(0, t1);
-                if (key == "ACTIVE") continue;
+                std::string key;
+                if (!parse_manifest_line(line, key, ws)) continue;
                 std::ifstream pin(manifest_path_.parent_path() / "hosts" / key / "port",
                                   std::ios::binary);
                 int port = 0;
@@ -80,14 +90,10 @@ json WebuiPlugin::api_shell_sessions_() {
     json rows = json::array();
     std::ifstream in(manifest, std::ios::binary);
     std::string line;
+    std::string ws;
     while (std::getline(in, line)) {
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        if (line.empty()) continue;
-        const size_t t1 = line.find('\t');
-        if (t1 == std::string::npos) continue;
-        const std::string key = line.substr(0, t1);
-        if (key == "ACTIVE") continue;
-        const std::string ws = line.substr(t1 + 1);
+        std::string key;
+        if (!parse_manifest_line(line, key, ws)) continue;
         const fs::path home = hosts_root / key;
         json row = {{"key", key},
                     {"id", key},
@@ -107,21 +113,20 @@ json WebuiPlugin::api_shell_sessions_() {
             buf << idx_in.rdbuf();
             idx_text = buf.str();
         } else {
-            // 未迁移（从没被点开过）：从中央库条目兜底取标题/时间/工作区
+            // 未迁移（从没被点开过）：从中央库按 id 取该会话条目——整个文件
+            // nlohmann 解析后序列化命中项（手搓括号配对切片对字段间距/转义敏感）
             const fs::path central = manifest.parent_path() / "index.json";
             if (fs::exists(central, ec)) {
                 std::ifstream cin2(central, std::ios::binary);
                 std::ostringstream buf;
                 buf << cin2.rdbuf();
-                const std::string ctext = buf.str();
-                const std::string idkey = "\"id\":\"" + key + "\"";
-                const size_t k = ctext.find(idkey);
-                if (k != std::string::npos) {
-                    const size_t b = ctext.rfind('{', k);
-                    const size_t e = ctext.find('}', k);
-                    if (b != std::string::npos && e != std::string::npos)
-                        idx_text = ctext.substr(b, e - b + 1);
-                }
+                const json cdoc = json::parse(buf.str(), nullptr, false);
+                if (cdoc.is_object())
+                    for (const auto& e : cdoc.value("sessions", json::array()))
+                        if (e.is_object() && e.value("id", "") == key) {
+                            idx_text = e.dump();
+                            break;
+                        }
             }
         }
         if (!idx_text.empty()) {

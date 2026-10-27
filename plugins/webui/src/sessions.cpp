@@ -12,6 +12,13 @@
 
 namespace vc_webui {
 
+// 首条 user 消息 → 侧栏标题：48 字节护栏 + 码点安全截断。persist_ 的落库与
+// session_meta_ 的重放两条路共用一份口径（按字节切会劈开多字节 UTF-8，
+// index_.dump() 必抛 ⇒ index.json 永久保存失败）
+static std::string clip_title(std::string t) {
+    return t.size() > 48 ? vcws::trim_utf8(t, 48) + "…" : t;
+}
+
 // ---- 会话记录（落盘 + 广播；id = transcript 行号，页面据此续传）--------------
 
 // 只落盘。NOTE: 按**引用**收参——id 写回调用方的 rec，广播/延迟广播因此都带
@@ -33,10 +40,7 @@ void WebuiPlugin::persist_(json& rec) {
             (*e)["turns"] = (*e).value("turns", 0) + 1;
             if ((*e).value("title", "") == "(新会话)" ||
                 (*e).value("title", "").empty()) {
-                // NOTE: 按字节切 48 会劈开多字节 UTF-8，index_.dump() 必抛 ⇒
-                // index.json 永久保存失败——必须走码点边界回退
-                std::string t = rec.value("text", "");
-                if (t.size() > 48) t = vcws::trim_utf8(t, 48) + "…";
+                const std::string t = clip_title(rec.value("text", ""));
                 if (!t.empty()) (*e)["title"] = t;
             }
         }
@@ -389,14 +393,13 @@ json WebuiPlugin::session_meta_() {
         const std::string type = r.value("type", "");
         if (type == "user") {
             ++turns;
-            if (title == "(新会话)") {
-                std::string t = r.value("text", "");
-                if (t.size() > 48) t = vcws::trim_utf8(t, 48) + "…";  // 码点安全
-                title = t;
-            }
+            if (title == "(新会话)") title = clip_title(r.value("text", ""));
         }
         // 累计 token = assistant 记录自带 usage（恒真形态——events.cpp 组记录时
         // 必带）。这是前端「累计 tokens」显示的服务端源，重放后依然成立。
+        // NOTE: turns/tokens 在 persist_ 里还有一份同步累加（写 index_ 条目，
+        // 侧栏持久值）——两处口径必须同升同降；本函数给活跃会话即时值
+        // （records_ 是事实源），index_ 在轮次边界才落盘。改任何一处先看另一处
         if (type == "assistant")
             tokens += r.value("usage", json::object()).value("total_tokens", 0LL);
     }

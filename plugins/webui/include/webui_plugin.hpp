@@ -185,6 +185,7 @@ private:
     json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
     http::Response api_fs_list_(const http::Request& req);
     http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
+    json call_tool_json_(const char* tool, const std::string& args_json);   // /api/fs/* 代理共用
     json api_mcp_status_();
     json api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
 

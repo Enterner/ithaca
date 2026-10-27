@@ -27,6 +27,12 @@ namespace vcagent {
 
 using nlohmann::json;
 
+// JSON 对象取字符串守卫（缺键/非串 ⇒ 空）——工具参数/结果字段提取的收敛点
+inline std::string str_of(const json& o, const char* key) {
+    const auto it = o.find(key);
+    return it != o.end() && it->is_string() ? it->get<std::string>() : std::string();
+}
+
 inline constexpr const char* kMissionMarker = "【任务目标卡】";
 inline constexpr const char* kDigestMarker = "【上下文压缩摘要】";
 inline constexpr const char* kRecallTool = "context.recall";

@@ -8,15 +8,7 @@
 #include <algorithm>  // std::clamp：recall 分页参数收敛
 #include <fstream>    // std::ofstream：raw 外置归档
 
-namespace {
 
-// ASCII 小写折叠（通配/路径包含过滤的大小写不敏感口径；无 locale 依赖）
-inline std::string ascii_lower(std::string s) {
-    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
-    return s;
-}
-
-}  // namespace
 
 namespace vc_agent {
 
@@ -225,10 +217,7 @@ void AgentCtx::dispatch_loop() {
     // 分发完但仍未收口 ⇒ 看在途面：无任何挂起就地收口；有异步任务/在途子代理
     // 则等归流回调（含 run_exit 在审批窗口内提前到达的场景 时机修正）
     if (runs_.empty() && child_pends_.empty()) return append_results_and_continue();
-    bool all_exited = true;
-    for (const auto& [rid, run] : runs_)
-        if (!run.exited) all_exited = false;
-    if (all_exited && child_pends_.empty()) return try_finish_tools();
+    if (all_runs_exited_() && child_pends_.empty()) return try_finish_tools();
     const int pending = static_cast<int>(runs_.size() + child_pends_.size());
     notice_meta("等待 " + std::to_string(pending) + " 个后台任务/子代理完成…",
                 "waiting", 0, pending);
@@ -319,7 +308,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
     // 异步长任务（runner.run）：登记 run_id——结果等 vc.run.exit 归流，
     // 本条消息的其余工具照常分发（runner 侧并发、run_id 归流）。
     if (const int rid = parse_run_id(ctx.result); rid > 0) {
-        runs_[rid] = AsyncRun{dispatched_ - 1, "", false, 0};
+        register_run(rid, dispatched_ - 1);
         notice_meta("后台任务 run#" + std::to_string(rid) + " 已启动",
                     "bg_run_started", rid);
     }
@@ -452,9 +441,7 @@ void AgentCtx::on_child_finished_(std::size_t index, AgentCtx* child, bool ok,
     // 同消息尚有未分发项：分发循环尾部收口（结果已写回，循环会跳过完成项）
     if (dispatched_ != calls_.size()) return;
     if (runs_.empty()) return append_results_and_continue();
-    for (const auto& [rid, run] : runs_)
-        if (!run.exited) return;
-    try_finish_tools();
+    if (all_runs_exited_()) try_finish_tools();
 }
 
 void AgentCtx::append_results_and_continue() {
@@ -552,7 +539,7 @@ std::string AgentCtx::exec_recall(const json& args) {
     // filter（路径包含过滤）与 summary（按目录聚合计数），单页返回不切字节；
     // 其余形态回退下方字节窗口分页
     const bool summary = args.value("summary", false);
-    const std::string filter = ascii_lower(args.value("filter", ""));
+    const std::string filter = vcws::ascii_lower(args.value("filter", ""));
     if ((summary || !filter.empty()) && total > 0 && total < (8LL << 20)) {
         const json rj = json::parse(content, nullptr, false);
         if (rj.is_object() && rj.contains("entries") && rj["entries"].is_array()) {
@@ -566,7 +553,7 @@ std::string AgentCtx::exec_recall(const json& args) {
                 if (!e.is_object()) continue;
                 const std::string p = e.value("path", "");
                 if (!filter.empty() &&
-                    ascii_lower(p).find(filter) == std::string::npos)
+                    vcws::ascii_lower(p).find(filter) == std::string::npos)
                     continue;
                 ++matched;
                 const std::size_t slash = p.rfind('/');
@@ -611,6 +598,17 @@ void AgentCtx::try_finish_tools() {
     }
 }
 
+// 收口门槛与 run 登记（三处判定/两处登记的收敛点，声明见 agent_plugin.hpp）
+bool AgentCtx::all_runs_exited_() const {
+    for (const auto& [rid, run] : runs_)
+        if (!run.exited) return false;
+    return true;
+}
+
+void AgentCtx::register_run(int run_id, int index) {
+    runs_[run_id] = AsyncRun{static_cast<std::size_t>(index), "", false, 0};
+}
+
 // run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口（正在等 decision 或有
 // 在途子代理时不收口——前者延迟到 decision 恢复后的 dispatch_loop，后者由最后
 // 完成的子代理回调触发同一门槛）
@@ -619,8 +617,7 @@ void AgentCtx::try_finish_tools_impl() {
     if (dispatched_ != calls_.size()) return;
     if (!child_pends_.empty()) return;
     if (runs_.empty()) return;  // 无异步任务：常规收口归 dispatch_loop，防双重 send_chat
-    for (const auto& [rid, run] : runs_)
-        if (!run.exited) return;
+    if (!all_runs_exited_()) return;
     for (const auto& [rid, run] : runs_) {
         ToolCallCtx& ctx = calls_[run.index];
         ctx.result = json{{"run_id", rid},

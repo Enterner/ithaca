@@ -311,6 +311,11 @@ struct AgentCtx {
     // 状态机按它路由（text 仅供人读）；run_id/count 按 kind 语义填充
     void notice_meta(const std::string& text, std::string_view kind,
                      long long run_id = 0, int count = 0);
+    // 收口门槛：全部后台 run 已归流（exit 事件到达）——dispatch_loop 尾部、
+    // 子代理收口、try_finish_tools_impl 三处共用一份口径
+    bool all_runs_exited_() const;
+    // 异步长任务登记：run_id → 分发序号（结果等 vc.run.exit 归流后按序回卡）
+    void register_run(int run_id, int index);
     static std::string trim(const std::string& s, std::size_t cap);
     // apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空，回退）
     // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）

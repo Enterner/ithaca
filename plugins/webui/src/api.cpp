@@ -422,19 +422,7 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
                            {"mode", query_val(req.target, "mode")},
                            {"per_dir", std::atoi(query_val(req.target, "per_dir").c_str())}};
     return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
-        const vc_api::ToolTable* tools = tools_;
-        if (tools == nullptr)
-            return server_->respond(conn, json_resp({{"ok", false}, {"error", "workspace 不在"}}));
-        const char* out_json = nullptr;
-        // 直调工具表（跨线程安全见上）：NOSTOS_OK + {ok:false} = 工具级失败，原样透传
-        const nostos_status st = tools->execute(tools->self, "list", args.dump().c_str(), 0,
-                                                &out_json);
-        json r = st == NOSTOS_OK && out_json != nullptr
-                     ? json::parse(out_json, nullptr, false)
-                     : json{{"ok", false}, {"error", "workspace execute 失败 (" +
-                                                  std::to_string(static_cast<int>(st)) + ")"}};
-        if (r.is_discarded() || !r.is_object())
-            r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
+        json r = call_tool_json_("list", args.dump());
         // 黑名单：一级目录名精确匹配（树视图噪音；agent 的 list 工具不受影响）
         static const char* kHide[] = {".git",           "node_modules", "build",
                                       "dist",           ".ithaca-data", "__pycache__",
@@ -461,20 +449,27 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
 http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
     const json args = json{{"path", query_val(req.target, "path")}};
     return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
-        const vc_api::ToolTable* tools = tools_;
-        if (tools == nullptr)
-            return server_->respond(conn, json_resp({{"ok", false}, {"error", "workspace 不在"}}));
-        const char* out_json = nullptr;
-        const nostos_status st = tools->execute(tools->self, "read", args.dump().c_str(), 0,
-                                                &out_json);
-        json r = st == NOSTOS_OK && out_json != nullptr
-                     ? json::parse(out_json, nullptr, false)
-                     : json{{"ok", false}, {"error", "workspace execute 失败 (" +
-                                                  std::to_string(static_cast<int>(st)) + ")"}};
-        if (r.is_discarded() || !r.is_object())
-            r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
-        server_->respond(conn, json_resp(std::move(r)));
+        server_->respond(conn, json_resp(call_tool_json_("read", args.dump())));
     });
+}
+
+// workspace 工具表直调（/api/fs/* 代理共用）：判空 → execute → NOSTOS_OK 判定 →
+// JSON parse → 无效兜底。返回值恒为 object；调用须在宿主线程闭包内（tools_ 读写
+// 纪律见 webui_plugin.hpp）
+json WebuiPlugin::call_tool_json_(const char* tool, const std::string& args_json) {
+    const vc_api::ToolTable* tools = tools_;
+    if (tools == nullptr)
+        return {{"ok", false}, {"error", "workspace 不在"}};
+    const char* out_json = nullptr;
+    // NOSTOS_OK + {ok:false} = 工具级失败，原样透传给前端
+    const nostos_status st = tools->execute(tools->self, tool, args_json.c_str(), 0, &out_json);
+    json r = st == NOSTOS_OK && out_json != nullptr
+                 ? json::parse(out_json, nullptr, false)
+                 : json{{"ok", false}, {"error", "workspace execute 失败 (" +
+                                              std::to_string(static_cast<int>(st)) + ")"}};
+    if (r.is_discarded() || !r.is_object())
+        r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
+    return r;
 }
 /// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
 // 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。

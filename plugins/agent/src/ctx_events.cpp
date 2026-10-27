@@ -211,7 +211,7 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
         ++dispatched_;
         emit_tool_result(ctx.full_name, tool_ok(ctx.result), ctx.result);
         if (const int rid = parse_run_id(ctx.result); rid > 0)
-            runs_[rid] = AsyncRun{pending_.index, "", false, 0};
+            register_run(rid, pending_.index);
     }
     state_ = State::TurnActive;
     dispatch_loop();

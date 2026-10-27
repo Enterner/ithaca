@@ -49,13 +49,6 @@ VC_TEST("delta: content 提取；role/usage/空 choices 全部返回空") {
               R"({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}})")) == "");
     CHECK(delta_content_of(json::parse(R"({"choices":[{"delta":{"reasoning_content":"思考"}}]})")) == "");
     CHECK(delta_content_of(json::array()) == "");
-
-    const auto usage_chunk = json::parse(
-        R"({"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}})");
-    const std::string usage = usage_of(usage_chunk);
-    CHECK(usage.find("prompt 5") != std::string::npos);
-    CHECK(usage.find("total 12") != std::string::npos);
-    CHECK(usage_of(json::parse(R"({"choices":[{"delta":{"content":"x"}}]})")).empty());
 }
 
 VC_TEST("delta: 云端错误体——OpenAI 形态优先，非 JSON 原文兜底") {

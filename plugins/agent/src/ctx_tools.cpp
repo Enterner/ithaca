@@ -194,8 +194,7 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
     if (!args.is_object()) return {};
     if (tool == "apply") return summarize_apply_ops(args);
     const auto path_of = [&args]() -> std::string {
-        return args.contains("path") && args["path"].is_string()
-                   ? args["path"].get<std::string>() : "";
+        return vcagent::str_of(args, "path");
     };
     if (tool == "read") {
         const std::string p = path_of();
@@ -210,21 +209,18 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
                "（深度 " + std::to_string(depth) + "）";
     }
     if (tool == "search") {
-        const std::string q = args.contains("query") && args["query"].is_string()
-                                  ? args["query"].get<std::string>() : "";
+        const std::string q = vcagent::str_of(args, "query");
         return q.empty() ? std::string{} : "搜索「" + q + "」";
     }
     if (tool == "run") {
-        const std::string cmd = args.contains("command_line") && args["command_line"].is_string()
-                                    ? args["command_line"].get<std::string>() : "";
+        const std::string cmd = vcagent::str_of(args, "command_line");
         if (cmd.empty()) return {};
         const bool dry = args.contains("dry_run") && args["dry_run"].is_boolean() &&
                          args["dry_run"].get<bool>();
         return std::string(dry ? "试算命令 " : "运行命令 ") + trim(cmd, 120);
     }
     if (tool == "recall") {
-        const std::string ref = args.contains("ref") && args["ref"].is_string()
-                                    ? args["ref"].get<std::string>() : "";
+        const std::string ref = vcagent::str_of(args, "ref");
         if (ref.empty()) return {};
         std::string out = "回查归档 " + ref;
         if (const long long off = args.value("offset", 0LL); off > 0)
@@ -237,8 +233,7 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
         return "撤销编辑";
     }
     if (tool == "task") {
-        const std::string d = args.contains("description") && args["description"].is_string()
-                                  ? args["description"].get<std::string>() : "";
+        const std::string d = vcagent::str_of(args, "description");
         const std::string t = args.contains("subagent_type") && args["subagent_type"].is_string()
                                   ? args["subagent_type"].get<std::string>() : "general";
         return "派出子代理 [" + t + "] " + d;
@@ -290,10 +285,8 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
         if (r.contains("errors") && r["errors"].is_array() && !r["errors"].empty() &&
             r["errors"][0].is_object()) {
             const auto& e = r["errors"][0];
-            const std::string p = e.contains("path") && e["path"].is_string()
-                                      ? e["path"].get<std::string>() : "";
-            const std::string m = e.contains("message") && e["message"].is_string()
-                                      ? e["message"].get<std::string>() : "";
+            const std::string p = vcagent::str_of(e, "path");
+            const std::string m = vcagent::str_of(e, "message");
             return trim(p.empty() ? m : p + ": " + m, 200);
         }
         return trim(result, 200);
@@ -337,8 +330,7 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
         return "exit " + std::to_string(code) + (first_line.empty() ? "" : "｜" + first_line);
     }
     if (tool == "read") {
-        const std::string p = r.contains("path") && r["path"].is_string()
-                                  ? r["path"].get<std::string>() : "";
+        const std::string p = vcagent::str_of(r, "path");
         std::string size;
         if (r.contains("content") && r["content"].is_string())
             size = std::to_string(r["content"].get<std::string>().size()) + " 字节";

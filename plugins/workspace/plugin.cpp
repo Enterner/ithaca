@@ -56,24 +56,10 @@ constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
 constexpr int kSearchDepthCap = 8;
 constexpr std::size_t kSearchHitCap = 50;      // search 命中上限（默认值，参数可降）
 
-// diff 文本尾行的统计 "（+A −R 行）" → "+A −R"（diff.hpp 生成该尾行；无 ⇒ 空串）
-inline std::string diff_delta(const std::string& diff) {
-    const std::size_t pos = diff.rfind("（+");
-    if (pos == std::string::npos) return {};
-    const std::size_t end = diff.find(" 行）", pos);
-    if (end == std::string::npos) return {};
-    return diff.substr(pos + 3, end - pos - 3);   // 跳过全角括号"（"（3B），保留 "+A −R" 的加号
-}
-
 // 文件名通配匹配（* 任意串、? 单字符；大小写不敏感——Windows 名空间惯例）。
 // 迭代双指针 + 星号回溯，O(p+n)，无 locale 依赖（只折叠 ASCII 大写）
-inline std::string ascii_lower(std::string s) {
-    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
-    return s;
-}
-
 inline bool glob_match_ci(const std::string& pat, const std::string& name) {
-    const std::string p = ascii_lower(pat), n = ascii_lower(name);
+    const std::string p = vcws::ascii_lower(pat), n = vcws::ascii_lower(name);
     std::size_t pi = 0, ni = 0, star = std::string::npos, mark = 0;
     while (ni < n.size()) {
         if (pi < p.size() && (p[pi] == '?' || p[pi] == n[ni])) { ++pi; ++ni; }
@@ -85,6 +71,22 @@ inline bool glob_match_ci(const std::string& pat, const std::string& name) {
     return pi == p.size();
 }
 constexpr std::size_t kDiffShowCap = 8 * 1024; // 单文件 diff 文本截断（结果体积护栏）
+
+// 单文件 diff 展示文本（8KB 护栏，码点安全截断）——apply 回执与 applied 事件
+// 拼装两条路共用一份截断口径
+std::string clip_diff(const std::string& d) {
+    return d.size() > kDiffShowCap ? vcws::trim_utf8(d, kDiffShowCap) + "\n（diff 截断）" : d;
+}
+
+// 目录遍历三模式（平铺/聚合/搜索）共用：重解析点跳过（防环、防出 jail）+ 文件名
+// UTF-8 化 + 相对路径拼接。symlink ⇒ 返回空串作跳过信号。
+std::string entry_rel(const fs::directory_entry& it, const std::string& rel_prefix,
+                      std::error_code& se) {
+    if (it.is_symlink(se) && !se) return {};
+    const std::string name =
+        nostos::kit::win::wide_to_utf8(it.path().filename().c_str());
+    return rel_prefix.empty() ? name : rel_prefix + "/" + name;
+}
 
 class WorkspacePlugin {
 public:
@@ -328,7 +330,7 @@ private:
         if (!fs::exists(full, ec) || !fs::is_directory(full, ec))
             return json{{"ok", false}, {"error", "目录不存在: " + (norm.empty() ? "." : norm)}};
         const int depth = std::min(args.value("depth", 3), kListDepthCap);
-        pattern_ = ascii_lower(args.value("pattern", ""));
+        pattern_ = vcws::ascii_lower(args.value("pattern", ""));
         aggregate_ = args.value("mode", "aggregate") != "flat";   // 默认聚合（显式 flat 才平铺）
         per_dir_ = std::max(args.value("per_dir", 0), 0);
         entries_ = json::array();
@@ -354,15 +356,13 @@ private:
         for (; it != end && !truncated_; it.increment(ec)) {
             if (ec) break;
             std::error_code se;
+            const std::string child_rel = entry_rel(*it, rel_prefix, se);
+            if (child_rel.empty()) continue;   // 重解析点不入遍历（防环、防出 jail）
             const bool is_dir = it->is_directory(se) && !se;
-            if (it->is_symlink(se) && !se) continue;  // 重解析点不入遍历（防环、防出 jail）
-            const std::string name =
-                nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
-            const std::string child_rel =
-                rel_prefix.empty() ? name : rel_prefix + "/" + name;
             // pattern 只过滤文件（目录始终保留——结构信息不因过滤丢失）；不匹配
             // 的文件不占 500 配额
-            if (!is_dir && !pattern_.empty() && !glob_match_ci(pattern_, name)) continue;
+            if (!is_dir && !pattern_.empty() &&
+                !glob_match_ci(pattern_, child_rel.substr(child_rel.rfind('/') + 1))) continue;
             if (is_dir) {
                 entries_.push_back(json{{"path", child_rel}, {"type", "dir"}, {"size", 0}});
                 ++listed_;
@@ -401,18 +401,16 @@ private:
         for (; it != end; it.increment(ec)) {
             if (ec) break;
             std::error_code se;
-            if (it->is_symlink(se) && !se) continue;
+            const std::string child_rel = entry_rel(*it, rel_prefix, se);
+            if (child_rel.empty()) continue;
             const bool is_dir = it->is_directory(se) && !se;
-            const std::string name =
-                nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
-            const std::string child_rel =
-                rel_prefix.empty() ? name : rel_prefix + "/" + name;
             if (is_dir) {
                 ++subdirs;
                 walk_agg(it->path(), child_rel, depth - 1);
                 continue;
             }
-            if (!pattern_.empty() && !glob_match_ci(pattern_, name)) continue;
+            if (!pattern_.empty() &&
+                !glob_match_ci(pattern_, child_rel.substr(child_rel.rfind('/') + 1))) continue;
             std::error_code ze;
             bytes += static_cast<long long>(it->file_size(ze));
             ++files;
@@ -439,7 +437,7 @@ private:
             if (!re.compile(query, {.icase = icase}, &re_err))
                 return fail("正则非法: " + re_err);
         } else if (icase) {
-            lit = ascii_lower(query);   // 小写副本上查找——与原串 1:1 映射，位置直用
+            lit = vcws::ascii_lower(query);   // 小写副本上查找——与原串 1:1 映射，位置直用
         }
         const int max_hits =
             std::min(std::max(args.value("max_hits", static_cast<int>(kSearchHitCap)), 1), 200);
@@ -482,12 +480,9 @@ private:
         for (; it != end && !stop_; it.increment(ec)) {
             if (ec) break;
             std::error_code se;
-            if (it->is_symlink(se) && !se) continue;
+            const std::string child_rel = entry_rel(*it, rel_prefix, se);
+            if (child_rel.empty()) continue;
             const bool is_dir = it->is_directory(se) && !se;
-            const std::string child_rel =
-                rel_prefix.empty() ? nostos::kit::win::wide_to_utf8(it->path().filename().c_str())
-                                   : rel_prefix + "/" +
-                                         nostos::kit::win::wide_to_utf8(it->path().filename().c_str());
             if (is_dir) {
                 walk_search(it->path(), child_rel, depth - 1, max_hits, use_re, re,
                             lit, lower_hay);
@@ -507,7 +502,7 @@ private:
             // 位置可直接用于原串取行；regex 的 icase 内建于标志，匹配原串
             std::string lower_buf;
             const std::string& hay =
-                lower_hay ? (lower_buf = ascii_lower(content)) : content;
+                lower_hay ? (lower_buf = vcws::ascii_lower(content)) : content;
             each_hit(hay, use_re, re, lit, [&](std::size_t pos) {
                 std::size_t line_start = content.rfind('\n', pos);
                 line_start = line_start == std::string::npos ? 0 : line_start + 1;
@@ -550,10 +545,11 @@ private:
             // "模型已知自己写了什么"不足以省略回执：find 落点、复合编辑的逐 op
             // 叠加结果都可能与意图有偏差。8KB 护栏防单文件体积失控；diff 同时经
             // applied 事件展示给用户
-            std::string diff = e.diff;
-            if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
+            std::string diff = clip_diff(e.diff);
             f["diff"] = diff;
-            if (!dry) f["delta"] = diff_delta(e.diff);   // 落盘量级（+A −B）——[tool] 卡与模型的锚点
+            // 落盘量级（+A −B）——[tool] 卡与模型的锚点。直读 apply 的结构化统计，
+            // 不从 diff 尾行反解（files_meta 同源，一个口径）
+            if (!dry) f["delta"] = "+" + std::to_string(e.add) + " −" + std::to_string(e.rem);
             files.push_back(std::move(f));
         }
         json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
@@ -580,8 +576,7 @@ private:
                                           {"add", e.add},
                                           {"rem", e.rem},
                                           {"is_new", e.is_new}});
-                std::string d = e.diff;
-                if (d.size() > kDiffShowCap) d = vcws::trim_utf8(d, kDiffShowCap) + "\n（diff 截断）";
+                std::string d = clip_diff(e.diff);
                 diff_text += "── " + e.path;
                 if (e.ops_count > 1) diff_text += "（" + std::to_string(e.ops_count) + " 处编辑）";
                 diff_text += "\n" + d;

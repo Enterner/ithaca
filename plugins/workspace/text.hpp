@@ -108,6 +108,13 @@ inline std::wstring wc_lower(std::wstring s) {
     return s;
 }
 
+// ASCII 小写折叠（窄字符匹配的 case-insensitive 底座：glob 通配/子串过滤）。
+// 只折叠 A-Z、无 locale 依赖；宽字符路径口径另用 wc_lower，各管各域。
+inline std::string ascii_lower(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
 // ---- 行内高亮的公共跨度（diff 展示配对行用）------------------------------------
 // 取 a/b 的公共前缀与公共后缀（按 UTF-8 码点对齐——字节级比较后回退/推进到码点
 // 首字节，绝不把多字节字符劈成两半），拆出 (pre, mid_a, mid_b, suf)：

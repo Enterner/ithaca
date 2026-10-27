@@ -78,6 +78,15 @@ struct ChildPipes {
         }
         if (process != nullptr) TerminateProcess(process, 0xFFFFFFFFu);
     }
+    // 从 kit::PipedProcess 接管四句柄（bash 与 cmd 非沙箱两条 spawn 路的公共
+    // 尾段）；本类型不可拷贝/移动，按引用落位
+    static void adopt(nostos::kit::PipedProcess& p, ChildPipes& out) {
+        const nostos::kit::PipedHandles h = p.release_handles();
+        out.process = static_cast<HANDLE>(h.process);
+        out.stdout_read = static_cast<HANDLE>(h.stdout_read);
+        out.stderr_read = static_cast<HANDLE>(h.stderr_read);
+        out.job = static_cast<HANDLE>(h.job);
+    }
 };
 
 // ---- 沙箱（full-auto 模式：AppContainer 进程）--------------------------------
@@ -387,11 +396,7 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
         nostos::kit::PipedSpawnOptions o;
         o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd.c_str());
         if (!p.start(nostos::kit::win::wide_to_utf8(cmdline.c_str()), o, err)) return false;
-        const nostos::kit::PipedHandles h = p.release_handles();
-        out.process = static_cast<HANDLE>(h.process);
-        out.stdout_read = static_cast<HANDLE>(h.stdout_read);
-        out.stderr_read = static_cast<HANDLE>(h.stderr_read);
-        out.job = static_cast<HANDLE>(h.job);
+        ChildPipes::adopt(p, out);
         return true;
     }
     PipePair so, se;
