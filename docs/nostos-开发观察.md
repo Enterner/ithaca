@@ -4,9 +4,25 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：task 结果内联分档 · 2026-10-26）
+## 当前发现（批次：全仓审查循环 R1-R14 · 2026-10-27）
 
-本批次（agent 插件应用层：task 报告内联上限分档 + 结论头外置形态）无可优化点——全部改动收在应用层策略，未触碰内核能力面。
+1. workspace search 的 regex 走 std::regex ECMAScript（无超时/步数上限）——灾难性
+   回溯的构造模式会在 agent 线程长阻塞（单文件 1MB 上限内仍可分钟级挂起）。缓解
+   方向：换手写有限自动机/限定迭代步数/或 engine 换 RE2 形态；std::regex 无步数
+   钩子，属内核 kit 无对应原语。（触发场景：R4 审查 workspace 新增 search 工具）
+2. kit::http 默认 `max_request = 16KB` 对"对话输入即粘贴"类应用过小：webui 对话框
+   粘贴 35KB 文档实测 413（上下文评测驱动命中）。应用侧已在 webui 启动时覆写
+   2MB；内核默认值是否上调/改名（现注释写"请求头上限"但实为整个请求缓冲上限）
+   待内核节奏评估——改默认影响所有消费方，故只挂账不擅改。
+3. （复核维持）R1-R14 修复全在应用层，二遍深扫亦完成：R1 runner（树杀/jail UAF
+   竞态/sandboxed 原子化）、R2 webui（错误体码点截断）、R3 agent（raw 目录随会话
+   切换 + 撞名双保险——shell 生产链路此前无归档）、R5 ctx_turn 深读（LLM 摘要
+   digest 诚实性/子代理 raw_prefix_ 继承）、R6 前端（SSE 断线零恢复 → 补洞轮询）、
+   R8 llm_cloud（info_buf_ 跨线程出参竞态）、**R12 workspace 数据完整性**（apply
+   校验与写盘之间的外部改动窗口——runner 命令/用户编辑器改动被静默覆盖且 undo
+   记错原状，写前 dirty-check 补齐）。R4/R7/R9/R11/R13/R14 零缺陷（md/diff 的
+   esc 全覆盖与码点对齐、edit 事务的内核 Scope 回滚、snapshots 陈旧检测、微件与
+   contract 纪律均完好）。
 
 ## 落地状态
 

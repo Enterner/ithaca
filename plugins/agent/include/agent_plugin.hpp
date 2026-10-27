@@ -355,10 +355,15 @@ struct AgentCtx {
                                         // kMaxOverwindowResend 封顶，防折叠打转）
     vcagent::CompressPlan pending_plan_{};  // 冻结的折叠计划（机械 digest = 兜底产物）
     std::string tools_snapshot_;        // 上一轮工具表快照（字节级稳定观测）
-    std::string raw_dir_;  // 外置存储目录（会话文件旁 raw/；空 = 未启用）
-    int raw_seq_ = 0;
+    std::string raw_dir_;    // 外置存储目录（随 session_load 指向的会话文件走；空 = 未启用）
+    std::string raw_prefix_; // 归档名前缀 = 会话文件 stem（多会话共享 raw/ 时防跨会话撞名）
 
     // 当前 assistant 消息的工具调用记账
+    // NOTE: calls_/runs_/messages_ 等全部 turn 状态无常锁——单线程纪律：所有触碰
+    // 它们的事件回调（llm_done/error 槽订阅、run 归流、子代理完成回调）都经
+    // poster 收敛到宿主线程（llm_cloud/runner 的 emit 亦然），与 agent 状态机
+    // 同一线程序列化；本类成员禁止任何线程加锁访问。此不变式若破（有事件源
+    // 改为 worker 线程直发），全部容器访问面需重新审计
     std::vector<ToolCallCtx> calls_;
     std::size_t dispatched_ = 0;
     std::map<int, AsyncRun> runs_;   // run_id → run
