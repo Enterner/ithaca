@@ -1,8 +1,8 @@
 # ithaca 项目指令（DSH 沙盒控制 · 工作区级）
 
 > 规范架构（对齐 agents.md 主流做法）：**每次编辑必踩的热规则内联于此，全文在 docs/
-> 单一事实源**——本文件摘要与 docs/ 冲突时以 docs/ 为准。AGENTS.md 与 docs/ 均不入库
-> （机器本地指令链，刻意设计），换机 clone 需重建本文件与 docs/。
+> 单一事实源**——本文件摘要与 docs/ 冲突时以 docs/ 为准。本文件与 docs/ 随仓分发
+> （被 git 跟踪，clone 即携带；只有 docs/temp/ 等本地态被 ignore）。
 
 ## 常用命令
 
@@ -91,4 +91,5 @@
 - 本仓 git：提交需用户明确允许（见边界 Never），不推远端。
 - MSBuild 对大小写成对代理变量敏感（HTTP_PROXY/http_proxy 同时在环境会抛
   MSB6001）——构建前清掉；Node 侧防御已内置在 `scripts/build.mjs`。
-- 机器本地指令链：`.gitignore` 排除 AGENTS.md 与 docs/（clone 不携带规范，属刻意设计）。
+- 规范随仓分发：AGENTS.md 与 docs/ 被 git 跟踪，clone 即携带；`.gitignore` 只排
+  构建产物、`docs/temp/`（临时文档）等本地态。
