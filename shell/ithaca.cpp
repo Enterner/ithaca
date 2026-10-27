@@ -33,6 +33,7 @@
 
 #include "WebView2.h"
 
+#include <nostos/kit/win.hpp>  // utf8_to_wide/wide_to_utf8（小文件读写的编码转换）
 #include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（探测/停机通知）
 
 namespace win = nostos::kit::win;
@@ -112,6 +113,7 @@ void LogLine(const std::wstring& msg) {
 }
 
 // ---- 小文件读写（UTF-8 ⇄ wide；manifest/port/index 皆小文件）----------------
+// 编码转换走 kit::win（与全仓同一份实现）
 std::wstring ReadSmallFile(const std::wstring& path) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
@@ -120,20 +122,13 @@ std::wstring ReadSmallFile(const std::wstring& path) {
     char tmp[4096]; DWORD n = 0;
     while (ReadFile(f, tmp, sizeof(tmp), &n, nullptr) && n) buf.append(tmp, n);
     CloseHandle(f);
-    if (buf.empty()) return L"";
-    int w = MultiByteToWideChar(CP_UTF8, 0, buf.data(), (int)buf.size(), nullptr, 0);
-    std::wstring out(static_cast<size_t>(w), 0);
-    MultiByteToWideChar(CP_UTF8, 0, buf.data(), (int)buf.size(), out.data(), w);
-    return out;
+    return buf.empty() ? std::wstring() : win::utf8_to_wide(buf);
 }
 bool WriteSmallFile(const std::wstring& path, const std::wstring& text) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
                            CREATE_ALWAYS, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
-    const int n = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(),
-                                      nullptr, 0, nullptr, nullptr);
-    std::string u8(static_cast<size_t>(n), 0);
-    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), (int)text.size(), u8.data(), n, nullptr, nullptr);
+    const std::string u8 = win::wide_to_utf8(text.c_str());
     DWORD w = 0;
     WriteFile(f, u8.data(), (DWORD)u8.size(), &w, nullptr);
     CloseHandle(f);

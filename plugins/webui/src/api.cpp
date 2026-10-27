@@ -176,17 +176,6 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
 
 // ---- 供应商模型清单拉取（OpenAI 兼容 GET /models）---------------------------
 
-// UTF-8 → UTF-16（key/base_url 进 WinHTTP 只吃宽字符；插件内联小件——llm_cloud
-// 那份是 SSE 全套客户端，这里只需要一发 GET，不值得为此抽公共件）。
-static std::wstring utf8_to_wide_(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
-                                      static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
-
 // WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
 // 两插件无公共 TU）。错误码显式传入：调用点已离开失败现场，GetLastError 不可再读。
 static std::string winhttp_error_text_(unsigned long gle) {
@@ -232,8 +221,8 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
         std::string url = base;
         while (!url.empty() && url.back() == '/') url.pop_back();
         url += "/models";
-        const std::wstring wurl = utf8_to_wide_(url);
-        const std::wstring wkey = utf8_to_wide_(key);
+        const std::wstring wurl = win::utf8_to_wide(url);
+        const std::wstring wkey = win::utf8_to_wide(key);
         json result = {{"ok", false}, {"error", std::string("请求未发起")}};
         const win::HttpReply reply = win::http_fetch(wurl, {
             .headers = {L"Authorization: Bearer " + wkey},

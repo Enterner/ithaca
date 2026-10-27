@@ -274,7 +274,7 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
         });
         if (saw_done) break;
     }
-    sse.finish([](const std::string&) {});  // 无行尾残余：异常断流的碎片，丢弃
+    sse.flush([](const std::string&) {});  // 无行尾残余：异常断流的碎片，丢弃
     return true;
 }
 

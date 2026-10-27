@@ -11,7 +11,7 @@ VC_TEST("sse: 逐字节喂入——CRLF 行边界与 [DONE] 透传") {
     std::vector<std::string> lines;
     const std::string src = "data: {\"a\":1}\r\ndata: [DONE]\r\n\r\n";
     for (const char c : src) sse.feed(&c, 1, [&](const std::string& l) { lines.push_back(l); });
-    sse.finish([&](const std::string& l) { lines.push_back(l); });
+    sse.flush([&](const std::string& l) { lines.push_back(l); });
 
     REQUIRE(lines.size() == 3);  // 两个 data 行 + 一个空行（事件分隔）
     CHECK(lines[0] == "data: {\"a\":1}");
@@ -31,12 +31,12 @@ VC_TEST("sse: 网络分块不对齐行尾——缓冲拼接后仍逐行完整") 
     CHECK(lines[1] == "data: [DONE]");
 }
 
-VC_TEST("sse: finish 冲刷无行尾残余（异常断流兜底）") {
+VC_TEST("sse: flush 冲刷无行尾残余（异常断流兜底）") {
     vcllm::SseParser sse;
     std::vector<std::string> lines;
     sse.feed("data: x", 7, [&](const std::string& l) { lines.push_back(l); });
     CHECK(lines.empty());  // 未遇行尾：不产出
-    sse.finish([&](const std::string& l) { lines.push_back(l); });
+    sse.flush([&](const std::string& l) { lines.push_back(l); });
     REQUIRE(lines.size() == 1);
     CHECK(lines[0] == "data: x");
 }

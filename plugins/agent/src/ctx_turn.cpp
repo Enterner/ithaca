@@ -591,32 +591,16 @@ std::string AgentCtx::exec_recall(const json& args) {
     }
     long long offset = args.value("offset", 0LL);
     const long long limit = std::clamp(args.value("limit", 2048LL), 1LL, 4096LL);
-    // 页边界不劈 UTF-8 码点：起点落在续字节上则后移到码点首字节；**尾边界同理**——
-    // substr 恰好切在多字节序列中间 ⇒ 尾部残留不完整码点，recall_result().dump()
-    // 抛 type_error.316（异常被内核 emit 的 catch-all 吞掉 ⇒ send_chat 永不执行，
-    // turn 挂死，踩过）。trim_utf8 只保证「截断到 cap」不校验切片尾部，边界必须
-    // 由本处自洽：内容是 nlohmann dump 产物（合法 UTF-8）且起点已对齐，前向扫到
-    // 最后一个完整码点边界即可。
     offset = std::clamp(offset, 0LL, total);
-    while (offset < total && (static_cast<unsigned char>(
-                                  content[static_cast<std::size_t>(offset)]) & 0xC0) == 0x80)
-        ++offset;
-    std::string page = content.substr(static_cast<std::size_t>(offset),
-                                      static_cast<std::size_t>(limit));
-    {
-        std::size_t k = 0, last = 0;
-        while (k < page.size()) {
-            last = k;
-            const unsigned char c = static_cast<unsigned char>(page[k]);
-            k += c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2
-               : (c >= 0xE0 && c <= 0xEF) ? 3 : 4;
-        }
-        if (k != page.size()) page.resize(last);   // 尾码点被劈 ⇒ 收回到上一边界
-    }
-    page = vcws::trim_utf8(page, static_cast<std::size_t>(limit));
-    const bool has_more = offset + static_cast<long long>(page.size()) < total;
-    return vcagent::recall_result(ref, page, total, offset, has_more,
-                                  offset + static_cast<long long>(page.size()));
+    // 双边界（起点对齐 + 尾部不劈码点）由 vcws::utf8_window 一次做完，产物直接
+    // 进 recall_result 的 JSON——内容是 dump 产物（合法 UTF-8），窗口尾部自洽
+    std::size_t off = static_cast<std::size_t>(offset);
+    const std::string page =
+        vcws::utf8_window(content, off, static_cast<std::size_t>(limit));
+    const bool has_more = off + page.size() < static_cast<std::size_t>(total);
+    return vcagent::recall_result(ref, page, total, static_cast<long long>(off),
+                                  has_more,
+                                  static_cast<long long>(off + page.size()));
 }
 
 void AgentCtx::try_finish_tools() {

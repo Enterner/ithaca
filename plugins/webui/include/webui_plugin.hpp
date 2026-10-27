@@ -36,6 +36,7 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/http.hpp>
 #include <nostos/kit/poster.hpp>  // poster_submit：多个翻译单元共用
+#include <nostos/kit/win.hpp>  // utf8_to_wide：模型清单拉取的宽字符转换
 #include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（探测/模型清单）
 
 #include <windows.h>  // HANDLE：fs_watcher 状态成员

@@ -47,6 +47,29 @@ inline std::string trim_utf8(const std::string& s, std::size_t cap) {
     return s.substr(0, n);
 }
 
+// 字节分页窗口：取 s 的 [offset, offset+cap) 并双边界自洽——起点落在续字节上
+// 则后移到码点首字节，尾部被 cap 劈开的残码点收回上一边界。前提：s 是完整
+// UTF-8（nlohmann dump 产物）。offset 进出都是相对 s 的字节偏移，出参已对齐
+// 码点边界（分页续读锚点）。产物可直接进 JSON——trim_utf8 只管「截断到 cap」
+// 不管切片尾部，双边界必须由本函数一次做完（踩过：recall 分页尾部残留不完整
+// 码点 ⇒ dump 抛 type_error.316，异常被 emit catch-all 吞掉，turn 挂死）。
+inline std::string utf8_window(const std::string& s, std::size_t& offset, std::size_t cap) {
+    if (offset > s.size()) offset = s.size();
+    while (offset < s.size() &&
+           (static_cast<unsigned char>(s[offset]) & 0xC0) == 0x80)
+        ++offset;
+    std::string page = s.substr(offset, cap);
+    std::size_t k = 0, last = 0;
+    while (k < page.size()) {
+        last = k;
+        const unsigned char c = static_cast<unsigned char>(page[k]);
+        k += c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2
+           : (c >= 0xE0 && c <= 0xEF) ? 3 : 4;
+    }
+    if (k != page.size()) page.resize(last);   // 尾码点被劈 ⇒ 收回到上一边界
+    return page;
+}
+
 // UTF-8 清洗：非法字节替换为 replacement（子进程/外部字节流进 JSON 前的保守
 // 净化——nlohmann dump 对非法序列抛 type_error.316）。口径与 utf8_valid 一致
 // （overlong/代理区/>U+10FFFF 一律非法），区别只在处置是替换不是拒绝。

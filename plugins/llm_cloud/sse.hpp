@@ -6,47 +6,19 @@
 //   data: {...}\n\n            事件（本插件逐行处理，多行 data 的合并语义用不上）
 //   data: [DONE]\n\n           结束标记
 //   以 \n 或 \r\n 结尾；网络分块不保证对齐行尾——解析器内部缓冲拼行。
+#include <nostos/kit/piped_process.hpp>  // LineSplitter：\n 分行剥 \r、残余 flush——
+                                         // 与子进程输出逐行读是同一件事，无第二份实现
 #include <nostos/nlohmann/json.hpp>
 
-#include <cstddef>
-#include <functional>
 #include <string>
-#include <utility>
 
 namespace vcllm {
 
 using nlohmann::json;
 
-class SseParser {
-public:
-    // 喂一段网络字节流；每个完整行（不含行尾）回调一次。
-    void feed(const char* data, std::size_t n,
-              const std::function<void(const std::string&)>& on_line) {
-        buf_.append(data, n);
-        std::size_t pos = 0;
-        for (;;) {
-            const std::size_t eol = buf_.find('\n', pos);
-            if (eol == std::string::npos) break;
-            std::string line = buf_.substr(pos, eol - pos);
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            on_line(line);
-            pos = eol + 1;
-        }
-        buf_.erase(0, pos);
-    }
-
-    // 流结束：把没有行尾的残余按一行冲刷（服务器异常断流的兜底）。
-    void finish(const std::function<void(const std::string&)>& on_line) {
-        if (buf_.empty()) return;
-        std::string line = std::move(buf_);
-        buf_.clear();
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        on_line(line);
-    }
-
-private:
-    std::string buf_;
-};
+// 行解析直接用内核 kit 的分割器（曾有逐字符相同的私有拷贝 SseParser，退役）；
+// 别名保留 SSE 语境的可读性。
+using SseParser = nostos::kit::LineSplitter;
 
 // chat.completion.chunk → 增量文本。role 块 / usage 块 / finish 块都返回空串——
 // 调用方跳过空增量即可。（DeepSeek reasoner 的 reasoning_content 增量见 delta_reasoning_of。）
