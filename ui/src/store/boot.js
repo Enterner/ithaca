@@ -6,10 +6,28 @@ import { api, cfgFromServer, shellMsg } from './api'
 import { pollOnce, render } from './records'
 import { loadSessions, sessionMeta, startShellPoll, enterDraft } from './sessions'
 
+// SSE 断线补洞：EventSource 自动重连，但重连间隙的事件是空洞——conn=off 期间
+// 用 pollOnce（after 游标）轮询补齐，恢复 on 即停。无此兜底，宿主重启/网络抖动
+// 后页面永久失去实时事件，用户只能刷新整页。
+let holeTimer = null
+function setHolePoll(on) {
+  if (on && holeTimer === null) {
+    holeTimer = setInterval(async () => {
+      try { await pollOnce() } catch (e) { /* 宿主未回：下一轮再试 */ }
+    }, 2000)
+  } else if (!on && holeTimer !== null) {
+    clearInterval(holeTimer); holeTimer = null
+  }
+}
+
 function connect() {
   const es = new EventSource('/events')
-  es.onopen = () => { S.conn = 'on' }
-  es.onerror = () => { S.conn = 'off' }
+  es.onopen = () => {
+    S.conn = 'on'
+    setHolePoll(false)
+    pollOnce().catch(() => {})   // 重连首件事：补上断口期间漏掉的记录
+  }
+  es.onerror = () => { S.conn = 'off'; setHolePoll(true) }
   es.onmessage = (e) => { render(JSON.parse(e.data)) }
 }
 

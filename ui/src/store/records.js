@@ -360,8 +360,10 @@ export async function pollOnce() {
   // 重放后以后端原子真值对账：user 记录在重放里无条件置 inFlight=true，失败/
   // 取消轮没有 assistant/error 收口时会把「进行中」复活（踩过: zombie——切回
   // 失败会话按钮恒为停止态），以后端 in_flight 为准兜掉一切记录流缺口
-  const m = await api('/api/session')
-  S.inFlight = !!m.in_flight
+  try {
+    const m = await api('/api/session')
+    S.inFlight = !!m.in_flight
+  } catch (e) { /* 对账端点失联：游标已推进，下次补洞继续 */ }
 }
 
 /** 发送即开始计时（输出速率窗口）。 */
