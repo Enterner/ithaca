@@ -154,7 +154,13 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
     WinHttpSetTimeouts(req.h, /*resolve*/ 10000, /*connect*/ 20000, /*send*/ 30000,
                        /*receive*/ 300000);
 
-    json body = {{"model", model}, {"messages", messages}, {"stream", true}};
+    json body = {{"model", model}, {"messages", messages}, {"stream", true},
+                 // OpenAI 兼容平台的流式用量默认不下发（实测 ark coding plan 末块
+                 // usage=null、[DONE] 前无用量块）——显式请求才有：末块独立 usage
+                 // 块（choices 空）带 prompt/completion/total 与
+                 // prompt_tokens_details.cached_tokens（缓存命中计量的唯一数据源，
+                 // webui 上下文卡的输入/输出/缓存显示都靠它）
+                 {"stream_options", json{{"include_usage", true}}}};
     if (tools.is_array() && !tools.empty()) {
         // DeepSeek/OpenAI 的 function.name 只允许 [a-zA-Z0-9_-]；内部工具名带点
         // （workspace.read）⇒ 请求侧净化、响应侧经 name_back 还原（踩过：HTTP 400）
