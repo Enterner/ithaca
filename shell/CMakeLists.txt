@@ -15,6 +15,9 @@ set(WV2 "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2/build/native")
 
 add_executable(ithaca WIN32 ithaca.cpp app.rc)   # app.rc：品牌图标（标题栏/任务栏）
 target_include_directories(ithaca PRIVATE "${WV2}/include")
+# nostos kit 头（vendored 内核子模块）：一发 HTTP 请求小件
+target_include_directories(ithaca PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../external/nostos/include")
 # WebView2 加载器动态链接：DLL 随构建拷到 exe 旁（静态库约 10MB 不入仓，见
 # third_party/webview2/README.md）
 target_link_libraries(ithaca PRIVATE

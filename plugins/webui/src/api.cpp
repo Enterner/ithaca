@@ -8,7 +8,8 @@
 #include "vc_events.hpp"  // vc_api::TurnInput/TurnDecision/PermissionMode + normalize_permission_mode
 
 #include <objbase.h>  // CoInitializeEx/CoUninitialize：选目录线程的 COM 初始化
-#include <winhttp.h>  // WinHttp*：供应商模型清单的 GET 请求
+
+#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件 + ERROR_WINHTTP_*（供应商模型清单拉取）
 
 #include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
 
@@ -175,14 +176,14 @@ static std::wstring utf8_to_wide_(const std::string& s) {
 }
 
 // WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
-// 两插件无公共 TU，抽件得进 kit，见观察文档 WinHTTP 样板条目）。
-static std::string winhttp_error_text_() {
-    switch (GetLastError()) {
+// 两插件无公共 TU）。错误码显式传入：调用点已离开失败现场，GetLastError 不可再读。
+static std::string winhttp_error_text_(unsigned long gle) {
+    switch (gle) {
         case ERROR_WINHTTP_TIMEOUT: return "超时";
         case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
         case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
         case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
-        default: return "WinHTTP 错误 " + std::to_string(GetLastError());
+        default: return "WinHTTP 错误 " + std::to_string(gle);
     }
 }
 
@@ -215,87 +216,38 @@ http::Response WebuiPlugin::api_provider_models_(const std::string& body) {
         const std::wstring wurl = utf8_to_wide_(url);
         const std::wstring wkey = utf8_to_wide_(key);
         json result = {{"ok", false}, {"error", std::string("请求未发起")}};
-        HINTERNET ses = WinHttpOpen(L"ithaca-models/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (ses == nullptr) {
-            result["error"] = winhttp_error_text_();
+        const win::HttpReply reply = win::http_fetch(wurl, {
+            .headers = {L"Authorization: Bearer " + wkey},
+            // 短超时：清单拉取是设置面动作，用户在等，失败要快回
+            .timeouts = {5000, 5000, 10000, 30000},
+        });
+        if (!reply.sent || reply.status == 0) {
+            result["error"] = winhttp_error_text_(reply.gle);
         } else {
-            URL_COMPONENTS uc{};
-            uc.dwStructSize = sizeof(uc);
-            uc.dwSchemeLength = 1;
-            uc.dwHostNameLength = 1;
-            uc.dwUrlPathLength = 1;
-            HINTERNET con = nullptr, req = nullptr;
-            if (WinHttpCrackUrl(wurl.c_str(), static_cast<DWORD>(wurl.size()), 0, &uc) &&
-                (con = WinHttpConnect(ses, std::wstring(uc.lpszHostName,
-                                      uc.dwHostNameLength).c_str(), uc.nPort, 0)) != nullptr &&
-                (req = WinHttpOpenRequest(con, L"GET",
-                                          std::wstring(uc.lpszUrlPath,
-                                                       uc.dwUrlPathLength).c_str(),
-                                          nullptr, WINHTTP_NO_REFERER,
-                                          WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                          uc.nScheme == INTERNET_SCHEME_HTTPS
-                                              ? WINHTTP_FLAG_SECURE : 0)) != nullptr) {
-                // 短超时：清单拉取是设置面动作，用户在等，失败要快回
-                WinHttpSetTimeouts(req, 5000, 5000, 10000, 30000);
-                const std::wstring hdr = L"Authorization: Bearer " + wkey;
-                WinHttpAddRequestHeaders(req, hdr.c_str(), static_cast<DWORD>(-1),
-                                         WINHTTP_ADDREQ_FLAG_ADD);
-                DWORD status = 0;
-                std::string resp;
-                if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                       WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                    WinHttpReceiveResponse(req, nullptr)) {
-                    DWORD sz = sizeof(status);
-                    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE |
-                                                 WINHTTP_QUERY_FLAG_NUMBER,
-                                        WINHTTP_HEADER_NAME_BY_INDEX, &status,
-                                        &sz, WINHTTP_NO_HEADER_INDEX);
-                    for (;;) {   // 整读 body（256KB 封顶——清单异常大按截断解析）
-                        DWORD avail = 0;
-                        if (!WinHttpQueryDataAvailable(req, &avail) || avail == 0) break;
-                        std::string chunk(avail, '\0');
-                        DWORD got = 0;
-                        if (!WinHttpReadData(req, chunk.data(), avail, &got) || got == 0)
-                            break;
-                        resp.append(chunk, 0, got);
-                        if (resp.size() > 256 * 1024) break;
-                    }
-                }
-                if (status == 0) {
-                    result["error"] = winhttp_error_text_();
-                } else {
-                    const json doc = json::parse(resp, nullptr,
-                                                 /*allow_exceptions=*/false);
-                    if (status == 200 && doc.is_object() && doc.contains("data") &&
-                        doc["data"].is_array()) {
-                        json ids = json::array();
-                        for (const auto& m : doc["data"])
-                            if (m.is_object() && m.contains("id") && m["id"].is_string())
-                                ids.push_back(m["id"].get<std::string>());
-                        result = {{"ok", true}, {"models", std::move(ids)}};
-                    } else {
-                        // 错误消息人话化：平台 OpenAI 形态 error.message 优先，
-                        // 原文兜底（截 200 字节防超长错误体刷屏）
-                        std::string msg;
-                        if (doc.is_object()) {
-                            if (doc.contains("error") && doc["error"].is_object())
-                                msg = doc["error"].value("message", "");
-                            else if (doc.contains("message") && doc["message"].is_string())
-                                msg = doc["message"].get<std::string>();
-                        }
-                        if (msg.empty()) msg = vcws::trim_utf8(resp, 200);   // 按字节切会劈开 UTF-8 ⇒ dump 抛 316
-                        result = {{"ok", false},
-                                  {"error", "HTTP " + std::to_string(status) +
-                                                (msg.empty() ? "" : "：" + msg)}};
-                    }
-                }
+            const json doc = json::parse(reply.body, nullptr,
+                                         /*allow_exceptions=*/false);
+            if (reply.status == 200 && doc.is_object() && doc.contains("data") &&
+                doc["data"].is_array()) {
+                json ids = json::array();
+                for (const auto& m : doc["data"])
+                    if (m.is_object() && m.contains("id") && m["id"].is_string())
+                        ids.push_back(m["id"].get<std::string>());
+                result = {{"ok", true}, {"models", std::move(ids)}};
             } else {
-                result["error"] = winhttp_error_text_();
+                // 错误消息人话化：平台 OpenAI 形态 error.message 优先，
+                // 原文兜底（截 200 字节防超长错误体刷屏）
+                std::string msg;
+                if (doc.is_object()) {
+                    if (doc.contains("error") && doc["error"].is_object())
+                        msg = doc["error"].value("message", "");
+                    else if (doc.contains("message") && doc["message"].is_string())
+                        msg = doc["message"].get<std::string>();
+                }
+                if (msg.empty()) msg = vcws::trim_utf8(reply.body, 200);   // 按字节切会劈开 UTF-8 ⇒ dump 抛 316
+                result = {{"ok", false},
+                          {"error", "HTTP " + std::to_string(reply.status) +
+                                        (msg.empty() ? "" : "：" + msg)}};
             }
-            if (req != nullptr) WinHttpCloseHandle(req);
-            if (con != nullptr) WinHttpCloseHandle(con);
-            WinHttpCloseHandle(ses);
         }
         json evt = {{"type", "provider_models"}};
         evt.merge_patch(result);

@@ -4,7 +4,7 @@
 
 #include "webui_plugin.hpp"
 
-#include <winhttp.h>  // WinHttp*：探测请求
+#include <nostos/kit/win_http.hpp>  // 一发 HTTP 探测小件（兄弟实例健康检查）
 
 #include <sstream>  // std::ostringstream：整读兄弟实例 index.json
 
@@ -36,36 +36,10 @@ void WebuiPlugin::start_prober_() {
                                   std::ios::binary);
                 int port = 0;
                 if (pin >> port) {
-                    HINTERNET ses = WinHttpOpen(L"ithaca-probe/1.0",
-                                                WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                                WINHTTP_NO_PROXY_NAME,
-                                                WINHTTP_NO_PROXY_BYPASS, 0);
-                    bool alive = false;
-                    if (ses != nullptr) {
-                        HINTERNET con = WinHttpConnect(ses, L"127.0.0.1",
-                                                       static_cast<INTERNET_PORT>(port), 0);
-                        if (con != nullptr) {
-                            HINTERNET req = WinHttpOpenRequest(
-                                con, L"GET", L"/api/health", nullptr, WINHTTP_NO_REFERER,
-                                WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-                            WinHttpSetTimeouts(req, 800, 800, 800, 800);
-                            if (req != nullptr) {
-                                if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                                       WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                                    WinHttpReceiveResponse(req, nullptr)) {
-                                    DWORD status = 0, sz = sizeof(status);
-                                    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE |
-                                                             WINHTTP_QUERY_FLAG_NUMBER,
-                                                        WINHTTP_HEADER_NAME_BY_INDEX, &status,
-                                                        &sz, WINHTTP_NO_HEADER_INDEX);
-                                    alive = status == 200;
-                                }
-                                WinHttpCloseHandle(req);
-                            }
-                            WinHttpCloseHandle(con);
-                        }
-                        WinHttpCloseHandle(ses);
-                    }
+                    const bool alive = win::http_fetch(
+                        std::wstring(L"http://127.0.0.1:") + std::to_wstring(port) +
+                            L"/api/health",
+                        {.timeouts = {800, 800, 800, 800}}).status == 200;
                     fresh[key] = {alive, port};
                 }
             }

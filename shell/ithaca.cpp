@@ -26,13 +26,16 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <winhttp.h>
 #include <shellapi.h>
 #include <objbase.h>
 #include <shobjidl.h>
 #include <dwmapi.h>
 
 #include "WebView2.h"
+
+#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（探测/停机通知）
+
+namespace win = nostos::kit::win;
 
 #include <string>
 #include <thread>
@@ -219,55 +222,16 @@ std::wstring ExtractSessionBlock(const std::wstring& index_text, const std::wstr
     return L"";
 }
 
-// ---- HTTP（WinHTTP 短超时，worker 线程专用）---------------------------------
+// ---- HTTP（短超时，worker 线程专用；一发请求小件见 kit/win_http.hpp）--------
 bool HttpGetOk(UINT port, const wchar_t* path) {
-    HINTERNET ses = WinHttpOpen(L"ithaca-shell/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (ses == nullptr) return false;
-    HINTERNET con = WinHttpConnect(ses, L"127.0.0.1", port, 0);
-    bool ok = false;
-    if (con != nullptr) {
-        HINTERNET req = WinHttpOpenRequest(con, L"GET", path, nullptr,
-                                           WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-        WinHttpSetTimeouts(req, 900, 900, 900, 900);
-        if (req != nullptr) {
-            if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                WinHttpReceiveResponse(req, nullptr)) {
-                DWORD status = 0, size = sizeof(status);
-                WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE |
-                                         WINHTTP_QUERY_FLAG_NUMBER,
-                                    WINHTTP_HEADER_NAME_BY_INDEX,
-                                    &status, &size, WINHTTP_NO_HEADER_INDEX);
-                ok = status == 200;
-            }
-            WinHttpCloseHandle(req);
-        }
-        WinHttpCloseHandle(con);
-    }
-    WinHttpCloseHandle(ses);
-    return ok;
+    const std::wstring url =
+        std::wstring(L"http://127.0.0.1:") + std::to_wstring(port) + path;
+    return win::http_fetch(url, {.timeouts = {900, 900, 900, 900}}).status == 200;
 }
 void ShutdownPort(UINT port) {   // 优雅停宿主（每 turn 已落盘；失败由 Job 兜底）
-    HINTERNET ses = WinHttpOpen(L"ithaca-shell/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                                WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (ses == nullptr) return;
-    HINTERNET con = WinHttpConnect(ses, L"127.0.0.1", port, 0);
-    if (con != nullptr) {
-        HINTERNET req = WinHttpOpenRequest(con, L"POST", L"/api/shutdown", nullptr,
-                                           WINHTTP_NO_REFERER,
-                                           WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
-        WinHttpSetTimeouts(req, 1200, 1200, 1200, 1200);
-        if (req != nullptr) {
-            WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-            WinHttpReceiveResponse(req, nullptr);
-            WinHttpCloseHandle(req);
-        }
-        WinHttpCloseHandle(con);
-    }
-    WinHttpCloseHandle(ses);
+    const std::wstring url = std::wstring(L"http://127.0.0.1:") +
+                             std::to_wstring(port) + L"/api/shutdown";
+    win::http_fetch(url, {.method = L"POST", .timeouts = {1200, 1200, 1200, 1200}});
 }
 
 UINT ReadPortFile(const std::wstring& home) {
