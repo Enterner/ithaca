@@ -289,8 +289,8 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/session/open") return api_session_open_(req.body);
     if (m == "POST" && t == "/api/session/delete") return api_session_delete_(req.body);
     if (m == "POST" && t == "/api/session/rename") return api_session_rename_(req.body);
-    if (m == "POST" && t == "/api/input") return api_input_(req.body);
-    if (m == "POST" && t == "/api/decision") return api_decision_(req.body);
+    if (m == "POST" && t == "/api/input") return api_input_(req);
+    if (m == "POST" && t == "/api/decision") return api_decision_(req);
     if (m == "POST" && t == "/api/model") return api_model_(req.body);
     if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req.body);
     if (m == "GET" && t == "/api/permission-mode")

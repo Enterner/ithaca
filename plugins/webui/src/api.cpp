@@ -19,9 +19,10 @@
 
 namespace vc_webui {
 
-// 发送管线（select 线程共用；/api/input 与 /api/session/new 同走这一条）：
-// 落盘用户记录 + 延迟广播/开 turn。NOTE: handle 内禁 broadcast——EDEADLOCK
-// （踩过：POST /api/input 即 500）。
+// 发送管线（/api/session/new 从 select 线程调；/api/input 从宿主线程挂起闭包调）：
+// 落盘用户记录 + 延迟广播/开 turn。NOTE: 持连接表锁的 handle 栈内禁直接广播/
+// 发射——跨线程锁序倒挂即死锁（踩过：POST /api/input 即 500）；广播一律经
+// poster defer 到宿主线程。
 void WebuiPlugin::start_turn_(const std::string& text) {
     in_flight_.store(true);
     persist_status_();   // turn 开始（聚合徽标同步）
@@ -35,32 +36,52 @@ void WebuiPlugin::start_turn_(const std::string& text) {
     });
 }
 
-/// POST /api/input {line} → 发送后续消息：落盘 + 延迟广播 + 开 turn；空输入或
-/// 无会话态 400。
-http::Response WebuiPlugin::api_input_(const std::string& body) {
+/// POST /api/input {line} → 发送后续消息（挂起-补响应试点端点）。select 线程只
+/// 解析参数并经 poster 投递闭包即挂起返回——读会话态/落盘/广播/开 turn 全在宿主
+/// 线程闭包内完成，响应经 Server::respond 补发。收益：文件写与数据面触碰离开
+/// select 线程（handle 持连接表锁期间只剩快进快出），闭包与宿主线程事件回调
+/// 同线程串行化，跨线程竞态面收窄。
+http::Response WebuiPlugin::api_input_(const http::Request& req) {
     try {
-        json in = parse_body_(body);
+        json in = parse_body_(req.body);
         std::string line = in.value("line", "");
         if (line.empty()) return json_resp({{"ok", false}, {"error", "空输入"}});
-        std::string session;
-        {
-            std::lock_guard<std::recursive_mutex> lock(data_mu_);
-            session = session_;
-        }
-        if (session.empty())
-            return json_resp({{"ok", false},
-                              {"error", "无活跃会话——发送首条消息时自动创建"}}, 400);
-        start_turn_(line);
-        return json_resp({{"ok", true}});
+        const std::uint64_t conn = req.conn_id;
+        const nostos_status st = nostos::kit::poster_submit(
+            poster_, [this, conn, line = std::move(line)] {
+                std::string session;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(data_mu_);
+                    session = session_;
+                }
+                if (session.empty()) {   // 无活跃会话：400 经补发通道回（挂起后唯一出口）
+                    server_->respond(conn,
+                                     json_resp({{"ok", false},
+                                                {"error",
+                                                 "无活跃会话——发送首条消息时自动创建"}},
+                                               400));
+                    return;
+                }
+                start_turn_(line);
+                server_->respond(conn, json_resp({{"ok", true}}));
+            });
+        if (st != NOSTOS_OK)   // 未入队（activate 漏领/会话收尾）：没人会补响应，同步答防悬挂
+            return json_resp({{"ok", false}, {"error", "宿主未接收投递"}}, 503);
+        http::Response r;
+        r.suspended = true;
+        return r;
     } catch (const std::exception& e) {
         return json_resp({{"ok", false}, {"error", e.what()}});
     }
 }
 
-/// POST /api/decision {decision 0-4, paths?, msg?} → 裁决提案：0 批准所选 /
-/// 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；任意裁决终结当前 pending。
-http::Response WebuiPlugin::api_decision_(const std::string& body) {
-    json in = parse_body_(body);
+/// POST /api/decision {decision 0-4, paths?, msg?} → 裁决提案（挂起-补响应试点
+/// 端点）：0 批准所选 / 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；任意裁决终结当前
+/// pending。select 线程只解析校验即挂起，pending 读取与复位在宿主线程闭包内
+/// 完成——与 edit_proposed 回调同线程串行化，原「select 读复位 vs 宿主写」的
+/// 竞态对消失（data_mu_ 仅余对 select 线程 GET 读的守护，E3 退役）。
+http::Response WebuiPlugin::api_decision_(const http::Request& req) {
+    json in = parse_body_(req.body);
     const int d = in.value("decision", -1);
     if (d < 0 || d > 4) return json_resp({{"ok", false}, {"error", "decision 越界"}});
     // 逐文件批准：{paths:["a","b"]} ⇒ 只落盘接受的文件；缺省 = 全部
@@ -70,25 +91,33 @@ http::Response WebuiPlugin::api_decision_(const std::string& body) {
     // 拒绝反馈：{msg:"..."} 随拒绝回灌给 agent（ZCode 式"拒绝并告诉它怎么做"）
     const std::string msg = in.contains("msg") && in["msg"].is_string()
                                 ? in["msg"].get<std::string>() : "";
-    // 读取与复位同锁原子完成——宿主线程的 edit_proposed 回调在另一侧写同一字段
-    int turn = 0;
-    {
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
-        turn = (d == 0 || d == 1) ? pending_turn_ : 0;  // undo/cancel 不看 turn
-        // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后 pending 恒为
-        // false，前端决策坞以后端事实为准（防幻影）
-        pending_turn_ = -1;
-    }
-    // NOTE: 取消（d=4）后 provider 侧不发 done/error（mock 直接静默终止），agent
-    // 只发 notice——in_flight_ 无人清零 ⇒ UI 永远卡「生成中」（踩过：停止键卡死）。
-    // 用户主动终止 = UI 必须立即解锁。
-    if (d == 4) in_flight_.store(false);
-    nostos::kit::poster_submit(poster_, [this, turn, d, paths_json, msg] {
-        const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str()};
-        host_.emit(vc_api::turn_decision, &e);
-    });
-    persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：in_flight + pending）
-    return json_resp({{"ok", true}});
+    const std::uint64_t conn = req.conn_id;
+    const nostos_status st = nostos::kit::poster_submit(
+        poster_, [this, conn, d, paths_json = std::move(paths_json), msg] {
+            int turn = 0;
+            {
+                std::lock_guard<std::recursive_mutex> lock(data_mu_);
+                turn = (d == 0 || d == 1) ? pending_turn_ : 0;  // undo/cancel 不看 turn
+                // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后 pending 恒为
+                // false，前端决策坞以后端事实为准（防幻影）
+                pending_turn_ = -1;
+            }
+            // NOTE: 取消（d=4）后 provider 侧不发 done/error（mock 直接静默终止），agent
+            // 只发 notice——in_flight_ 无人清零 ⇒ UI 永远卡「生成中」（踩过：停止键卡死）。
+            // 用户主动终止 = UI 必须立即解锁。
+            if (d == 4) in_flight_.store(false);
+            persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：in_flight + pending）
+            server_->respond(conn, json_resp({{"ok", true}}));
+            // 响应先行、emit 收尾：agent 侧裁决处理可能起进程等重活，不能拖住 UI
+            // 的 POST 应答（原同步形态即立即应答+异步 emit，此处保序）。
+            const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str()};
+            host_.emit(vc_api::turn_decision, &e);   // 已在宿主线程：无需再经 poster 转手
+        });
+    if (st != NOSTOS_OK)   // 未入队：没人会补响应，同步答防悬挂
+        return json_resp({{"ok", false}, {"error", "宿主未接收投递"}}, 503);
+    http::Response r;
+    r.suspended = true;
+    return r;
 }
 
 /// POST /api/permission-mode {mode} → 权限模式持久化 + 热切。

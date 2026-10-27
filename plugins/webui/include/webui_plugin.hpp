@@ -151,8 +151,8 @@ private:
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
 
     void start_turn_(const std::string& text);
-    http::Response api_input_(const std::string& body);
-    http::Response api_decision_(const std::string& body);
+    http::Response api_input_(const http::Request& req);
+    http::Response api_decision_(const http::Request& req);
     http::Response api_permission_mode_(const std::string& body);
     http::Response api_model_(const std::string& body);
     http::Response api_provider_models_(const std::string& body);   // 拉平台模型清单（SSE 回发）
