@@ -62,7 +62,7 @@ inline json usage_obj_of(const json& chunk) {
     }
     // 缓存命中（可选，归一口径 = prompt 中命中缓存的部分）：DeepSeek
     // prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens——
-    // 缓存收益度量（待办 12）与输出预留（19）的数据源；无则不报
+    // 缓存收益度量与输出预留的数据源；无则不报
     long long cache = 0;
     if (const auto it = usage->find("prompt_cache_hit_tokens");
         it != usage->end() && it->is_number_unsigned())

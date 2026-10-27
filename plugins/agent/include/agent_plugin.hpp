@@ -61,7 +61,7 @@ namespace fs = std::filesystem;
 
 namespace vc_agent {
 
-// provider 未回报 usage 时的压缩判定信号粗估（批次二-6/四-19；中英混合经验系数，
+// provider 未回报 usage 时的压缩判定信号粗估（中英混合经验系数，
 // 宁高勿低）：CJK 字 ≈ 1 token/字；其余按 3 字节 ≈ 1 token（英文实际 ≈4B/token，
 // 分母取小即偏高）；再加 1/16 的 JSON 结构与转义开销。只服务压缩判定——估算值
 // 不进用量累计（计量以 provider usage 为准）。
@@ -177,8 +177,8 @@ struct AgentCtx {
     // ⇒ send_chat 永不执行 ⇒ turn 悬停，见 dispatch_one_）。
     void dispatch_loop();
     // 单条调用分发（dispatch_loop 的 try 保护体）。返回 true = 挂起即返（提案
-    // 等裁决 / 回灌已就地发车）——调用方必须跳过循环尾，语义对齐重构前这些
-    // 路径的 return（尾部的 append_results_and_continue 在挂起期绝不能再跑）。
+    // 等裁决 / 回灌已就地发车）——调用方必须跳过循环尾：挂起期跑尾部的
+    // append_results_and_continue 会把无结果的轮次提前收口。
     bool dispatch_one_(ToolCallCtx& ctx);
     // 全部工具调用完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。
     // 上下文压缩阶段一：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
@@ -189,8 +189,8 @@ struct AgentCtx {
     std::string spool_raw(const std::string& tool, const std::string& result);
     // context.recall：ref 校验（纯文件名）→ 读归档 → provenance 包装
     std::string exec_recall(const json& args);
-    // run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口（正在等 decision 时不收口，
-    // 收口延迟到 decision 恢复后的 dispatch_loop 的时机修正）
+    // run.exit 到达后：所有分发完成且全部 run 归流 ⇒ 收口；正在等 decision 时不收口，
+    // 延迟到 decision 恢复后的 dispatch_loop（run_exit 先于裁决到达时不丢终态）
     void try_finish_tools();
     void try_finish_tools_impl();
     // 确认清单 = 权限模式映射：suggest 逐条问 / auto-edit 编辑免批 /
@@ -231,11 +231,11 @@ struct AgentCtx {
     void on_compress_error_(const vc_api::LlmError& e);
     // 生效阈值重算：W 已知 ⇒ 按输出预留重算；未知 ⇒ 兜底阈值（compress_threshold_）。
     void set_context_window_(long long w);
-    // 生效阈值（批次四-19）：W − max_output（输出预留），下限 W/4；仅 W ⇒ 0.9×W；
+    // 生效阈值：W − max_output（输出预留），下限 W/4；仅 W ⇒ 0.9×W；
     // 都未知 ⇒ 兜底阈值。
     void recompute_threshold_();
 
-    // ---- 上下文压缩批次一 ---------------------------
+    // ---- 上下文压缩（判定与折叠执行）-----------
 
     // 硬保护判定：last_prompt_tokens_ ≥ 0.95×W（*20/19 整数式，宁早勿晚）。独立于
     // 会话阈值——退避封顶或阈值失灵时仍兜底；命中强制机械折叠（不等摘要）。

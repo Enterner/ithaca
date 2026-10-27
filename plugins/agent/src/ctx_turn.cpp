@@ -155,7 +155,7 @@ void AgentCtx::send_chat_impl() {
     body_buf_ = body.dump();
     if (llm_ == nullptr || llm_->chat_ex == nullptr)
         return fail_turn("LLM 不可用");
-    // 发送前预检（批次四-18/19）：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建
+    // 发送前预检：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建
     // 请求体再发——单 turn 几十轮工具往返在轮间主动瘦身（每轮 send_chat 都检），
     // 省一次 provider 400 往返；LLM 摘要仍只在 turn 边界。粗估宁高勿低：误折
     // 代价 = 上下文略瘦，可接受；折叠后旧信号置零待下次回报。子代理不压缩——
@@ -212,10 +212,10 @@ void AgentCtx::dispatch_loop() {
         if (excepted)
             host_.log(3, "ithaca.agent: 工具分发异常已兜底 turn #" +
                              std::to_string(turn_no_) + " tool=" + ctx.full_name);
-        if (suspend) return;   // 挂起即返：跳过循环尾（旧 return 语义，见 dispatch_one_）
+        if (suspend) return;   // 挂起即返：跳过循环尾（返回值契约见 dispatch_one_）
     }
     // 分发完但仍未收口 ⇒ 看在途面：无任何挂起就地收口；有异步任务/在途子代理
-    // 则等归流回调（含 run_exit 在审批窗口内提前到达的场景 时机修正）
+    // 则等归流回调（run_exit 在审批窗口内提前到达时同样等齐，不提前收口）
     if (runs_.empty() && child_pends_.empty()) return append_results_and_continue();
     if (all_runs_exited_() && child_pends_.empty()) return try_finish_tools();
     const int pending = static_cast<int>(runs_.size() + child_pends_.size());
@@ -287,7 +287,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
             ctx.done = true;
             emit_tool_result(ctx.full_name, false, ctx.result);
             append_results_and_continue();
-            return true;   // 回灌已发车：挂起即返，循环尾不得再跑（旧 return 语义）
+            return true;   // 回灌已发车：挂起即返，循环尾不得再跑（会重复回灌）
         }
         // runner 类提案：would_run 单行卡（命令批准卡形态）
         if (diff_text.empty() && dry.is_object() && dry.contains("would_run") &&
@@ -299,7 +299,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
         const vc_api::EditProposed proposal{
             turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name)};
         host_.emit(vc_api::edit_proposed, &proposal);
-        return true;  // ← 死锁纪律：绝不同步等待；挂起即返（旧 return 语义）
+        return true;  // ← 死锁纪律：绝不同步等待；挂起即返，循环尾不得再跑
     }
     ctx.result = exec(*b, ctx.tool, ctx.args);
     ctx.done = true;
@@ -518,7 +518,7 @@ std::string AgentCtx::spool_raw(const std::string& tool, const std::string& resu
     }
 }
 
-// context.recall：ref 校验（纯文件名）→ 读归档 → provenance 包装；分页（批次三-8）：
+// context.recall：ref 校验（纯文件名）→ 读归档 → provenance 包装；分页：
 // offset/limit 字节窗口（limit 缺省 2048、上限 4096 = 单条内联护栏），回包带
 // total/next_offset/has_more——大归档分段读，不再"永远只看头 2KB"
 std::string AgentCtx::exec_recall(const json& args) {
@@ -675,7 +675,7 @@ void AgentCtx::set_context_window_(long long w) {
     recompute_threshold_();   // 模型/供应商切换重置退避（窗口变了旧基数失效）
 }
 
-// 生效阈值（批次四-19）：W 与 max_output 已知 ⇒ W − max_output（输出预留——给
+// 生效阈值：W 与 max_output 已知 ⇒ W − max_output（输出预留——给
 // 长 diff/长测试输出留位，避免贴着 0.9W 的请求被大响应顶爆）；仅 W 已知 ⇒
 // 0.9×W（历史语义）；都未知 ⇒ 兜底阈值。下限 W/4：max_output 元数据异常巨大时
 // 仍保住 25% 的 prompt 空间。
@@ -691,7 +691,7 @@ void AgentCtx::recompute_threshold_() {
     session_threshold_ = th > floor_th ? th : floor_th;
 }
 
-// ---- 上下文压缩批次一 --------------------------------
+// ---- 上下文压缩（判定与折叠执行）--------------------
 
 // 硬保护线：0.95×W，*20/19 整数式避免除法截断（宁早勿晚）。W 未知 ⇒ 不启用
 // ——判定交给会话阈值/兜底阈值路径。
@@ -757,7 +757,7 @@ void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
                              ? "本会话未启用外置归档，被折叠原文不可回查）\n"
                              : "工具原始结果外置于 raw/，可用 context_recall 回查）\n") +
                         s}};
-    // 外置索引确定性重建（批次三-11）：ref 清单来自折叠计划的结构化记录（calls
+    // 外置索引确定性重建：ref 清单来自折叠计划的结构化记录（calls
     // 提取，非摘要散文、非文本扫描）——摘要怎么改写都不断回查链；旧「补齐 tail」
     // 机制退役（其 ref 对下轮扫描不可见的失真随索引方案消失）
     const std::string index = vcagent::index_section(pending_plan_.refs);
@@ -773,7 +773,7 @@ void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
 // 折叠应用核心：区间替换 + 旧 digest 并入 + 持久化 + 通告。先插 digest 再跳过
 // 的顺序纪律见阶段一（踩过：跳过分支先 continue 会漏掉插入，digest 整条丢失）。
 void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
-    // 折叠前原文归档（批次三-17）：cut 区间的完整消息（user/assistant 全文）写入
+    // 折叠前原文归档：cut 区间的完整消息（user/assistant 全文）写入
     // raw/——agent 视图丢掉的每一行都可 recall 回查；归档 ref 附进 digest 正文，
     // 模型在压缩后仍保有"被折叠历史"的入口
     json cut = json::array();
@@ -785,8 +785,8 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     if (!archive_ref.empty())
         digest["content"] = digest_msg.value("content", "") + "【折叠原文】" +
                             archive_ref + "（context_recall 可回查）\n";
-    // 锚点保真在线观测（批次五-20）：折叠区逐字锚点在折叠产物中的覆盖率——
-    // 32KB 降级会丢最旧段的调用链锚点，比率落 host log 供评测采集（批次五-12）
+    // 锚点保真在线观测：折叠区逐字锚点在折叠产物中的覆盖率——
+    // 32KB 降级会丢最旧段的调用链锚点，比率落 host log 供评测采集
     if (pending_plan_.anchors_total > 0)
         host_.log(2, "ithaca.agent: 折叠锚点保真 " +
                          std::to_string(pending_plan_.anchors_total -

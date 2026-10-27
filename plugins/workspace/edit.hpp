@@ -265,7 +265,7 @@ inline ApplyResult apply_ops(const Jail& jail, TextStore& store, const std::vect
     }
 
     // ---- 写盘阶段（任一失败 ⇒ LIFO 回滚到批前原状）------------------------------
-    // 回滚原语：内核 Scope（plugin_scope.hpp 门面，F9 落地）。每个首次触碰的文件
+    // 回滚原语：内核 Scope（plugin_scope.hpp 门面）。每个首次触碰的文件
     // 登记一个 defer（成功后 committed=true 使其变空操作）；失败 ⇒ undo.reset()
     // 逆序全量还原。
     // 写前 dirty-check：校验（读 before）与写盘之间文件可能被外部改动（runner 里

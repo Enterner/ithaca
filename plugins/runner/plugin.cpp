@@ -343,7 +343,7 @@ private:
 
         const auto reader = [this, entry](HANDLE h, int stream) {
             // 读取线程：只读 + 缓冲（mu 保护）——poster 投递集中在 poster 线程，
-            // 消除并发投递竞态崩溃根因：两个读取线程并发过 poster 边界）。
+            // 消除「两读取线程并发过 poster 边界」的投递竞态（踩过：并发即崩）。
             nostos::kit::LineSplitter splitter;
             for (;;) {
                 std::string chunk;

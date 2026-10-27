@@ -154,7 +154,7 @@ json WebuiPlugin::api_agent_log_(const std::string& target) {
     return {{"ok", true}, {"records", records}};
 }
 
-// ---- 会话注册表（index.json：工作区分组的元数据源；--------------------
+// ---- 会话注册表（index.json：工作区分组的元数据源）--------------------
 
 void WebuiPlugin::load_index_() {
     std::error_code ec;

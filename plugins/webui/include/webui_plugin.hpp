@@ -4,7 +4,7 @@
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
 //                         通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）+ NOSTOS_PLUGIN 入口
 //   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）
-//   src/events.cpp     —— 事件总线订阅（14 个事件回调 → 落盘 + SSE 广播）
+//   src/events.cpp     —— 事件总线订阅（15 个事件回调 → 落盘 + SSE 广播）
 //   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* 端点族
 //   src/config.cpp     —— 供应商两层配置（共享 + 实例覆盖层）+ /api/config
 //   src/fs_watcher.cpp —— 文件树真监听（ReadDirectoryChangesW → fs_changed 广播）
@@ -225,7 +225,7 @@ private:
     std::map<int, std::ofstream> agent_logs_;
     std::map<int, long long> agent_log_seq_;
     int pending_turn_ = -1;          // 待裁决提案的 turn_id
-    json index_ = json::object();          // 会话注册表（工作区分组，
+    json index_ = json::object();          // 会话注册表（工作区分组的元数据源，落盘 index.json）
     std::string host_workspace_;           // 宿主工作目录（新会话归属）
     bool ws_backfilled_ = false;           // 工作区补发一次性标志（tool_register 兜底）
 

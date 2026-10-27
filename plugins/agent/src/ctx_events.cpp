@@ -123,7 +123,7 @@ void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
     // 超窗自救：provider 报上下文超长 ⇒ 机械折叠后重发当前请求，
     // 而非报废 turn。仅 TurnActive 且无异步任务在途（错误对应的正是刚发出的
     // send_chat）；重发有 kMaxOverwindowResend 上界——折叠不够再超窗时最终仍走
-    // 报废路径，不会打转。provider 文案归一（待办 15）后可收窄这里的匹配面。
+    // 报废路径，不会打转。TODO: provider 文案归一后收窄这里的匹配面。
     // 子代理不参与：折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
     if (!subagent_ && state_ == State::TurnActive && runs_.empty() &&
         compress_retries_ < kMaxOverwindowResend &&

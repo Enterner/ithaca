@@ -226,7 +226,7 @@ private:
         // NOTE: 全工具串行锁——除 agent 外，webui 的 HTTP select 线程也直调本表
         // （文件树 /api/fs/list），而 list/search 用共享遍历缓冲、finish 写共享
         // 出参缓冲 out_buf_，双线程并发即竞态。锁粒度 = 单次工具调用，list 被
-        // 500 条上限兜底、apply 有快照纪律，不会长持锁。
+        // 5000 条上限兜底、apply 有快照纪律，不会长持锁。
         std::lock_guard<std::mutex> lock(tool_mu_);
         json args = json::parse(args_json != nullptr ? args_json : "{}", nullptr,
                                 /*allow_exceptions=*/false);
