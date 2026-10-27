@@ -111,9 +111,10 @@ test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, 
     await expect(page.locator(".errcard")).toHaveCount(0);
 });
 
-test.fixme("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件回退删除", async ({ host, page }) => {
-    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，挂账），修复后转正
-    test.skip(true, "undo 带工作区会话不回退文件（挂账产品问题）");
+test("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件回退删除", async ({ host, page }) => {
+    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，挂账），修复后转正。
+    // fixme 一层即够——fixme+skip 叠用会让两处跳过原因各自为政（改一处漏一处）
+    test.fixme(true, "undo 带工作区会话不回退文件（挂账产品问题）");
     await page.goto(host.base);
     await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
     await page.locator(".hero-ws").click();

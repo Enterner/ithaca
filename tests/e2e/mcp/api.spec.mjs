@@ -20,7 +20,7 @@ test.describe("MCP 接入", () => {
         },
     });
 
-    test("server 工具经统一工具表被 LLM 调用并回灌结果", async ({ host }) => {
+    test("MCP1 server 工具经统一工具表被 LLM 调用并回灌结果", async ({ host }) => {
         const healthWatch = (async () => {
             for (let i = 0; i < 60; i++) {
                 try { const r = await fetch(host.base + "/api/health"); if (!r.ok) console.log("!! health 异常", r.status); }
@@ -63,7 +63,7 @@ test.describe("MCP 容错", () => {
         },
     });
 
-    test("server 未配置时宿主正常、普通对话不受影响", async ({ host }) => {
+    test("MCP2 server 未配置时宿主正常、普通对话不受影响", async ({ host }) => {
         const h = await getJson(host.base, "/api/health");
         expect(h.body.ok).toBe(true);
         await postJson(host.base, "/api/session/new", { message: "普通对话" });
