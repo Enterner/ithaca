@@ -108,8 +108,8 @@ json WebuiPlugin::config_public_() {
                                      {"enabled", true},
                                      {"has_key", false},
                                      {"models", json::array({json{{"id", "mock-model"},
-                                                                  {"context", 128000},
-                                                                  {"enabled", true}}})}});
+                                 {"context", vc_api::kDefaultContextWindow},
+                                 {"enabled", true}}})}});
         current = "mock";
     } else if (!providers.empty()) {
         current = config_.value("current_provider", "");

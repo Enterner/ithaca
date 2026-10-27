@@ -137,14 +137,15 @@ nostos_status CloudPlugin::info_thunk(void* self, const char** out_json) noexcep
     // info_buf_ 三步必须同锁完成，否则并发 info 交错写共享出参缓冲
     std::lock_guard<std::mutex> lock(p->model_mu_);
     json info{{"provider", "cloud"}, {"model", p->model_}, {"base", p->base_utf8_}};
-    // 模型窗口查表（已知 DeepSeek 模型 128K）。未知模型不报——消费方回落兜底阈值：
-    // 虚报窗口（报大）会让压缩阈值越过真实窗口回到爆窗，宁缺勿滥。
-    // max_output_tokens 暂不报——各家输出上限口径未核实，待模型表补全。
+    // 模型窗口查表（已知 DeepSeek 模型 = 契约级默认窗口，与 webui 建档同值）。
+    // 未知模型不报——消费方回落兜底阈值：虚报窗口（报大）会让压缩阈值越过真实
+    // 窗口回到爆窗，宁缺勿滥。max_output_tokens 暂不报——各家输出上限口径未
+    // 核实，待模型表补全。
     static const std::map<std::string, long long> kContextWindows = {
-        {"deepseek-chat", 128000},
-        {"deepseek-reasoner", 128000},
-        {"deepseek-v4-pro", 128000},
-        {"deepseek-flash", 128000},
+        {"deepseek-chat", vc_api::kDefaultContextWindow},
+        {"deepseek-reasoner", vc_api::kDefaultContextWindow},
+        {"deepseek-v4-pro", vc_api::kDefaultContextWindow},
+        {"deepseek-flash", vc_api::kDefaultContextWindow},
     };
     if (const auto it = kContextWindows.find(p->model_); it != kContextWindows.end())
         info["context_window"] = it->second;
@@ -159,7 +160,7 @@ void CloudPlugin::load_env_() {
         v != nullptr && *v != '\0') {
         base_utf8_ = v;
     } else {
-        base_utf8_ = "https://api.deepseek.com";
+        base_utf8_ = vc_api::kDefaultCloudBaseUrl;
     }
     base_wide_ = nostos::kit::win::utf8_to_wide(base_utf8_);
     if (const char* v = std::getenv("ITHACA_MODEL"); v != nullptr && *v != '\0') model_ = v;

@@ -3,6 +3,10 @@
 // 供应商模型契约助手、壳（WebView2）消息通道。
 import { S } from './state'
 
+/** 默认上下文窗口回落值（模型未启用/未列出/新建兜底）——与后端契约级默认
+ * vc_api::kDefaultContextWindow 同值，前端不另设第二真相源。 */
+export const DEFAULT_CONTEXT = 128000
+
 /** 当前选中供应商对象（S.current 按名匹配；找不到返回 null）。 */
 export function curProv() {
   return S.providers.find(p => p.name === S.current) || null
@@ -11,10 +15,10 @@ export function curProv() {
 export function curProvModels() {
   return (curProv() && curProv().models) || []
 }
-/** 模型的上下文窗口大小（未启用/未列出回落 128000）。 */
+/** 模型的上下文窗口大小（未启用/未列出回落 DEFAULT_CONTEXT）。 */
 export function ctxSizeOf(m) {
   const e = curProvModels().find(x => x.id === m && x.enabled !== false)
-  return (e && e.context) || 128000
+  return (e && e.context) || DEFAULT_CONTEXT
 }
 /** token 数格式化：128000 → "128K"，1000000 → "1M"。 */
 export function fmtCtx(n) {
@@ -42,7 +46,7 @@ export function cfgFromServer(cfg) {
     base_url: p.base_url || '', enabled: p.enabled !== false, has_key: !!p.has_key,
     // Array.isArray 防御：旧启动器（ConvertTo-Json 低 Depth）会把 models 压成字符串
     models: (Array.isArray(p.models) ? p.models : []).map(m => ({
-      id: m.id, context: m.context || 128000, enabled: m.enabled !== false,
+      id: m.id, context: m.context || DEFAULT_CONTEXT, enabled: m.enabled !== false,
       // 子 agent 模型引用（{provider,model}；缺省 = 自己）——形状不齐时丢弃，
       // 让后端校验兜底而不是把坏值带回配置
       ...(m.sub_model && m.sub_model.provider && m.sub_model.model

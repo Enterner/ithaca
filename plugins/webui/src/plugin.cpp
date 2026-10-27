@@ -25,6 +25,17 @@
 
 namespace vc_webui {
 
+// 内置云端供应商默认模型目录（单一出处）：迁移建档与非数组回种两个入口共用。
+static json default_cloud_models() {
+    return json::array({
+        json{{"id", "deepseek-flash"},
+             {"context", vc_api::kDefaultContextWindow}, {"enabled", true}},
+        json{{"id", "deepseek-v4-pro"},
+             {"context", vc_api::kDefaultContextWindow}, {"enabled", true}},
+        json{{"id", "deepseek-reasoner"},
+             {"context", vc_api::kDefaultContextWindow}, {"enabled", true}}});
+}
+
 nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     host_ = host;
 
@@ -114,11 +125,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         const json legacy_sizes = config_.value("context_sizes", json::object());
         json cloud_models = config_.contains("models") && config_["models"].is_array()
                                 ? config_["models"] : json::array();
-        if (cloud_models.empty())
-            cloud_models = json::array({
-                json{{"id", "deepseek-flash"}, {"context", 128000}, {"enabled", true}},
-                json{{"id", "deepseek-v4-pro"}, {"context", 128000}, {"enabled", true}},
-                json{{"id", "deepseek-reasoner"}, {"context", 128000}, {"enabled", true}}});
+        if (cloud_models.empty()) cloud_models = default_cloud_models();
         for (auto& m : cloud_models) {   // 旧 context_sizes 覆盖 context
             if (m.is_object() && m.contains("id") && m["id"].is_string()) {
                 const std::string mid = m["id"].get<std::string>();
@@ -131,10 +138,12 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         providers.push_back(json{
             {"name", "Mock 本地回放"}, {"type", "mock"}, {"builtin", true},
             {"enabled", was_mock},
-            {"models", json::array({json{{"id", "mock-model"}, {"context", 128000}, {"enabled", true}}})}});
+            {"models", json::array({json{{"id", "mock-model"},
+                                         {"context", vc_api::kDefaultContextWindow},
+                                         {"enabled", true}}})}});
         providers.push_back(json{
             {"name", "DeepSeek 官方"}, {"type", "cloud"},
-            {"base_url", config_.value("base_url", "https://api.deepseek.com")},
+            {"base_url", config_.value("base_url", vc_api::kDefaultCloudBaseUrl)},
             {"api_key", config_.value("api_key", "")},
             {"enabled", true}, {"models", cloud_models}});
         config_["providers"] = providers;
@@ -149,12 +158,10 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         if (!p.is_object() || p["models"].is_array()) continue;
         if (p.value("type", "cloud") == "mock")
             p["models"] = json::array(
-                {json{{"id", "mock-model"}, {"context", 128000}, {"enabled", true}}});
+                {json{{"id", "mock-model"},
+                      {"context", vc_api::kDefaultContextWindow}, {"enabled", true}}});
         else
-            p["models"] = json::array(
-                {json{{"id", "deepseek-flash"}, {"context", 128000}, {"enabled", true}},
-                 json{{"id", "deepseek-v4-pro"}, {"context", 128000}, {"enabled", true}},
-                 json{{"id", "deepseek-reasoner"}, {"context", 128000}, {"enabled", true}}});
+            p["models"] = default_cloud_models();
     }
     // 启动对齐：当前使用供应商的 key/base_url/窗口 热切给 llm 插件（poster 异步）。
     // NOTE: 载荷以 llm_mode_ 为准（mock 模式恒发 mock）——config 的

@@ -49,4 +49,15 @@ inline constexpr std::uint64_t llm = nostos::svc_id<"vc.llm.v1">;
 // vc.llm.set_active 事件（LlmSetActive）在 vc_events.hpp——事件集中一份头，
 // 此处只留服务表；本头单独包含的消费者经 vc_events.hpp 拿事件定义。
 
+// ---- 产品默认值（跨插件共用出处；尾部追加）----------------------------------
+
+// 默认上下文窗口（tokens）：webui 建档/未知模型兜底、llm_cloud 窗口查表、
+// llm_mock 合成自述共用一份——字面量多处分写必漂移（踩过：前端 PRESETS 与
+// 后端默认目录曾对同一模型写出两个不同窗口值，配置显示与 agent 实际拿到的
+// 窗口不一致）。
+inline constexpr long long kDefaultContextWindow = 128000;
+
+// 内置云端供应商默认 Base URL（llm_cloud env 兜底 / webui 迁移建档共用）。
+inline constexpr const char* kDefaultCloudBaseUrl = "https://api.deepseek.com";
+
 }  // namespace vc_api

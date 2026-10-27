@@ -119,9 +119,16 @@ nostos_status MockPlugin::set_model_thunk(void* self, const char* model) noexcep
 nostos_status MockPlugin::info_thunk(void* self, const char** out_json) noexcept {
     (void)self;
     // 元数据自述：mock 的窗口/输出上限是合成值——让消费方（agent 压缩阈值、批次四
-    // 输出预留）走真实链路，而非各自落入兜底分支
-    *out_json =
-        R"({"provider":"mock","model":"mock-1","context_window":128000,"max_output_tokens":8192})";
+    // 输出预留）走真实链路，而非各自落入兜底分支。窗口取契约级默认（单一出处，
+    // 与 webui 建档/llm_cloud 查表同值）。静态串满足出参「调用期有效」契约。
+    static const std::string kInfo = [] {
+        nlohmann::json j{{"provider", "mock"},
+                         {"model", "mock-1"},
+                         {"context_window", vc_api::kDefaultContextWindow},
+                         {"max_output_tokens", 8192}};
+        return j.dump();
+    }();
+    *out_json = kInfo.c_str();
     return NOSTOS_OK;
 }
 

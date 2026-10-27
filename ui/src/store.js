@@ -3,7 +3,7 @@
 // state ← api ← records/sessions ← actions/boot（无环；X 转态容器在 state）。
 export { S, X } from './store/state'
 export { api, curProvModels, ctxSizeOf, fmtCtx, parseCtx, fetchProviderModels,
-         fetchCtxBreakdown, fmtK } from './store/api'
+         fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT } from './store/api'
 export { render, liveStart } from './store/records'
 export { openSession, newSession, delSession, renameSession } from './store/sessions'
 export { send, decide, setModel, setMode, saveConfig, pickFolder,

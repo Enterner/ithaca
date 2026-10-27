@@ -8,7 +8,7 @@
 import { ref, reactive, computed, watch } from 'vue'
 import { NModal } from 'naive-ui'
 import Cdl from '../Cdl.vue'
-import { S, api, saveConfig, loadPluginUi, fmtCtx, parseCtx } from '../store'
+import { S, api, saveConfig, loadPluginUi, fmtCtx, parseCtx, DEFAULT_CONTEXT } from '../store'
 import { confirmDialog } from '../confirm'
 import McpSettings from './McpSettings.vue'
 import PluginSettings from './PluginSettings.vue'
@@ -51,7 +51,7 @@ const PRESETS = [
     ] },
   { key: 'deepseek', name: 'DeepSeek 官方', base_url: 'https://api.deepseek.com',
     models: [
-      { id: 'deepseek-flash', context: 1000000 },
+      { id: 'deepseek-flash', context: 128000 },
       { id: 'deepseek-v4-pro', context: 128000 },
       { id: 'deepseek-reasoner', context: 128000 },
     ] },
@@ -133,7 +133,7 @@ watch(() => S.provModelsEvt, (e) => {
   fresh.sort((a, b) => (dateOf(b) || '000000').localeCompare(dateOf(a) || '000000'))
   const pick = fresh.slice(0, 10)
   for (const id of pick)
-    p.models.push({ id, context: 128000, enabled: true })   // 平台不给窗口值，落默认可再编辑
+    p.models.push({ id, context: DEFAULT_CONTEXT, enabled: true })   // 平台不给窗口值，落默认可再编辑
   const clipped = fresh.length > pick.length ? `，已截取最新 ${pick.length} 个（其余 ${fresh.length - pick.length} 个可手动添加）` : ''
   fetchMsg.value = `平台返回 ${e.models.length} 个模型，新增 ${pick.length} 个${clipped}`
 })
@@ -199,7 +199,7 @@ const subItems = computed(() => {
 })
 function openModelDlg(mi) {
   mEdit.value = { mi }
-  const m = mi >= 0 ? cur().models[mi] : { id: '', context: 128000 }
+  const m = mi >= 0 ? cur().models[mi] : { id: '', context: DEFAULT_CONTEXT }
   mId.value = m.id
   mCtx.value = fmtCtx(m.context)
   const sub = m.sub_model

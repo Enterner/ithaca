@@ -152,7 +152,8 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
             for (const auto& m : p["models"])
                 if (m.is_object() && m.value("id", "") == model) { known = true; break; }
             if (!known)
-                p["models"].push_back(json{{"id", model}, {"context", 128000},
+                p["models"].push_back(json{{"id", model},
+                                           {"context", vc_api::kDefaultContextWindow},
                                            {"enabled", true}});
             break;
         }
