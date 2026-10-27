@@ -6,16 +6,13 @@
 
 ## 当前发现（批次：内核观察点收口 · 2026-10-27）
 
-1. workspace search 的 regex 走 std::regex ECMAScript（无超时/步数上限）——灾难性
-   回溯的构造模式会在 agent 线程长阻塞（单文件 1MB 上限内仍可分钟级挂起）。缓解
-   方向：换手写有限自动机/限定迭代步数/或 engine 换 RE2 形态；std::regex 无步数
-   钩子，属内核 kit 无对应原语。用户裁定另行立项。（触发场景：R4 审查 workspace
-   新增 search 工具）
+本批次无可新增优化点（regex 有界原语落地后，挂账清单清零）。
 
 ## 落地状态
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-27 | workspace search 的 regex 走 std::regex（回溯实现无步数钩子），灾难性回溯构造模式会在 agent 线程长阻塞 | 已落地（内核 kit/regex.hpp 有界正则——Thompson NFA 线性模拟，ECMAScript 子集，无回溯 ⇒ 灾难性模式构造上不可能挂死，步数预算另封顶；反向引用/环视解析期点名拒绝。抛弃式探针对拍 std::regex 25 例全过 + 灾难性模式 0ms + 420KB 文件 105ms；产品 workspace search 切换，std::regex 退役） |
 | 2026-10-27 | webui 全量单线程化（挂起-补响应试点验证后的全量迁移）：data_mu_ 的真正锚点是 GET 类端点（select 线程读宿主线程写的共享状态） | 已落地（20+ 端点含全部 GET 经 defer_ 样板投宿主线程闭包、真响应经内核原语补发；data_mu_ 30 余处 lock_guard 与上下文缓存锁整体退役，tools_/in_flight_ 原子降为普通成员，select 线程只剩解析/投递与静态、SSE 直答；defer_ 编译期强制闭包返回 void——值返回闭包的 fall-through 是 UB 且爆点漂移到无关容器操作，check 全绿） |
 | 2026-10-27 | kit::http 默认 `max_request = 16KB` 对"对话输入即粘贴"类应用过小（webui 粘贴 35KB 实测 413），且注释写"请求头上限"实为整个请求缓冲上限 | 已落地（内核 7ef08f5 默认上调 2MB + 注释对齐语义；产品 aa2af06 webui 启动期 2MB 覆写退役） |
 | 2026-10-27 | kit::http 404 零诊断 | 复核不立项（唯一消费方 webui 已在路由未命中处落 log——api 分发尾部的 404 诊断行；kit 无路由表、handler 返回的 404 是消费方决策，内核再记一层即重复噪音） |

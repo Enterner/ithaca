@@ -24,6 +24,7 @@
 #include "snapshots.hpp"
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/regex.hpp>   // search 的正则（有界 NFA——std::regex 的回溯可被挂死）
 #include <nostos/kit/win.hpp>
 
 #include <algorithm>  // std::count/clamp/max：read 行统计与分页参数收敛
@@ -31,7 +32,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
-#include <regex>      // search 的 regex 模式（ECMAScript，icase 可选）
 #include <system_error>
 #include <functional>
 #include <memory>
@@ -426,16 +426,12 @@ private:
         if (query.empty()) return fail("query 为空");
         const bool use_re = args.value("regex", false);
         const bool icase = args.value("ignore_case", false);
-        std::unique_ptr<std::regex> re;
+        nostos::kit::Regex re;
         std::string lit = query;
         if (use_re) {
-            try {
-                auto flags = std::regex::ECMAScript;
-                if (icase) flags |= std::regex::icase;
-                re = std::make_unique<std::regex>(query, flags);
-            } catch (const std::regex_error& e) {
-                return fail(std::string("正则非法: ") + e.what());
-            }
+            std::string re_err;
+            if (!re.compile(query, {.icase = icase}, &re_err))
+                return fail("正则非法: " + re_err);
         } else if (icase) {
             lit = ascii_lower(query);   // 小写副本上查找——与原串 1:1 映射，位置直用
         }
@@ -447,21 +443,20 @@ private:
         truncated_ = false;
         stop_ = false;
         walk_search(jail_->root(), "", static_cast<int>(kSearchDepthCap), max_hits,
-                    use_re, re.get(), lit, icase && !use_re);
+                    use_re, &re, lit, icase && !use_re);
         return json{{"ok", true},
                     {"hits", hits_},
                     {"scanned", scanned_},
                     {"truncated", truncated_}};
     }
 
-    // 命中迭代：regex（icase 内建于标志）或字面子串（icase 走小写副本）。cb 返回
-    // false = 停止迭代（命中上限/停止旗）
-    void each_hit(const std::string& content, bool use_re, const std::regex* re,
+    // 命中迭代：regex（有界 NFA，icase 内建于编译选项）或字面子串（icase 走小写
+    // 副本）。cb 返回 false = 停止迭代（命中上限/停止旗）
+    void each_hit(const std::string& content, bool use_re, const nostos::kit::Regex* re,
                   const std::string& lit, const std::function<bool(std::size_t)>& cb) const {
         if (use_re) {
-            for (std::sregex_iterator it(content.begin(), content.end(), *re), end;
-                 it != end; ++it)
-                if (!cb(static_cast<std::size_t>(it->position()))) break;
+            re->find_all(content,
+                         [&](std::size_t b, std::size_t) { return cb(b); });
             return;
         }
         for (std::size_t pos = content.find(lit); pos != std::string::npos;
@@ -470,7 +465,7 @@ private:
     }
 
     void walk_search(const fs::path& dir, const std::string& rel_prefix, int depth,
-                     int max_hits, bool use_re, const std::regex* re,
+                     int max_hits, bool use_re, const nostos::kit::Regex* re,
                      const std::string& lit, bool lower_hay) {
         if (stop_ || depth <= 0) {
             if (depth <= 0) truncated_ = true;
