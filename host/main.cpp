@@ -22,7 +22,11 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <csignal>
 #include <cstdlib>
+#if defined(_WIN32)
+#include <crtdbg.h>  // _CrtSetReportMode：Debug 断言改道 stderr（弹窗卡死无人值守链路）
+#endif
 #include <string>
 #include <string_view>
 #include <thread>
@@ -89,6 +93,36 @@ BOOL WINAPI on_console_ctrl(DWORD type) {
     return TRUE;
 }
 
+// abort() 落点打符号栈（Debug CRT 断言/abort 不走 SEH，on_unhandled 抓不到——
+// 排查「弹窗 abort 但日志无源行号」必须有自己的 SIGABRT 出口；CaptureStackBackTrace
+// 在 abort 语境下安全（纯帧遍历，不分配不装载）。
+void on_sigabrt(int) {
+    void* frames[24];
+    const WORD n = CaptureStackBackTrace(0, 24, frames, nullptr);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    std::fprintf(stderr, "== abort() 调用栈 ==\n");
+    for (WORD k = 0; k < n; ++k) {
+        const DWORD64 pc = reinterpret_cast<DWORD64>(frames[k]);
+        SYMBOL_INFO* sym = static_cast<SYMBOL_INFO*>(
+            std::calloc(1, sizeof(SYMBOL_INFO) + 512));
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 511;
+        const bool has_sym = SymFromAddr(GetCurrentProcess(), pc, nullptr, sym) != 0;
+        IMAGEHLP_LINEW64 line{};
+        line.SizeOfStruct = sizeof(line);
+        DWORD disp = 0;
+        const bool has_line =
+            SymGetLineFromAddrW64(GetCurrentProcess(), pc, &disp, &line) != 0;
+        std::fprintf(stderr, "    %s  [%ls:%lu]\n", has_sym ? sym->Name : "?",
+                     has_line ? line.FileName : L"?", has_line ? line.LineNumber : 0);
+        std::free(sym);
+    }
+    std::fflush(stderr);
+    // 复位处理器并重抛：让 _CALL_REPORTFAULT/wer 流程照旧（本处理器只负责留痕）
+    signal(SIGABRT, SIG_DFL);
+    std::abort();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -106,9 +140,18 @@ int main(int argc, char** argv) {
     // 崩溃静默（无人值守运行不弹 WER），与内核参考宿主同一组开关。
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
+    // Debug CRT 断言改道 stderr（断言文本 + 源文件行号进 host.log 后即弃进程）：
+    // 默认弹窗形态在多实例/连续断言时会叠出一排模态框卡死无人值守链路（实测踩过：
+    // 工具轮次连发断言 → 8 个弹窗叠罗汉，宿主假死）。Debug 构建专属，Release 无 CRT
+    // 断言路径不受影响。
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
     SetUnhandledExceptionFilter(on_unhandled);
     SetConsoleCtrlHandler(on_console_ctrl, TRUE);
     SetConsoleOutputCP(CP_UTF8);  // 中文输出；VT 转义由界面插件自行启用
+    signal(SIGABRT, on_sigabrt);  // abort 落点留痕（Debug 断言改道后仍可能直走 abort）
 #endif
 
     bool selftest = false;
