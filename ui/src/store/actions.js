@@ -117,6 +117,11 @@ export async function pickFolder() {
 
 // ---- 插件 UI 贡献----------------------------------------------------
 
+/** 保存 MCP server 配置（mcp 节整节回传；后端透传并热重载 mcp 插件）。 */
+export async function saveMcpVals(servers) {
+  return api('/api/config', { mcp: { servers } })
+}
+
 /** 拉各插件的 UI 贡献清单（schema，"界面长什么样"）；设置面板打开时调用。 */
 export async function loadPluginUi() {
   const r = await api('/api/ui/registry')

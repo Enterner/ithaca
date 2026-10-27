@@ -4,7 +4,7 @@
 // 越界路径由 jail 拒绝）。懒加载：目录展开才拉一层；刷新 = S.fsRev 时钟
 // （store 在 applied/undone 时 +1，agent 改完盘文件树自动跟上）+ 头部手动按钮。
 import { ref, reactive, computed, watch } from 'vue'
-import { S, api } from '../store'
+import { S, fetchFsList } from '../store'
 
 const root = reactive({ children: [], truncated: false, error: '', loading: false })
 const expanded = reactive({})   // 目录路径 → {children, truncated, error, loading}
@@ -18,7 +18,7 @@ function slotOf(path) {
 async function fetchDir(path, slot) {
   slot.loading = true
   try {
-    const r = await api('/api/fs/list?path=' + encodeURIComponent(path) + '&depth=1')
+    const r = await fetchFsList(path)
     if (!r.ok) { slot.error = r.error || '读取失败'; slot.children = [] }
     else {
       slot.children = [...(r.entries || [])].sort((a, b) => {

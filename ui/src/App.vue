@@ -4,7 +4,7 @@
 // （头部按钮或 Ctrl+B），全屏/缩小时栏宽不变、内容区自适应。
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { NConfigProvider, NTooltip, darkTheme } from 'naive-ui'
-import { S, boot, pickFolder, newSession, api, fmtK } from './store'
+import { S, boot, pickFolder, newSession, fetchFile, fmtK } from './store'
 import { themeOverrides } from './theme'
 import Sidebar from './components/Sidebar.vue'
 import Stream from './components/Stream.vue'
@@ -65,7 +65,7 @@ function onWinKey(e) {
 // ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
 function openFile(path) {   // 内容经 /api/fs/read 代理 workspace read；纯展示态不经 actions 层
   S.viewer = { path, content: '', truncated: false, loading: true, error: '' }
-  api('/api/fs/read?path=' + encodeURIComponent(path)).then((r) => {
+  fetchFile(path).then((r) => {
     if (!S.viewer || S.viewer.path !== path) return   // 已返回树/已换文件：丢弃迟到响应
     S.viewer.loading = false
     if (!r.ok) { S.viewer.error = r.error || '读取失败'; return }

@@ -6,7 +6,7 @@
 // 流式增量（subagent_delta）照旧只缓冲不落盘。
 // 取消 = 级联取消在途子代理与当前 turn（decide 4），与主会话停止键同一路径。
 import { ref, computed, watch, nextTick } from 'vue'
-import { S, decide } from '../store'
+import { S, decide, fetchAgentLog } from '../store'
 import { esc, toolLabel } from '../md'
 
 // 明细行显示（与主对话流同款纪律）：标签为空 = 摘要自含中文动词
@@ -42,8 +42,7 @@ watch(() => S.subView, async (turn) => {
   history.value = []
   if (!turn) return
   try {
-    const r = await fetch(`/api/agent-log?turn=${turn}`)
-    const d = await r.json()
+    const d = await fetchAgentLog(turn)
     if (turn === S.subView && Array.isArray(d.records)) history.value = d.records
   } catch { /* 拉取失败 = 只显示实时增量 */ }
 }, { immediate: true })

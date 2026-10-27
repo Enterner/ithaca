@@ -3,7 +3,7 @@
 // 数据源 = config.json 的 mcp.servers（保存 → /api/config → mcp 插件热重载）；
 // 状态行 = /api/mcp/status（mcp 插件回发的实时连接状态与工具清单）。
 import { ref, computed, watch } from 'vue'
-import { api } from '../store'
+import { fetchConfig, fetchMcpStatus, saveMcpVals } from '../store'
 import { confirmDialog } from '../confirm'
 
 const props = defineProps({ active: { type: Boolean, default: false } })
@@ -17,12 +17,12 @@ const loaded = ref(false)
 const cur = () => servers.value[sel.value]
 
 async function load() {
-  const cfg = await api('/api/config')
+  const cfg = await fetchConfig()
   servers.value = structuredClone(cfg.mcp?.servers || [])
   await refreshStatus()
 }
 async function refreshStatus() {
-  const st = await api('/api/mcp/status')
+  const st = await fetchMcpStatus()
   const map = {}
   for (const s of st.servers || []) map[s.name] = s
   status.value = map
@@ -87,7 +87,7 @@ async function onSave() {
       return
     }
   }
-  const r = await api('/api/config', { mcp: { servers: servers.value } })
+  const r = await saveMcpVals(servers.value)
   if (!r.ok) { alert('保存失败：' + (r.error || '未知错误')); return }
   await load()   // 保存成功 = mcp 插件已热重载，重拉配置与状态
 }

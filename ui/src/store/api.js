@@ -97,6 +97,32 @@ export async function api(path, body) {
   return r.json()
 }
 
+/** 配置读取（组件直需 config 时用；对齐与保存走 actions 层）。失败行为：{ok:false?}——
+ * 形状由端点定，config 恒返回对象。 */
+export function fetchConfig() {
+  return api('/api/config')
+}
+
+/** 文件树目录列举（代理 workspace list；jail/上限/黑名单在提供方与后端）。 */
+export function fetchFsList(path, depth = 1) {
+  return api('/api/fs/list?path=' + encodeURIComponent(path) + '&depth=' + depth)
+}
+
+/** 代码查看器文件内容（代理 workspace read）。 */
+export function fetchFile(path) {
+  return api('/api/fs/read?path=' + encodeURIComponent(path))
+}
+
+/** MCP server 状态行（mcp-status.json 的读取面；缺文件返回空清单）。 */
+export function fetchMcpStatus() {
+  return api('/api/mcp/status')
+}
+
+/** 子代理工作明细存档（右栏过程视图的历史补齐；按 turn 过滤）。 */
+export function fetchAgentLog(turn) {
+  return api('/api/agent-log?turn=' + turn)
+}
+
 /**
  * 设置面「从 API 获取模型」：请后端代理请求平台 GET /models（CORS 挡浏览器
  * 直连）。结果经 SSE provider_models 事件回设置面，不在本调用的返回值里。
