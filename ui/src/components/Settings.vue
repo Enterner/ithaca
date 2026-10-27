@@ -5,7 +5,7 @@
 // MCP 工具页 = McpSettings 组件（server 两层配置，保存 → mcp 插件热重载）。
 // 插件贡献页 = PluginSettings（各插件 vc.ui.register 的 schema 动态生成，
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, toRaw } from 'vue'
 import { NModal } from 'naive-ui'
 import Cdl from './Cdl.vue'
 import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx, DEFAULT_CONTEXT,
@@ -87,9 +87,10 @@ watch(() => S.provModelsEvt, (e) => {
 })
 
 async function openPanel() {
-  // 从 store 深拷贝（structuredClone：纯数据，JSON 往返对 undefined/循环引用更脆）；
+  // 从 store 深拷贝。toRaw 先脱响应式代理再 structuredClone——S.providers 是
+  // Vue 响应式 Proxy，直接 structuredClone 抛 DataCloneError（面板永不开，踩过）；
   // api_key 输入框恒空（后端掩码，留空=保留旧值）
-  detail.value = structuredClone(S.providers).map(p => ({ ...p, api_key: '', models: p.models || [] }))
+  detail.value = structuredClone(toRaw(S.providers)).map(p => ({ ...p, api_key: '', models: p.models || [] }))
   curName.value = S.current
   provSel.value = Math.max(0, detail.value.findIndex(p => p.name === S.current))
   inferPreset()   // 模板选择器显示与当前 base_url 匹配的平台（切换供应商时经 watch 跟随）
