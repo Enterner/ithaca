@@ -16,13 +16,12 @@
 //   · transcript.jsonl（本插件写，展示事件流，每条 flush）
 //   · state.json（agent 写，LLM 上下文；路径由启动器按活跃会话给定）
 //
-// 线程纪律：Handler::handle 在 select 线程（必须快——poster_submit/
-// 小文件写都非阻塞）；事件回调在宿主线程（drain_posted 串行化）；broadcast
-// 内核注明线程安全。两线程共享的数据面（records_/session_/pending_turn_/index_/
-// out_/agent_logs_* 等，见 data_mu_）以递归互斥串行化；**锁内禁止 broadcast_ 与
-// host_.emit**——handle 在 kit select 循环内部锁内被调，持 data_mu_ 再广播/发射
-// = 与之成 ABBA 死锁（EDEADLOCK 同族）。config_ 只在 select 线程触碰（activate
-// 完成于服务起请求前），prober 面自带 probe_mu_。
+// 线程纪律（全量单线程化）：Handler::handle 在 select 线程上只做解析、校验、
+// 投递与挂起返回——静态文件与 /events 零共享态，同步直答；其余端点经 defer_
+// 把业务体投宿主线程后挂起，真响应走 kit 挂起-补响应原语补发。数据面触碰
+// （records_/session_/pending_turn_/index_/out_/agent_logs_*/ui_registry_/
+// config_ 等）全部收敛宿主线程：poster 闭包与事件回调同经宿主排水串行化，
+// 无共享无锁（data_mu_ 已随迁移退役）。prober 线程自持 probe_mu_ 守护探测缓存。
 
 #pragma once
 
@@ -48,6 +47,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -98,6 +98,24 @@ private:
 
     static json parse_body_(const std::string& body);
     http::Response json_resp(json obj, int status = 200);
+
+    // 挂起-补响应样板出口：fn 在宿主线程执行（注入连接 id，闭包内自行 respond），
+    // 本调用立即挂起返回；post 失败（activate 漏领/会话收尾）没人会补响应 ⇒
+    // 同步 503 防连接悬挂。fn 必须返回 void——闭包里顺手 `return json_resp(...)`
+    // 会被 auto 推导合法化成"构造完丢弃"，连接永不补响应（编译期挡下）。
+    template <typename F>
+        requires std::is_void_v<std::invoke_result_t<F&, std::uint64_t>>
+    http::Response defer_(const http::Request& req, F&& fn) {
+        const std::uint64_t conn = req.conn_id;
+        const nostos_status st = nostos::kit::poster_submit(
+            poster_, [this, conn, fn = std::forward<F>(fn)]() mutable { fn(conn); });
+        if (st != NOSTOS_OK)
+            return json_resp({{"ok", false}, {"error", "宿主未接收投递"}}, 503);
+        http::Response r;
+        r.suspended = true;
+        return r;
+    }
+
     static std::string mime_of(const fs::path& p);
     http::Response file_(const std::string& rel);
     void broadcast_(json rec);
@@ -114,7 +132,7 @@ private:
     // （重启按现存行数续接），前端据此合并「拉取历史」与「实时增量」不重不漏
     void agent_log_append_(int turn_id, const json& rec);
     void close_agent_logs_();
-    http::Response api_agent_log_(const std::string& target);
+    json api_agent_log_(const std::string& target);   // 数据源：路由 defer 包装
 
     // ---- 配置（src/config.cpp）----------------------------------------------------
 
@@ -124,7 +142,7 @@ private:
     void merge_local_overlay_();
     bool persist_config_();
     json config_public_();
-    http::Response api_config_save_(const std::string& body);
+    http::Response api_config_save_(const http::Request& req);
     // 组装并投递 vc.llm.set_active（provider/key/base_url + 当前模型窗口）——
     // activate 对齐、配置保存热切、模型热切补发共用一个出口（窗口字段单点维护）。
     void post_llm_set_active_();
@@ -142,10 +160,10 @@ private:
     // switch_to_ 发出的 WorkspaceSet 可能先于其订阅被丢（事件总线无保留语义），
     // 按当前活跃会话重发一次（同值热切幂等）
     void backfill_workspace_();
-    http::Response api_session_new_(const std::string& body);
-    http::Response api_session_open_(const std::string& body);
-    http::Response api_session_rename_(const std::string& body);
-    http::Response api_session_delete_(const std::string& body);
+    http::Response api_session_new_(const http::Request& req);
+    http::Response api_session_open_(const http::Request& req);
+    http::Response api_session_rename_(const http::Request& req);
+    http::Response api_session_delete_(const http::Request& req);
     json session_meta_();
 
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
@@ -153,16 +171,16 @@ private:
     void start_turn_(const std::string& text);
     http::Response api_input_(const http::Request& req);
     http::Response api_decision_(const http::Request& req);
-    http::Response api_permission_mode_(const std::string& body);
-    http::Response api_model_(const std::string& body);
-    http::Response api_provider_models_(const std::string& body);   // 拉平台模型清单（SSE 回发）
-    http::Response api_context_breakdown_();   // 上下文构成分解（悬停指示器的数据源）
-    http::Response api_pick_folder_();
-    http::Response api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
-    http::Response api_fs_list_(const std::string& target);
-    http::Response api_fs_read_(const std::string& target);   // 代码查看器的文件内容
-    http::Response api_mcp_status_();
-    http::Response api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
+    http::Response api_permission_mode_(const http::Request& req);
+    http::Response api_model_(const http::Request& req);
+    http::Response api_provider_models_(const http::Request& req);   // 拉平台模型清单（SSE 回发）
+    json api_context_breakdown_();   // 上下文构成分解（悬停指示器的数据源）
+    http::Response api_pick_folder_(const http::Request& req);
+    json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
+    http::Response api_fs_list_(const http::Request& req);
+    http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
+    json api_mcp_status_();
+    json api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
 
     // ---- 状态 -------------------------------------------------------------------
 
@@ -172,8 +190,8 @@ private:
     std::vector<nostos::abi::Host::Subscription> subs_;
 
     const vc_api::LlmTable* llm_ = nullptr;     // activate 时解析（模型热切用）
-    std::atomic<const vc_api::ToolTable*> tools_{nullptr};  // workspace 工具表：
-        // select 线程读（/api/fs/*）、宿主线程 tool_register 兜底写——原子装载
+    const vc_api::ToolTable* tools_ = nullptr;  // workspace 工具表：activate 解析、
+        // tool_register 兜底重解析；读写全在宿主线程（/api/fs/* 已迁闭包）
 
     // ---- 兄弟实例探测（聚合 alive 真值，见 start_prober_）----------------------
     std::thread prober_;
@@ -186,11 +204,9 @@ private:
     fs::path home_{};      // %USERPROFILE%\.ithaca
     fs::path web_root_{};  // SPA 目录
     std::string session_;          // 活跃会话 id；"" = 无会话态（前端草稿态兜底）
-    // select 线程（handle）与宿主线程（事件回调）共享面的互斥（递归：persist_ →
-    // save_index_ → session_entry_ 等调用链同线程重入）。守护：records_/session_/
-    // pending_turn_/index_/out_/agent_logs_/agent_log_seq_/host_workspace_/ui_registry_。
-    // 纪律：锁内禁止 broadcast_/host_.emit（ABBA 死锁，见文件头线程纪律）。
-    std::recursive_mutex data_mu_;
+    // 数据面字段（records_/session_/pending_turn_/index_/out_/agent_logs_*/
+    // host_workspace_/ui_registry_/config_）读写全在宿主线程：poster 闭包与
+    // 事件回调同经宿主排水串行化，无共享无锁（线程纪律见文件头）。
     json config_ = json::object();
     std::vector<json> records_;      // 会话记录（内存镜像 = 重放源）
     std::ofstream out_{};            // transcript 追加写
@@ -209,15 +225,14 @@ private:
     HANDLE fs_watch_handle_ = nullptr;     // 主线程开/关；线程只持它调 ReadDirectoryChangesW
     std::thread fs_watch_thread_;
     std::atomic<bool> fs_watch_running_{false};
-    std::atomic<bool> in_flight_{false};   // turn 进行中（禁切换/新建）
+    bool in_flight_ = false;   // turn 进行中（禁切换/新建）；读写全在宿主线程
 
     // ---- 插件 UI 贡献（vc.ui.register 累积；内存态，/api/ui/registry 数据源）----
     // 插件重发随 vc.ui.query 补拉兜底，重启后由各插件 activate 重建，无需落盘。
     std::map<std::string, json> ui_registry_;   // 插件名 → {label, schema:[…]}
 
     // ---- 上下文构成分解缓存（/api/context/breakdown）---------------------------
-    // key = 会话文件路径@mtime：同一版本文件只解析一次（select 线程必须快）。
-    std::mutex bd_mu_;
+    // key = 会话文件路径@mtime：同一版本文件只解析一次（宿主线程闭包内访问，无锁）。
     std::string bd_key_;
     json bd_cache_;
 };

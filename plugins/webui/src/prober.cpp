@@ -58,15 +58,11 @@ void WebuiPlugin::stop_prober_() {
     if (prober_.joinable()) prober_.join();
 }
 
-// 实例瞬态状态落盘（聚合侧栏的徽标数据源：壳/兄弟实例只读磁盘，不互发 HTTP）
+// 实例瞬态状态落盘（聚合侧栏的徽标数据源：壳/兄弟实例只读磁盘，不互发 HTTP）。
+// 宿主线程专用（poster 闭包与事件回调调用；prober 线程不触碰本函数）。
 void WebuiPlugin::persist_status_() {
-    bool pending = false;
-    {
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
-        pending = pending_turn_ >= 0;
-    }
     std::ofstream f(home_ / "status.json", std::ios::binary | std::ios::trunc);
-    if (f) f << json{{"working", in_flight_.load()}, {"pending", pending}}.dump();
+    if (f) f << json{{"working", in_flight_}, {"pending", pending_turn_ >= 0}}.dump();
 }
 
 /// GET /api/shell/sessions → 聚合会话清单（多实例壳模式）。数据全部来自磁盘：
@@ -74,10 +70,11 @@ void WebuiPlugin::persist_status_() {
 /// 各实例 home 的 index.json（标题/时间/真实会话 id）、port（存活）、status.json
 /// （working/pending 徽标）。本实例自己的行会照常列出——前端以 /api/session 的
 /// id 判定哪一行是"当前页"。文件缺失/损坏的实例按尽力而为字段返回。
-http::Response WebuiPlugin::api_shell_sessions_() {
+/// 数据源：路由 defer 包装（宿主线程闭包内调用）。
+json WebuiPlugin::api_shell_sessions_() {
     const char* mf = std::getenv("ITHACA_SHELL_MANIFEST");
     if (mf == nullptr || *mf == '\0')
-        return json_resp({{"ok", true}, {"shell", false}});
+        return {{"ok", true}, {"shell", false}};
     const fs::path manifest(mf);
     const fs::path hosts_root = manifest.parent_path() / "hosts";
     json rows = json::array();
@@ -188,7 +185,7 @@ http::Response WebuiPlugin::api_shell_sessions_() {
         }
         rows.push_back(row);
     }
-    return json_resp({{"ok", true}, {"shell", true}, {"sessions", rows}});
+    return {{"ok", true}, {"shell", true}, {"sessions", rows}};
 }
 
 }  // namespace vc_webui

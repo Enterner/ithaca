@@ -19,10 +19,10 @@ void WebuiPlugin::subscribe_() {
     subs_.push_back(host_.on(vc_api::tool_register, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolRegister*>(p);
         if (e->svc_name == nullptr ||
-            std::string_view(e->svc_name) != vcws::kToolSvcName || tools_.load() != nullptr)
+            std::string_view(e->svc_name) != vcws::kToolSvcName || tools_ != nullptr)
             return;
         const vc_api::ToolTable* t = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-        tools_.store(t);   // 原子：select 线程的 /api/fs/* 并发读
+        tools_ = t;   // 读写全在宿主线程（/api/fs/* 已迁闭包）
         if (t != nullptr) {
             host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
             backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
@@ -62,7 +62,7 @@ void WebuiPlugin::subscribe_() {
         // done 清零——子代理/后台任务一跑数分钟，按请求清零会让停止入口在 turn
         // 中段消失（踩过：子代理挂起期间发送键变回发送、取消无处可点）。
         // 收口信号 = 无 tool_calls 的 done 或 error。
-        in_flight_.store(!turn_done);
+        in_flight_ = !turn_done;
         persist_status_();
         json rec = {{"type", "assistant"},
                     {"text", content},
@@ -77,7 +77,7 @@ void WebuiPlugin::subscribe_() {
     }));
     subs_.push_back(host_.on(vc_api::llm_error, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
-        in_flight_.store(false);
+        in_flight_ = false;
         persist_status_();
         reasoning_buf_.clear();   // 失败轮的思考不残留到下一轮
         record_({{"type", "error"},
@@ -99,11 +99,7 @@ void WebuiPlugin::subscribe_() {
     }));
     subs_.push_back(host_.on(vc_api::edit_proposed, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditProposed*>(p);
-        {
-            // select 线程的 /api/decision 在另一侧读写同一字段
-            std::lock_guard<std::recursive_mutex> lock(data_mu_);
-            pending_turn_ = e->turn_id;
-        }
+        pending_turn_ = e->turn_id;   // 与 /api/decision 闭包同线程（宿主排水串行化）
         persist_status_();   // 提案待裁决（聚合徽标同步）
         record_({{"type", "proposal"},
                  {"turn_id", e->turn_id},
@@ -189,8 +185,7 @@ void WebuiPlugin::subscribe_() {
         if (e->plugin == nullptr || e->schema_json == nullptr) return;
         json schema = json::parse(e->schema_json, nullptr, false);
         if (!schema.is_array()) return;
-        // 载荷三串均调用期有效——立即拷贝。select 线程的 /api/ui/registry 并发读
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
+        // 载荷三串均调用期有效——立即拷贝。ui_registry_ 全在宿主线程触碰，无锁。
         ui_registry_[e->plugin] = {
             {"label", e->label != nullptr ? std::string(e->label) : std::string(e->plugin)},
             {"schema", std::move(schema)}};
@@ -205,11 +200,8 @@ void WebuiPlugin::subscribe_() {
 // 工作区，此处直接取用。
 void WebuiPlugin::backfill_workspace_() {
     std::string session, ws;
-    {
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
-        session = session_;
-        ws = host_workspace_;
-    }
+    session = session_;
+    ws = host_workspace_;
     if (ws_backfilled_ || session.empty() || ws.empty()) return;
     ws_backfilled_ = true;
     nostos::kit::poster_submit(poster_, [this, ws] {

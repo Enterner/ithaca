@@ -132,9 +132,11 @@ json WebuiPlugin::config_public_() {
 }
 
 /// POST /api/config → 供应商两层配置校验 + 落盘 + 当前供应商热切。key 只写
-/// 不读（响应经 has_key 掩码；请求留空 = 按名保留旧值）。
-http::Response WebuiPlugin::api_config_save_(const std::string& body) {
-    json in = parse_body_(body);
+/// 不读（响应经 has_key 掩码；请求留空 = 按名保留旧值）。select 线程只解析，
+/// 校验/合并/落盘/热切全在宿主线程闭包后补发响应（校验失败同样走补发 200/400）。
+http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
+    json in = parse_body_(req.body);
+    return defer_(req, [this, in = std::move(in)](std::uint64_t conn) {
     // 供应商两层配置：{"providers":[{name,type,base_url,api_key,enabled,
     // models:[{id,context,enabled}...]}], "current_provider":"名称"}——
     // 校验：供应商名非空/≤64/去重（大小写不敏感）、type 只许 mock|cloud、
@@ -215,9 +217,10 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
             cleaned.push_back(e);
         }
         if (bad)
-            return json_resp({{"ok", false},
-                              {"error", "供应商配置非法（名称/模型 ID 重复或为空、"
-                                        "上下文 ≥1024、超 32 个等）"}});
+            return server_->respond(conn, json_resp(
+                {{"ok", false},
+                 {"error", "供应商配置非法（名称/模型 ID 重复或为空、"
+                           "上下文 ≥1024、超 32 个等）"}}));
         // 子模型引用存在性后置校验：目标供应商必须在本次保存清单内且模型在其
         // 启用列表——悬空引用运行期会静默回落主模型，保存时拦截让用户当场看到
         for (const auto& p : cleaned)
@@ -236,11 +239,13 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
                     break;
                 }
                 if (!ok)
-                    return json_resp(
-                        {{"ok", false},
-                         {"error", "子 agent 模型引用无效：" + sm.value("provider", "") +
-                                       " / " + sm.value("model", "") +
-                                       "（供应商不存在或模型未启用）"}});
+                    return server_->respond(
+                        conn, json_resp(
+                                  {{"ok", false},
+                                   {"error", "子 agent 模型引用无效：" +
+                                                 sm.value("provider", "") + " / " +
+                                                 sm.value("model", "") +
+                                                 "（供应商不存在或模型未启用）"}}));
             }
         // current_provider：前端指定或保留；必须命中列表**且供应商启用（带启用
         // 模型）**——停用的供应商继续当当前项，输入栏/对话仍走它的凭据，停用
@@ -294,9 +299,10 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
         }
         // cloud 无 key ⇒ 必然 FAILED(5)，提前拦截并点名
         if (config_.value("provider", "mock") == "cloud" && cur_key.empty())
-            return json_resp({{"ok", false},
-                              {"error", "当前供应商（" + cur + "）未填写 API Key——"
-                                        "请在供应商详情中输入后重试"}});
+            return server_->respond(conn, json_resp(
+                {{"ok", false},
+                 {"error", "当前供应商（" + cur + "）未填写 API Key——"
+                           "请在供应商详情中输入后重试"}}));
     }
     if (in.contains("key") && in["key"].is_string() && !in["key"].get<std::string>().empty())
         config_["api_key"] = in["key"];
@@ -325,9 +331,9 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
     }
     if (!persist_config_()) {
         const std::string cfg_path = config_path_().string();
-        return json_resp({{"ok", false},
+        return server_->respond(conn, json_resp({{"ok", false},
                           {"error", "数据目录不可写：" + cfg_path +
-                                        " —— 重启宿主时加 -DataHome 参数换个位置"}});
+                                        " —— 重启宿主时加 -DataHome 参数换个位置"}}));
     }
     if (mcp_reload_pending_) {
         mcp_reload_pending_ = false;
@@ -343,23 +349,20 @@ http::Response WebuiPlugin::api_config_save_(const std::string& body) {
     post_llm_set_active_();
     host_.log(2, "ithaca.webui: 配置已保存（供应商「" + config_.value("current_provider", "") +
                      "」已热切）");
-    return json_resp({{"ok", true}, {"note", "已保存；当前供应商即时生效"}});
+    server_->respond(conn, json_resp({{"ok", true}, {"note", "已保存；当前供应商即时生效"}}));
+    });
 }
 
 /// GET /api/ui/registry → 已注册的插件 UI 贡献清单（vc.ui.register 的内存累积）。
 /// 前端设置面板据此动态生成各插件的设置节；schema 是"界面长什么样"，值域另见
-/// /api/config 的 plugins 节。
-http::Response WebuiPlugin::api_ui_registry_() {
+/// /api/config 的 plugins 节。数据源：路由 defer 包装（宿主线程闭包内调用）。
+json WebuiPlugin::api_ui_registry_() {
     json arr = json::array();
-    {
-        // 快照拷贝持锁出——宿主线程的 vc.ui.register 回调并发写
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
-        for (const auto& [name, ui] : ui_registry_)
-            arr.push_back(json{{"plugin", name},
-                               {"label", ui.value("label", name)},
-                               {"schema", ui.value("schema", json::array())}});
-    }
-    return json_resp({{"ok", true}, {"plugins", std::move(arr)}});
+    for (const auto& [name, ui] : ui_registry_)
+        arr.push_back(json{{"plugin", name},
+                           {"label", ui.value("label", name)},
+                           {"schema", ui.value("schema", json::array())}});
+    return {{"ok", true}, {"plugins", std::move(arr)}};
 }
 
 // 组装并投递 vc.llm.set_active（阶段二追加 context_window：当前供应商、当前启用

@@ -57,7 +57,6 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     sweep_uninitialized_();
     {
         std::string act = prefer_session;
-        std::lock_guard<std::recursive_mutex> lock(data_mu_);
         if (act.empty() || session_entry_(act) == nullptr) {
             act = index_.value("active", "");
             if (act.empty() || session_entry_(act) == nullptr) {
@@ -88,10 +87,10 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         const char* v = std::getenv("ITHACA_LLM_ACTIVE");
         return (v != nullptr && std::string_view(v) == "mock") ? "mock" : "cloud";
     }();
-    // workspace 工具表（文件树 /api/fs/list 的后端）：activate 时解析一次；
+    // workspace 工具表（文件树 /api/fs/* 的后端）：activate 时解析一次；
     // 装载顺序在 webui 之后的情况由 subscribe_ 的 tool_register 兜底重解析
-    tools_.store(host_.service<vc_api::ToolTable>(vcws::kToolSvc));
-    if (tools_.load() == nullptr)
+    tools_ = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
+    if (tools_ == nullptr)
         host_.log(3, "ithaca.webui: workspace 工具表未就绪——文件树不可用");
 
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
@@ -242,6 +241,8 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     // 剥掉 query（"?v=..." 形态的缓存穿透参数）——否则带参请求全部 404
     const std::string t = req.target.substr(0, req.target.find('?'));
 
+    // 静态文件与 /events 零共享态，select 线程同步直答；其余端点一律解析+
+    // 投递后挂起，业务体与响应补发全在宿主线程闭包（线程纪律见文件头）。
     if (m == "GET" && (t == "/" || t == "/index.html")) return file_("index.html");
     if (m == "GET" && t.rfind("/web/", 0) == 0) return file_(t.substr(5));
     if (m == "GET" && t == "/events") {
@@ -251,67 +252,90 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         return r;
     }
     if (m == "GET" && t == "/api/health") {
-        std::string sess;
-        {
-            std::lock_guard<std::recursive_mutex> lock(data_mu_);
-            sess = session_;
-        }
-        return json_resp({{"ok", true}, {"session", sess}});
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp({{"ok", true}, {"session", session_}}));
+        });
     }
-    if (m == "GET" && t == "/api/config") return json_resp(config_public_());
-    if (m == "POST" && t == "/api/config") return api_config_save_(req.body);
+    if (m == "GET" && t == "/api/config") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(config_public_()));
+        });
+    }
+    if (m == "POST" && t == "/api/config") return api_config_save_(req);
     if (m == "GET" && t.rfind("/api/transcript", 0) == 0) {
         long after = 0;
         const auto q = req.target.find("after=");   // 从原始 target 解析（t 已剥 query）
         if (q != std::string::npos) after = std::atol(req.target.c_str() + q + 6);
-        json arr = json::array();
-        std::size_t total = 0;
-        {
-            // 快照拷贝持锁出——宿主线程的 record_ 并发追加，不能裸遍历
-            std::lock_guard<std::recursive_mutex> lock(data_mu_);
-            total = records_.size();
+        return defer_(req, [this, conn = req.conn_id, after](std::uint64_t) {
+            json arr = json::array();
             for (std::size_t i = static_cast<std::size_t>(after); i < records_.size(); ++i)
                 arr.push_back(records_[i]);
-        }
-        return json_resp({{"records", arr}, {"next", total}});
+            server_->respond(conn, json_resp({{"records", std::move(arr)},
+                                              {"next", records_.size()}}));
+        });
     }
-    if (m == "GET" && t == "/api/session") return json_resp(session_meta_());
-    if (m == "GET" && t.rfind("/api/agent-log", 0) == 0) return api_agent_log_(req.target);
+    if (m == "GET" && t == "/api/session") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(session_meta_()));
+        });
+    }
+    if (m == "GET" && t.rfind("/api/agent-log", 0) == 0) {
+        return defer_(req, [this, target = req.target](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_agent_log_(target)));
+        });
+    }
     if (m == "GET" && t == "/api/sessions") {
-        json list;
-        {
-            std::lock_guard<std::recursive_mutex> lock(data_mu_);
-            list = index_.value("sessions", json::array());
-        }
-        return json_resp(list);
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(index_.value("sessions", json::array())));
+        });
     }
-    if (m == "POST" && t == "/api/session/new") return api_session_new_(req.body);
-    if (m == "POST" && t == "/api/session/open") return api_session_open_(req.body);
-    if (m == "POST" && t == "/api/session/delete") return api_session_delete_(req.body);
-    if (m == "POST" && t == "/api/session/rename") return api_session_rename_(req.body);
+    if (m == "POST" && t == "/api/session/new") return api_session_new_(req);
+    if (m == "POST" && t == "/api/session/open") return api_session_open_(req);
+    if (m == "POST" && t == "/api/session/delete") return api_session_delete_(req);
+    if (m == "POST" && t == "/api/session/rename") return api_session_rename_(req);
     if (m == "POST" && t == "/api/input") return api_input_(req);
     if (m == "POST" && t == "/api/decision") return api_decision_(req);
-    if (m == "POST" && t == "/api/model") return api_model_(req.body);
-    if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req.body);
-    if (m == "GET" && t == "/api/permission-mode")
-        return json_resp({{"mode", vc_api::normalize_permission_mode(
-                                        config_.value("permission_mode", "auto-edit"))}});
-    if (m == "POST" && t == "/api/permission-mode") return api_permission_mode_(req.body);
+    if (m == "POST" && t == "/api/model") return api_model_(req);
+    if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req);
+    if (m == "GET" && t == "/api/permission-mode") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(
+                {{"mode", vc_api::normalize_permission_mode(
+                              config_.value("permission_mode", "auto-edit"))}}));
+        });
+    }
+    if (m == "POST" && t == "/api/permission-mode") return api_permission_mode_(req);
     // NOTE: 传 req.target（含 query）——上面的 t 已剥 query（静态资源缓存穿透
     // 用），带参 API 从原始 target 自行解析。踩过: 传剥完的 t ⇒ 参数永远解析
     // 不到（transcript 的 after= 曾因此静默失效，靠前端按 id 去重掩住）
-    if (m == "GET" && t.rfind("/api/fs/list", 0) == 0) return api_fs_list_(req.target);
-    if (m == "GET" && t.rfind("/api/fs/read", 0) == 0) return api_fs_read_(req.target);
-    if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_();
-    if (m == "GET" && t == "/api/mcp/status") return api_mcp_status_();
-    if (m == "GET" && t == "/api/context/breakdown") return api_context_breakdown_();
-    if (m == "GET" && t == "/api/ui/registry") return api_ui_registry_();
-    if (m == "GET" && t.rfind("/api/shell/sessions", 0) == 0)
-        return api_shell_sessions_();
+    if (m == "GET" && t.rfind("/api/fs/list", 0) == 0) return api_fs_list_(req);
+    if (m == "GET" && t.rfind("/api/fs/read", 0) == 0) return api_fs_read_(req);
+    if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_(req);
+    if (m == "GET" && t == "/api/mcp/status") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_mcp_status_()));
+        });
+    }
+    if (m == "GET" && t == "/api/context/breakdown") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_context_breakdown_()));
+        });
+    }
+    if (m == "GET" && t == "/api/ui/registry") {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_ui_registry_()));
+        });
+    }
+    if (m == "GET" && t.rfind("/api/shell/sessions", 0) == 0) {
+        return defer_(req, [this](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_shell_sessions_()));
+        });
+    }
     if (m == "POST" && t == "/api/shutdown") {
         // 不落「宿主停止」通告：每次关窗写一条，重启重放必现纯噪音
-        // （踩过：开关 10 次攒 10 条）
-        std::exit(0);  // 每条记录/每 turn 已落盘，立即退出是安全的
+        // （踩过：开关 10 次攒 10 条）。宿主线程闭包内退出——与原 select 线程
+        // exit 等价（每条记录/每 turn 已落盘，立即退出安全；响应不送达同旧形态）。
+        return defer_(req, [](std::uint64_t) { std::exit(0); });
     }
     host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // 诊断：路由未命中点
     return http::Response::status_page(404, "not found");
