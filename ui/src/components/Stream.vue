@@ -1,12 +1,14 @@
 <script setup>
-// 对话流：记录列表 + 流式块。消息级内容平铺，过程层收敛（工具调用+结果一行、
-// run 输出折叠、applied/完成行并入汇总卡与状态卡——records 层过滤）。提案卡
-//（逐文件批准）/「本轮修改」汇总卡内联实现，diff 着色走 diff.js 的 v-html
-//（内容全部经 esc——信任级别与正文一致）。
+// 对话流：记录列表 + 流式块。消息级内容平铺，过程层收敛——工具调用收成一行
+// （默认收起，展开看调用参数与输出）、run 输出折叠、applied/完成行并入汇总卡
+// 与状态卡——records 层过滤。提案卡（逐文件批准）/「本轮修改」汇总卡内联实现，
+// diff 着色走 diff.js 的 v-html（内容全部经 esc——信任级别与正文一致）。
+// 折叠块（思考/工具卡/编辑行/run 输出）统一走 .fold 网格动画 + Chev 旋转箭头。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { S } from '../store'
 import { mdHtml, esc, toolLabel } from '../md'
 import { diffHtml, stripHeads } from '../diff'
+import Chev from './Chev.vue'
 
 const streamEl = ref(null)
 const thinkEl = ref(null)
@@ -21,6 +23,8 @@ watch(() => [S.records.length, S.live && S.live.text],
 const thinking = computed(() => !!(S.live && S.live.reasoning && !S.live.text))
 // 思考跟随：展开时吸附思考体内部底部；尚未超出上限（无内部滚动、块体仍在长高）
 // 时退化为推页面滚底。用户上翻阅读（离底 > 48px）时不拽回。
+// NOTE: 思考体常驻 DOM（.fold 收起只压高度，不做 v-if）——滚动跟随以 live.open
+// 为门卫，收起期不动作；这也是折叠动画（高度过渡）能成立的前提
 watch(() => S.live && S.live.reasoning, () => nextTick(() => {
   const el = thinkEl.value
   if (!el || !S.live || !S.live.open) return
@@ -45,15 +49,24 @@ function toolHtml(rec) {
   // 短句；否则「中文标签 + 摘要」
   return label ? '<b>' + esc(label) + '</b> ' + esc(brief) : esc(brief)
 }
-// ---- 过程行（两行制：调用行 + 独立结果行；run 输出折叠在结果行下）------------
-// 结果独立成行（ZCode 式）：退出码/结果摘要住结果行，与命令文本物理分行——
-// 命令串含 exit N 也不会拼出重叠；失败红显，run 失败恒带 exit N（分行后无
-// 撞车顾虑，退出码是最廉价的失败诊断）
-
-function toolFailed(rec) {
-  return rec.type === 'tool' && !rec.ok   // 仅无配对兜底行红显；配对调用的失败由结果行红显
+// ---- 工具卡（单行收起 + 展开详情）--------------------------------------------
+// 展开详情 = 调用参数（args 原始 JSON，契约尾部追加字段；旧记录无此字段则无
+// 参数节）+ run 输出块。结果摘要不进详情——它以行内右缀常显（.procres）。
+// 点击整行切换展开；无任何详情内容时行不可点（箭头也不出）。
+function hasToolDetail(rec) {
+  return !!(rec.args && rec.args.trim()) || !!(rec._runs && rec._runs.length)
 }
-/** 结果行内容：null = 不出结果行（无配对/运行中无输出/成功无输出） */
+function toggleTool(rec) {
+  if (hasToolDetail(rec)) rec._open = !rec._open
+}
+function argsPretty(rec) {
+  if (!rec.args) return ''
+  try { return JSON.stringify(JSON.parse(rec.args), null, 2) } catch { return rec.args }
+}
+function toolFailed(rec) {
+  return rec.type === 'tool' && !rec.ok   // 仅无配对兜底行红显；配对调用的失败由结果缀红显
+}
+/** 结果缀内容：null = 不出结果缀（无配对/运行中无输出/成功无输出） */
 function resRow(rec) {
   if (rec.type !== 'tool_call') return null
   const r = rec._result
@@ -67,7 +80,7 @@ function resRow(rec) {
                             : { text: '✗ exit ' + r.exit, warn: true })
   return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok, out: false } : null
 }
-// 每渲染周期每条调用卡只算一次结果行（模板里 7 处取用——直接调 resRow 会对
+// 每渲染周期每条调用卡只算一次结果行（模板里多处取用——直接调 resRow 会对
 // rec._runs 反复 reduce；Map 按 record 对象取，O(1)）
 const resRows = computed(() => {
   const m = new Map()
@@ -75,8 +88,14 @@ const resRows = computed(() => {
   return m
 })
 function rowOf(rec) { return resRows.value.get(rec) ?? null }
-function toggleRunOut(rec) {
-  if (rec._runs && rec._runs.length) rec._open = !rec._open
+/** 行内结果缀：结果摘要 / 运行中（转圈）/ 已收口无可报（✓/✗）。 */
+function toolStat(rec) {
+  const row = rowOf(rec)
+  if (row) return { text: row.text, warn: !!row.warn, run: !rec._done }
+  if (rec._result)
+    return { text: rec._result.ok === false ? '✗' : '✓',
+             warn: rec._result.ok === false, run: false }
+  return { text: '', warn: false, run: !rec._done }
 }
 function runOutText(rec) {
   return rec._runs.map((b) => b.lines.join('\n')).join('\n')
@@ -121,9 +140,11 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <!-- 收口记录的思考块：默认折叠可展开（reasoning 由宿主落盘，重放同样可回看） -->
           <div v-if="rec.reasoning" class="think" :class="{ closed: !rec._thinkOpen }">
             <div class="think-head" @click="rec._thinkOpen = !rec._thinkOpen">
-              <span class="ico">💭</span><span class="t">深度思考</span><span class="chev">▾</span>
+              <Chev :open="!!rec._thinkOpen" /><span class="ico">💭</span><span class="t">深度思考</span>
             </div>
-            <div v-if="rec._thinkOpen" class="think-body">{{ rec.reasoning }}</div>
+            <div class="fold" :class="{ open: rec._thinkOpen }">
+              <div class="fold-in"><div class="think-body">{{ rec.reasoning }}</div></div>
+            </div>
           </div>
           <template v-if="rec.text">
             <div class="who">Ithaca</div>
@@ -132,18 +153,29 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         </template>
 
         <template v-else-if="rec.type === 'tool_call' || rec.type === 'tool'">
-          <!-- 过程两行制：调用行（跑了什么）+ 结果行（结局，独立弱色行） -->
-          <div class="toolline proc" :class="{ warn: toolFailed(rec) }" v-html="'⚙ ' + toolHtml(rec)"></div>
-          <template v-if="rec.type === 'tool_call'">
-            <div v-if="rowOf(rec)" class="procres"
-                 :class="{ warn: rowOf(rec).warn, click: rowOf(rec).out, open: rec._open }"
-                 @click="rowOf(rec).out && toggleRunOut(rec)">
-              └ {{ rowOf(rec).text }}<span v-if="rowOf(rec).out" class="chev">▸</span>
+          <!-- 配对调用 = 单行工具卡：调用摘要 + 结果缀（.procres 保留独立语义：
+               结果摘要），默认收起、整行点击展开（参数 JSON + run 输出）。
+               无配对兜底结果行（type=tool）保持旧一行制 -->
+          <div v-if="rec.type === 'tool_call'" class="toolcard" :class="{ open: rec._open }">
+            <div class="toolline proc" :class="{ click: hasToolDetail(rec) }"
+                 @click="toggleTool(rec)">
+              <Chev v-if="hasToolDetail(rec)" :open="!!rec._open" />
+              <span class="tico" :class="{ dim: rec._done }">⚙</span>
+              <span class="tlabel" v-html="toolHtml(rec)"></span>
+              <span class="spacer"></span>
+              <span v-if="toolStat(rec).run" class="spinner" title="运行中"></span>
+              <span v-if="toolStat(rec).text" class="procres" :class="{ warn: toolStat(rec).warn }">{{ toolStat(rec).text }}</span>
             </div>
-            <div v-if="rec._open && rec._runs && rec._runs.length" class="runout">
-              <div class="runout-body">{{ runOutText(rec) }}</div>
+            <div class="fold" :class="{ open: rec._open }">
+              <div class="fold-in">
+                <div v-if="rec.args && rec.args.trim()" class="targs"><pre>{{ argsPretty(rec) }}</pre></div>
+                <div v-if="rec._runs && rec._runs.length" class="runout">
+                  <div class="runout-body">{{ runOutText(rec) }}</div>
+                </div>
+              </div>
             </div>
-          </template>
+          </div>
+          <div v-else class="toolline proc" :class="{ warn: toolFailed(rec) }" v-html="'⚙ ' + toolHtml(rec)"></div>
         </template>
 
         <!-- 「本轮修改」汇总卡（记录流内伪记录：结算时已落位到自己轮次） -->
@@ -162,15 +194,19 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
             </div>
             <template v-for="f in rec.files" :key="f.path">
               <div class="erow" :class="{ open: f.open }" @click="f.open = !f.open">
-                <span class="chev">▶</span><span class="p">{{ f.path }}</span>
+                <Chev :open="!!f.open" /><span class="p">{{ f.path }}</span>
                 <span v-if="f.isNew" class="ntag">新文件</span>
                 <span class="st">
                   {{ f.n > 1 ? f.n + ' 次编辑 · ' : '' }}
                   <i class="add">+{{ f.add }}</i> <i class="del">−{{ f.rem }}</i>
                 </span>
               </div>
-              <div class="ebody">
-                <div class="diff" v-html="diffHtml(f.applies.length === 1 ? f.applies[0].replace(/^── [^\n]*\n/, '') : f.applies.join(''))"></div>
+              <div class="fold" :class="{ open: f.open }">
+                <div class="fold-in">
+                  <div class="ebody">
+                    <div class="diff" v-html="diffHtml(f.applies.length === 1 ? f.applies[0].replace(/^── [^\n]*\n/, '') : f.applies.join(''))"></div>
+                  </div>
+                </div>
               </div>
             </template>
           </div>
@@ -184,10 +220,14 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <!-- 无归属 run 的兜底块（映射缺失时自成一行）：同样默认折叠 -->
           <div class="toolline proc click" :class="{ warn: rec.failed, open: rec._open }"
                @click="rec._open = !rec._open">
-            <span class="chev">▸</span> run #{{ rec.run_id }} · {{ rec.lines.length }} 行输出<template v-if="rec.exit !== null"> · exit {{ rec.exit }}</template>
+            <Chev :open="!!rec._open" /> run #{{ rec.run_id }} · {{ rec.lines.length }} 行输出<template v-if="rec.exit !== null"> · exit {{ rec.exit }}</template>
           </div>
-          <div v-if="rec._open" class="runout">
-            <div class="runout-body">{{ rec.lines.join('\n') }}</div>
+          <div class="fold" :class="{ open: rec._open }">
+            <div class="fold-in">
+              <div class="runout">
+                <div class="runout-body">{{ rec.lines.join('\n') }}</div>
+              </div>
+            </div>
           </div>
         </template>
 
@@ -242,9 +282,12 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
       <template v-if="S.live">
         <div v-if="S.live.reasoning" class="think" :class="{ closed: !S.live.open }">
           <div class="think-head" :class="{ live: thinking }" @click="S.live.open = !S.live.open">
-            <span class="ico">💭</span><span class="t">{{ thinking ? '思考中…' : '深度思考' }}</span><span class="chev">▾</span>
+            <Chev :open="!!S.live.open" /><span class="ico">💭</span>
+            <span class="t">{{ thinking ? '思考中…' : '深度思考' }}</span>
           </div>
-          <div v-if="S.live.open" ref="thinkEl" class="think-body">{{ S.live.reasoning }}</div>
+          <div class="fold" :class="{ open: S.live.open }">
+            <div class="fold-in"><div ref="thinkEl" class="think-body">{{ S.live.reasoning }}</div></div>
+          </div>
         </div>
         <div v-if="S.live.text || !S.live.reasoning" class="who">Ithaca</div>
         <div v-if="S.live.text || !S.live.reasoning" class="msg a">{{ S.live.text }}<span class="cursor"></span></div>
