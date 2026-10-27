@@ -18,6 +18,7 @@
 #include "vc_tool.hpp"
 
 #include "diff.hpp"
+#include "docs.hpp"
 #include "edit.hpp"
 #include "fs.hpp"
 #include "jail.hpp"
@@ -164,11 +165,13 @@ private:
         json tools = json::array(
             {json{{"name", "read"},
                   {"description",
-                   "读取工作区内文本文件（拒绝二进制）。返回带行号（行首 = 文件真实"
-                   "行号 + 制表符），标注出处直接引用行号即可。一次调用即可读满 "
-                   "2000 行，无需手动分小块；更大的文件用 offset（起始行号，1 起）/"
-                   "limit（行数）续读，单行超 2000 字符截断行尾。返回带 total_lines，"
-                   "可据此判断是否读全"},
+                   "读取工作区内文本文件或主流文档（docx/pptx/xlsx 原生抽取正文；"
+                   "pdf/doc/ppt/xls 走系统 IFilter，本机没装对应过滤器时点名拒绝）。"
+                   "文档返回抽取后的纯文本（保留分页/表格行结构，非原文排版）。"
+                   "返回带行号（行首 = 文件真实行号 + 制表符），标注出处直接引用行号即可。"
+                   "一次调用即可读满 2000 行，无需手动分小块；更大的文件用 offset"
+                   "（起始行号，1 起）/limit（行数）续读，单行超 2000 字符截断行尾。"
+                   "返回带 total_lines，可据此判断是否读全"},
                   {"schema", object_with(
                                  {{"path", schema_path},
                                   {"offset", {{"type", "integer"},
@@ -259,16 +262,50 @@ private:
         std::wstring full;
         std::string norm, err;
         if (!resolve_arg(args.value("path", ""), full, norm, err)) return fail(err);
+        // 文档面（docx/pptx/xlsx 原生 + pdf/doc/ppt/xls 经 IFilter）：先按扩展名
+        // 分流，抽取后的纯文本走与文本文件完全相同的分页管线——结果形状不变
+        //（多带 doc 字段标抽取来源），模型侧无感。
+        std::string ext_lower;
+        {
+            const std::string ext = fs::path(norm).extension().string();
+            for (const char c : ext) ext_lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c));
+        }
+        bool doc_truncated = false;
+        std::string doc_kind;
+        if (vcws::docs::is_document_ext(ext_lower)) {
+            std::error_code ec;
+            const auto sz = fs::file_size(full, ec);
+            if (!ec && sz > vcws::docs::kArchiveCap)
+                return fail("文档过大（" + std::to_string(sz / (1024 * 1024)) +
+                            "MB > 64MB 上限）: " + norm);
+            std::string bytes;
+            if (!store_->read(full, bytes))
+                return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
+            vcws::docs::DocText d = vcws::docs::extract(
+                reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size(),
+                ext_lower, full);
+            if (!d.ok) return fail(d.error);
+            doc_truncated = d.truncated;
+            doc_kind = d.kind;
+            return read_paged(std::move(d.text), norm, args, doc_truncated, doc_kind);
+        }
         std::string content;
         if (!store_->read(full, content))
             return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
         if (content.find('\0') != std::string::npos)
             return json{{"ok", false},
                         {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm +
-                                      "（docx/pptx 等容器格式可用 runner 调 Python 等"
-                                      "脚本解析）"}};
+                                      "（docx/pptx/xlsx/pdf/doc/ppt/xls 已支持直接读；"
+                                      "其余容器格式可用 runner 调 Python 等脚本解析）"}};
         if (!vcws::utf8_valid(content))
             return json{{"ok", false}, {"error", "不是有效的 UTF-8 文本: " + norm}};
+        return read_paged(std::move(content), norm, args, false, "");
+    }
+
+    /** 分页出参（read 的文本/文档共用管线）：content 按行切窗、行首带真实行号，
+        结果形状 = {ok, path, content, truncated, total_lines, offset, limit[, doc]}。 */
+    json read_paged(std::string&& content, const std::string& norm, const json& args,
+                    bool doc_truncated, const std::string& doc_kind) {
         // 按行分页（限制作用在「读」的动作上，结果内联一次回灌、无二次回查协议）。
         // 行按 \n 切、行内 \r 原样保留——重组与原文逐字节一致，apply 的精确块
         // 匹配不受分页展示影响。行首带行号（cat -n 形态，编号 = 文件真实行号，
@@ -308,13 +345,15 @@ private:
             picked = vcws::trim_utf8(picked, kReadCap);
             truncated = true;
         }
-        return json{{"ok", true},
+        json out = {{"ok", true},
                     {"path", norm},
                     {"content", picked},
-                    {"truncated", truncated},
+                    {"truncated", truncated || doc_truncated},
                     {"total_lines", total_lines},
                     {"offset", offset},
                     {"limit", limit}};
+        if (!doc_kind.empty()) out["doc"] = doc_kind;   // 文档抽取来源（docx/…/ifilter:pdf）
+        return out;
     }
 
     json list_tool(const json& args) {
