@@ -12,6 +12,8 @@
 
 #include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
 
+#include "../../workspace/text.hpp"  // vcws::trim_utf8：错误体截断走码点边界（全仓纪律）
+
 #include <cstdlib>  // std::atoi：query depth 解析
 
 namespace vc_webui {
@@ -282,7 +284,7 @@ http::Response WebuiPlugin::api_provider_models_(const std::string& body) {
                             else if (doc.contains("message") && doc["message"].is_string())
                                 msg = doc["message"].get<std::string>();
                         }
-                        if (msg.empty()) msg = resp.substr(0, 200);
+                        if (msg.empty()) msg = vcws::trim_utf8(resp, 200);   // 按字节切会劈开 UTF-8 ⇒ dump 抛 316
                         result = {{"ok", false},
                                   {"error", "HTTP " + std::to_string(status) +
                                                 (msg.empty() ? "" : "：" + msg)}};
