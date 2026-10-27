@@ -152,6 +152,39 @@ void AgentCtx::on_decision(const vc_api::TurnDecision& d) {
     }
 }
 
+void AgentCtx::on_session_cmd(const vc_api::SessionCmd& c) {
+    try {
+        on_session_cmd_impl(c);
+    } catch (...) {
+        fail_unexpected_();
+    }
+}
+
+void AgentCtx::on_session_cmd_impl(const vc_api::SessionCmd& c) {
+    if (c.cmd != 1) return;   // 预留命令值忽略（契约尾部追加语义）
+    if (subagent_) return;    // 子会话无 UI 命令面
+    if (state_ != State::Idle) {
+        notice("turn 进行中，无法压缩上下文");
+        return;
+    }
+    // 主动压缩 = turn 边界自动压缩的立即版（同一管线：同一 plan/摘要/兜底）。
+    // LLM 摘要期间与收口压缩一致地保持占用（state TurnActive）——摘要回包中途
+    // 若开新 turn，apply_digest_ 的区间替换会踩在半截对话上（踩过预防）。
+    const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
+    if (!plan.valid) {
+        notice("上下文还比较小，暂无需压缩");
+        return;
+    }
+    if (summary_enabled_) {
+        state_ = State::TurnActive;
+        pending_plan_ = plan;
+        notice("开始压缩上下文（LLM 摘要，期间输入将排队）…");
+        request_digest_();   // 回包/失败在 on_done/on_llm_error 分流 → apply_digest_ 回 Idle
+    } else {
+        apply_digest_(plan.digest, false);   // 机械折叠：出口自带通告 + 回 Idle
+    }
+}
+
 void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
     if (d.decision == 3) {  // undo：独立命令，不影响等待中的提案
         exec_undo();

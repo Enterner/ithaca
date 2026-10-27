@@ -161,10 +161,12 @@ struct AgentCtx {
     void on_done(const vc_api::LlmDone& e);
     void on_llm_error(const vc_api::LlmError& e);
     void on_decision(const vc_api::TurnDecision& d);
+    void on_session_cmd(const vc_api::SessionCmd& c);
     void on_input_impl(const char* text);
     void on_done_impl(const vc_api::LlmDone& e);
     void on_llm_error_impl(const vc_api::LlmError& e);
     void on_decision_impl(const vc_api::TurnDecision& d);
+    void on_session_cmd_impl(const vc_api::SessionCmd& c);
 
     // ---- turn 状态机 ------------------------------------------------------------
     // （方法体在 src/ctx_turn.cpp）
@@ -437,6 +439,7 @@ private:
 
     nostos::abi::Host::Subscription sub_input_{};
     nostos::abi::Host::Subscription sub_decision_{};
+    nostos::abi::Host::Subscription sub_cmd_{};    // 会话级命令（vc.session.cmd）
     nostos::abi::Host::Subscription sub_done_{};    // 主会话槽（广播）；子会话走各自槽订阅
     nostos::abi::Host::Subscription sub_error_{};   // 同上
     nostos::abi::Host::Subscription sub_session_{};

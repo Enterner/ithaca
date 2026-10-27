@@ -304,6 +304,17 @@ inline constexpr std::uint64_t subagent_event = nostos::event_id<SubagentEvent>;
 inline constexpr std::uint64_t mcp_reload = nostos::event_id<McpReload>;
 inline constexpr std::uint64_t mcp_status = nostos::event_id<McpStatus>;
 
+// 会话级命令（webui → agent；UI 功能入口随尾部追加扩展）。cmd：1 = 压缩上下文
+//（主动触发 turn 边界的折叠——LLM 摘要或机械 digest，与阈值自动压缩同一管线；
+//  摘要期间 turn 状态机保持占用，新输入照常排队）。仅 Idle 且主会话受理；
+//  其余情形忽略并通告。cmd 其他值 = 预留，消费方忽略。
+struct SessionCmd {
+    static constexpr std::string_view name = "vc.session.cmd";
+    int cmd = 0;
+};
+
+inline constexpr std::uint64_t session_cmd = nostos::event_id<SessionCmd>;
+
 // ---- 插件 UI 贡献（声明式设置 schema，方案 A）--------------------------------
 // 带设置 UI 的插件在 activate 时 emit register（webui 动态生成设置 tab）；webui
 // 在自己 activate 末尾 emit query——已激活插件收到后**重发** register。两个方向

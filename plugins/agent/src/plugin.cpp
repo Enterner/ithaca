@@ -29,6 +29,9 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     sub_decision_ = host.on(vc_api::turn_decision, [this](const void* p) {
         ctx_.on_decision(*static_cast<const vc_api::TurnDecision*>(p));
     });
+    sub_cmd_ = host.on(vc_api::session_cmd, [this](const void* p) {
+        ctx_.on_session_cmd(*static_cast<const vc_api::SessionCmd*>(p));
+    });
     sub_done_ = host.on(vc_api::llm_done, [this](const void* p) {
         // 主会话槽 = 广播（slot=0）；子会话的 LLM 事件按槽单播、各自订阅直达
         // 所属 ctx——不再总线扇出 + request_id 反查
@@ -122,6 +125,7 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
 void AgentPlugin::deactivate() noexcept {
     sub_input_ = {};
     sub_decision_ = {};
+    sub_cmd_ = {};
     sub_done_ = {};
     sub_error_ = {};
     sub_session_ = {};
