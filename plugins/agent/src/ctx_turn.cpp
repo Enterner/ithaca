@@ -556,7 +556,10 @@ std::string AgentCtx::exec_recall(const json& args) {
         if (rj.is_object() && rj.contains("entries") && rj["entries"].is_array()) {
             json filtered = json::array();
             std::size_t matched = 0;
-            std::map<std::string, long long> by_dir;   // 目录 →（过滤后）文件数
+            // 按 type 分类计数：目录条目冒充文件会让聚合数字说谎（实测：归档里
+            // 的子目录条目被计成"(根) files:1"）；note（省略计数）是元数据，
+            // 计入 matched 但不冒充文件/目录
+            std::map<std::string, std::pair<long long, long long>> by_dir;   // 目录 → {文件数, 子目录数}
             for (const auto& e : rj["entries"]) {
                 if (!e.is_object()) continue;
                 const std::string p = e.value("path", "");
@@ -565,11 +568,16 @@ std::string AgentCtx::exec_recall(const json& args) {
                     continue;
                 ++matched;
                 const std::size_t slash = p.rfind('/');
-                by_dir[slash == std::string::npos ? "(根)" : p.substr(0, slash)]++;
+                const std::string bucket =
+                    slash == std::string::npos ? "(根)" : p.substr(0, slash);
+                const std::string type = e.value("type", "file");
+                if (type == "dir") ++by_dir[bucket].second;
+                else if (type == "file") ++by_dir[bucket].first;
                 if (filtered.size() < 50) filtered.push_back(e);
             }
             json dirs = json::array();
-            for (const auto& [d, n] : by_dir) dirs.push_back(json{{"dir", d}, {"files", n}});
+            for (const auto& [d, c] : by_dir)
+                dirs.push_back(json{{"dir", d}, {"files", c.first}, {"subdirs", c.second}});
             json summ = json{{"summary_of", ref},
                              {"total_entries", rj["entries"].size()},
                              {"matched", matched}};
@@ -764,7 +772,7 @@ void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
                         // raw 未启用时不得承诺 recall——模型会调必败工具
                         (raw_dir_.empty()
                              ? "本会话未启用外置归档，被折叠原文不可回查）\n"
-                             : "工具原始结果外置于 raw/，可用 context.recall 回查）\n") +
+                             : "工具原始结果外置于 raw/，可用 context_recall 回查）\n") +
                         s}};
     // 外置索引确定性重建（批次三-11）：ref 清单来自折叠计划的结构化记录（calls
     // 提取，非摘要散文、非文本扫描）——摘要怎么改写都不断回查链；旧「补齐 tail」
@@ -793,7 +801,7 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     json digest = digest_msg;
     if (!archive_ref.empty())
         digest["content"] = digest_msg.value("content", "") + "【折叠原文】" +
-                            archive_ref + "（context.recall 可回查）\n";
+                            archive_ref + "（context_recall 可回查）\n";
     // 锚点保真在线观测（批次五-20）：折叠区逐字锚点在折叠产物中的覆盖率——
     // 32KB 降级会丢最旧段的调用链锚点，比率落 host log 供评测采集（批次五-12）
     if (pending_plan_.anchors_total > 0)

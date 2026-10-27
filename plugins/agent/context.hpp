@@ -127,7 +127,7 @@ inline std::string compact_result(const std::string& tool, const json& r,
                std::to_string(r.contains("content") && r["content"].is_string()
                                   ? r["content"].get<std::string>().size() : 0) +
                std::string(r.value("truncated", false) ? ",\"truncated\":true" : "") +
-               ",\"note\":\"内容已外置，用 context.recall 回查\"" + ref_field(ref) + "}";
+               ",\"note\":\"内容已外置，用 context_recall 回查\"" + ref_field(ref) + "}";
     }
     if (last == "apply") {
         std::string files;
@@ -156,20 +156,30 @@ inline std::string compact_result(const std::string& tool, const json& r,
         }
         return "{\"ok\":true,\"tool\":\"run\",\"exit_code\":" + std::to_string(code) +
                ",\"first_line\":" + json(first).dump() +
-               ",\"note\":\"完整输出外置，用 context.recall 回查\"" + ref_field(ref) + "}";
+               ",\"note\":\"完整输出外置，用 context_recall 回查\"" + ref_field(ref) + "}";
     }
     if (last == "list") {
-        // 前 8 项内联（路径/类型/大小），全量在 raw/（ref 兜底）——列表的信号在
-        // 条目本身，只报条数会逼模型为一个路径多花一次 recall（批次三-9）
+        // 前 8 项内联（路径/类型/大小）+ note 项全保留——per_dir 折叠的省略计数
+        // 以 note 形态插在 entries 尾部，按序截前 8 会把"省略了多少"恰好截掉。
+        // 全量在 raw/（ref 兜底）——列表的信号在条目本身，只报条数会逼模型为
+        // 一个路径多花一次 recall
         std::size_t n = 0;
         json keep = json::array();
+        json notes = json::array();
         if (r.contains("entries") && r["entries"].is_array()) {
-            n = r["entries"].size();
-            for (std::size_t i = 0; i < n && i < 8; ++i) keep.push_back(r["entries"][i]);
+            const auto& entries = r["entries"];
+            n = entries.size();
+            for (const auto& e : entries) {
+                if (e.is_object() && e.value("type", "") == "note")
+                    notes.push_back(e);   // 省略计数无条件保留
+                else if (keep.size() < 24)
+                    keep.push_back(e);
+            }
         }
+        for (const auto& e : notes) keep.push_back(e);
         return "{\"ok\":true,\"tool\":\"list\",\"entries\":" + std::to_string(n) +
                ",\"top\":" + keep.dump() +
-               ",\"note\":\"仅前 8 项内联；全量已外置，用 context.recall 回查\"" +
+               ",\"note\":\"仅前 24 项内联；全量已外置，用 context_recall 回查（summary=true 按目录计数、filter=按子串过滤）\"" +
                ref_field(ref) + "}";
     }
     if (last == "search") {
@@ -182,7 +192,7 @@ inline std::string compact_result(const std::string& tool, const json& r,
         }
         return "{\"ok\":true,\"tool\":\"search\",\"hits\":" + std::to_string(n) +
                ",\"top\":" + keep.dump() +
-               ",\"note\":\"仅前 5 条内联；全量已外置，用 context.recall 回查\"" +
+               ",\"note\":\"仅前 5 条内联；全量已外置，用 context_recall 回查\"" +
                ref_field(ref) + "}";
     }
     if (last == "task") {
@@ -193,7 +203,7 @@ inline std::string compact_result(const std::string& tool, const json& r,
             head = vcws::trim_utf8(r["report"].get<std::string>(), 800);
         if (head.empty()) head = vcws::trim_utf8(r.dump(), 400);   // 形态兜底：无 report 字段
         return "{\"ok\":true,\"tool\":\"task\",\"head\":" + json(head).dump() +
-               ",\"note\":\"报告全文已外置，用 context.recall 回查（支持 offset/limit 分页）\"" +
+               ",\"note\":\"报告全文已外置，用 context_recall 回查（支持 offset/limit 分页）\"" +
                ref_field(ref) + "}";
     }
     if (last == "undo_turn" || last == "recall") return r.dump();  // 已是最小形态
@@ -524,7 +534,7 @@ inline constexpr const char* kSummarySystem =
     "你是上下文压缩摘要器。把给定的历史 turn 记录折叠为一份供后续对话使用的摘要。"
     "纪律：1) 文件路径、命令、参数值、符号名逐字节保留，不得改写或省略；"
     "2) 记录中出现的每个 \"ref\" 外置锚点必须原样逐条保留在最后的【外置索引】小节"
-    "（后续对话会用 context.recall 按 ref 回查原文，丢一个就断一条回查链）；"
+    "（后续对话会用 context_recall 按 ref 回查原文，丢一个就断一条回查链）；"
     "3) 按以下小节输出，不要额外寒暄：【任务主线】【关键决策】【文件与命令】"
     "【未决问题】【外置索引】；4) 除 ref 外尽量精炼。"
     "（ref 完整性由确定性外置索引兜底——见 plan_compress 的索引段。）";

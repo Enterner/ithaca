@@ -48,7 +48,9 @@ using nlohmann::json;
 constexpr std::size_t kReadCap = 256 * 1024;   // read 的内容字节上限（切片前的整读护栏）
 constexpr int kReadLinesCap = 2000;            // read 单次返回行数上限（默认值 = 参数上限）
 constexpr int kReadLineCharCap = 2000;         // read 单行字符上限（超长行截断行尾）
-constexpr std::size_t kListEntriesCap = 500;   // list 条目上限
+constexpr std::size_t kListEntriesCap = 5000;   // list 条目护栏：浏览走默认聚合，flat 的
+                                                // 定位是精确计数/全量过滤——上限只做遍历
+                                                // 终止与体量护栏，不是浏览上限
 constexpr int kListDepthCap = 6;               // list 递归深度上限
 constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
 constexpr int kSearchDepthCap = 8;
@@ -174,18 +176,17 @@ private:
                                  json::array({"path"}))}},
              json{{"name", "list"},
                   {"description",
-                   "列出目录内容（含子目录，默认深度 3，上限 500 条）。可选："
+                   "列出目录内容。默认 mode=aggregate 聚合视图：每目录一条汇总（文件数/子目录数/字节量），大目录一次看全貌；要看具体文件名再 mode=flat（可配 pattern/per_dir）下钻。可选："
                    "pattern=文件名通配（* ?，大小写不敏感，只过滤文件、目录保留）；"
-                   "mode=\"aggregate\"=目录聚合视图（每目录一条：文件数/子目录数/"
-                   "字节量——数据集类大目录首选，同构文件折叠为计数）；"
-                   "per_dir=单目录文件条目上限（超出折叠为 omitted 标注）。"
+                   "mode 默认 aggregate（聚合视图，每目录一条：文件数/子目录数/字节量）；flat=平铺看具体文件名；"
+                   "per_dir=flat 模式单目录条目上限（超出折叠为 omitted 标注）。"
                    "返回含 listed（实际条数）与 truncated 标记"},
                   {"schema", object_with(
                                  {{"path", schema_path},
                                   {"depth", {{"type", "integer"}, {"description", "1-6"}}},
                                   {"pattern", {{"type", "string"}, {"description", "文件名通配，如 *.mp4"}}},
-                                  {"mode", {{"type", "string"}, {"description", "flat（默认）| aggregate"}}},
-                                  {"per_dir", {{"type", "integer"}, {"description", "单目录文件条目上限，0=不限"}}}},
+                                  {"mode", {{"type", "string"}, {"description", "aggregate（默认）| flat——大目录用默认，看具体文件名用 flat + pattern"}}},
+                                  {"per_dir", {{"type", "integer"}, {"description", "flat 模式单目录文件条目上限，0=不限"}}}},
                                  json::array())}},
              json{{"name", "search"},
                   {"description",
@@ -323,7 +324,7 @@ private:
             return json{{"ok", false}, {"error", "目录不存在: " + (norm.empty() ? "." : norm)}};
         const int depth = std::min(args.value("depth", 3), kListDepthCap);
         pattern_ = ascii_lower(args.value("pattern", ""));
-        aggregate_ = args.value("mode", "flat") == "aggregate";
+        aggregate_ = args.value("mode", "aggregate") != "flat";   // 默认聚合（显式 flat 才平铺）
         per_dir_ = std::max(args.value("per_dir", 0), 0);
         entries_ = json::array();
         listed_ = 0;
@@ -683,7 +684,7 @@ private:
     bool stop_ = false;
     // list 的过滤/形态参数（list_tool 每次调用重置）
     std::string pattern_;      // 文件名通配（已小写；空 = 不过滤）
-    bool aggregate_ = false;   // true = 目录聚合视图
+    bool aggregate_ = false;   // true = 目录聚合视图（默认；mode=flat 显式平铺）
     int per_dir_ = 0;          // 单目录文件条目上限（0 = 不限）
 };
 
