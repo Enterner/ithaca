@@ -24,15 +24,27 @@ namespace vc_agent {
 // state 文件加载（activate 与会话切换共用；缺文件 = 全新会话）
 void AgentCtx::load_session_state_(const std::string& path) {
     session_path_ = path;
+    // raw 外置目录随会话走（与会话切换同源，不再依赖 activate 期 env）：多会话
+    // 共享宿主时归档名 t<turn>_<seq> 会跨会话撞车（互相覆盖/串档）——归档名加
+    // 会话 stem 前缀隔离（同一 parent/raw 内 ref 仍为裸文件名）
+    const fs::path sp(path);
+    raw_dir_ = (sp.parent_path() / "raw").string();
+    raw_prefix_ = sp.filename().string().substr(0, sp.filename().string().find('.')) + "_";
+    std::error_code ec;
+    fs::create_directories(raw_dir_, ec);
     std::ifstream in(session_path_, std::ios::binary);
     json doc = json::parse(in, nullptr, /*allow_exceptions=*/false);
     if (!doc.is_discarded() && doc.is_object()) {
         turn_no_ = adopt_turn_floor(doc.value("turns", 0));
         const json usage = doc.value("usage", json::object());
+        // value() 对非对象（磁盘文件被外部改坏 usage: null 等）抛 302 ⇒ activate 期
+        // 线程直接 terminate——类型守卫先于取值（与 stream.cpp 的 st.usage 同源纪律）
+        if (usage.is_object()) {
         usage_prompt_ = usage.value("prompt_tokens", 0LL);
         usage_completion_ = usage.value("completion_tokens", 0LL);
         usage_total_ = usage.value("total_tokens", 0LL);
         usage_cache_ = usage.value("cache_tokens", 0LL);   // 缓存命中计量随会话恢复
+        }
         // 判定信号随会话恢复：恢复后首轮压缩判定不再失明
         last_prompt_tokens_ = doc.value("last_prompt_tokens", 0LL);
         if (doc.contains("messages") && doc["messages"].is_array())

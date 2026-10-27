@@ -116,7 +116,7 @@ VC_TEST("context: plan_compress——除最末段外折叠，请求锚点逐字�
     msgs.push_back(json{{"role", "user"}, {"content", "任务二：跑测试"}});
     msgs.push_back(json{{"role", "assistant"}, {"content", "全过"}});
 
-    const auto plan = plan_compress(msgs);
+    const auto plan = plan_compress(msgs, true);
     CHECK(plan.valid);
     CHECK(plan.cut_begin == 1);
     CHECK(plan.cut_end == 5);
@@ -152,7 +152,7 @@ VC_TEST("context: plan_compress——旧 digest 并入新 digest 不堆积；不
     msgs.push_back(json{{"role", "assistant"}, {"content", "完成"}});
     msgs.push_back(json{{"role", "user"}, {"content", "任务三（末段）"}});
 
-    const auto plan = plan_compress(msgs);
+    const auto plan = plan_compress(msgs, true);
     CHECK(plan.valid);
     CHECK(plan.cut_begin == 2);
     CHECK(plan.cut_end == 6);
@@ -178,5 +178,5 @@ VC_TEST("context: plan_compress——旧 digest 并入新 digest 不堆积；不
     json few = json::array();
     few.push_back(json{{"role", "system"}, {"content", "sys"}});
     few.push_back(json{{"role", "user"}, {"content", "只有一个任务"}});
-    CHECK(!plan_compress(few).valid);
+    CHECK(!plan_compress(few, true).valid);
 }

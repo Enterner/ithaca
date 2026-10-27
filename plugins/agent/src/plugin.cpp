@@ -89,14 +89,9 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     if (const char* v = std::getenv("ITHACA_SESSION_FILE"); v != nullptr && *v != '\0')
         ctx_.load_session_state_(v);
 
-    // 上下文压缩：外置 raw 目录 = 会话文件
-    // 旁的 raw/；阈值 env ITHACA_CONTEXT_COMPRESS_TOKENS（默认 32000 = 成员初值，
-    // 0 = 关闭）——判定信号用 provider 回报的 prompt_tokens（确定性，不由模型自报）
-    if (!ctx_.session_path_.empty()) {
-        ctx_.raw_dir_ = (fs::path(ctx_.session_path_).parent_path() / "raw").string();
-        std::error_code ec;
-        fs::create_directories(ctx_.raw_dir_, ec);
-    }
+    // 上下文压缩阈值 env ITHACA_CONTEXT_COMPRESS_TOKENS（默认 32000 = 成员初值，
+    // 0 = 关闭）——判定信号用 provider 回报的 prompt_tokens（确定性，不由模型自报）。
+    // raw 外置目录随 load_session_state_ 走（activate 的 env 装载与会话切换同源）。
     if (const char* v = std::getenv("ITHACA_CONTEXT_COMPRESS_TOKENS"))
         ctx_.compress_threshold_ = std::atoll(v);
 
