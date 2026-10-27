@@ -54,6 +54,32 @@ constexpr std::size_t kLineCap = 4 * 1024;       // 单行截断
 constexpr int kDefaultTimeoutMs = 600000;
 constexpr int kMaxTimeoutMs = 3600000;
 
+// Git Bash 定位（非沙箱 shell 优先级最高）：env 显式指定 → PATH git 推导
+// （git.exe 在 cmd/ 子目录，bash 在 ../bin/）→ 常见安装路径。SearchPathW 直接找
+// bash.exe 会误中 System32 的 WSL 启动器——经 git 推导绕开。进程内检测一次缓存。
+inline std::wstring git_bash_path() {
+    static const std::wstring cached = [] {
+        if (const wchar_t* v = _wgetenv(L"ITHACA_GIT_BASH_PATH");
+            v != nullptr && *v != L'\0')
+            return std::wstring(v);
+        std::vector<wchar_t> buf(MAX_PATH + 1, L'\0');
+        if (::SearchPathW(nullptr, L"git.exe", nullptr, MAX_PATH, buf.data(), nullptr) > 0) {
+            const std::wstring git(buf.data());
+            if (const std::size_t cmd_pos = git.rfind(L"\\cmd\\git.exe");
+                cmd_pos != std::wstring::npos) {
+                const std::wstring bash = git.substr(0, cmd_pos) + L"\\bin\\bash.exe";
+                if (std::filesystem::exists(bash)) return bash;
+            }
+        }
+        for (const wchar_t* p :
+             {L"C:\\Program Files\\Git\\bin\\bash.exe",
+              L"C:\\Program Files (x86)\\Git\\bin\\bash.exe"})
+            if (std::filesystem::exists(p)) return std::wstring(p);
+        return std::wstring{};
+    }();
+    return cached;
+}
+
 class RunnerPlugin {
 public:
     static constexpr std::string_view name = "vc.runner";
@@ -163,9 +189,10 @@ private:
             {"description",
              "在工作区内执行命令并等待退出，返回退出码与合并输出（stderr 行带 "
              "[stderr] 前缀；超长输出截断）。执行权限由三档权限模式管理。"
-             "命令经 Windows cmd 解析——支持 && | > 等 shell 语法与 cmd 内建"
-             "（echo/dir）；注意 cmd 的 && 链在中间命令失败时会静默中断后续段，"
-             "需要逐段执行时用 & 或拆开调用；目录枚举优先用 workspace.list。"
+             "命令优先在 POSIX bash（Git Bash）中执行——&& | > 重定向、引号、$() "
+             "等 POSIX 语义全部原生；环境无 Git Bash 时回退 Windows cmd（怪癖："
+             "&& 链中段失败静默中断后续段、echo 保留参数尾随空格——此时建议拆开"
+             "调用）。目录枚举优先用 workspace.list。"
              "dry_run=true 只解析不执行"},
             {"schema", json{{"type", "object"},
                             {"properties",
@@ -237,14 +264,25 @@ private:
         const int timeout_ms =
             std::min(std::max(args.value("timeout_ms", kDefaultTimeoutMs), 1000), kMaxTimeoutMs);
 
-        // 统一经 cmd /d /s /c 包装——Windows 没有 shell 层：CreateProcess 直启
-        // 可执行文件，&&/|/> 重定向与 echo/dir 等 cmd 内建一律不解析（踩过：
-        // "python -c … && echo b" 的 && 被 python 当 argv 吞掉）。/s 保留内层
-        // 引号（python -c "…" 原样透传），/d 禁 Autorun。NOTE: full-auto 沙箱
-        // 低盒令牌下 cmd 的 dir 内建被拒（Insider 26200 实测；目录枚举走
-        // workspace.list / python os.listdir 即可），其余 shell 形态全部可用。
-        // 包装在本层做，agent 侧摘要仍显示用户原始命令
-        const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
+        // shell 选择：非沙箱优先 Git Bash——bash 语义模型最熟（&& | > 重定向、
+        // 引号、$() 全部原生），且绕开 cmd 的怪癖（echo 尾随空格、&& 链中段
+        // 失败静默、OEM 码页输出）。脚本经 stdin 传递（bash -s + stdin_pipe 全
+        // 量写后送 EOF）——命令文本不经命令行解析，-c 的引号转义链在
+        // CreateProcess→bash 间断裂（探针实测 unexpected EOF）。沙箱仅 cmd
+        // 验证可用：msys 的 BaseNamedObjects 共享节在 AppContainer 下被拒
+        // （0xC0000022 探针实测；PS 的 .NET runtime 同死）——full-auto 保持
+        // cmd /d /s /c。/s 保留内层引号（python -c "…" 原样透传），/d 禁
+        // Autorun。NOTE: 沙箱低盒令牌下 cmd 的 dir 内建被拒（Insider 26200
+        // 实测；目录枚举走 workspace.list / python os.listdir 即可）。
+        // 包装在本层做，agent 侧摘要仍显示用户原始命令。
+        // ITHACA_RUNNER_SHELL=cmd 强制 cmd 路径——selftest/golden 的剧本命令
+        // 是 cmd 语义，回归的跨机器一致性要求 shell 确定（钉 cmd）
+        const bool cmd_forced = [] {
+            const wchar_t* v = _wgetenv(L"ITHACA_RUNNER_SHELL");
+            return v != nullptr && _wcsicmp(v, L"cmd") == 0;
+        }();
+        const std::wstring bash =
+            (sandboxed_ || cmd_forced) ? std::wstring{} : git_bash_path();
 
         // spawn（宿主线程；读线程/等待线程接管后续）
         auto child = std::make_unique<vcrun::ChildPipes>();
@@ -252,15 +290,39 @@ private:
         // full-auto：AppContainer 沙箱（读宽写窄 + 断网）；其余模式由
         // agent 确认清单把关（建议/自动编辑模式逐条批准）
         bool degraded = false;
-        if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child, err,
-                          sandboxed_, &degraded)) {
-            // 逃生舱（Claude Code unsandboxed-retry 的降级版）：沙箱路径任何失败
-            // （profile/ACL/属性装配/创建）都不回死错误——结构化提示回灌给 agent
-            // 自我纠正（请示用户切模式/改用工作区内工具），与读错误自修纪律同构。
-            if (sandboxed_)
-                err += "（沙箱路径失败。可向用户说明并建议切换 suggest/auto-edit 模式"
-                       "重跑，或改用工作区内的工具/venv）";
-            return json{{"ok", false}, {"error", err}};
+        if (!bash.empty()) {
+            nostos::kit::PipedProcess p;
+            nostos::kit::PipedSpawnOptions o;
+            o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd_wide.c_str());
+            o.stdin_pipe = true;
+            if (!p.start(nostos::kit::win::wide_to_utf8(bash.c_str()) +
+                             " --norc --noprofile -s",
+                         o, err)) {
+                return json{{"ok", false}, {"error", err}};
+            }
+            p.write_stdin(cmd.data(), cmd.size());
+            p.close_stdin();
+            const nostos::kit::PipedHandles h = p.release_handles();
+            child->process = static_cast<HANDLE>(h.process);
+            child->stdout_read = static_cast<HANDLE>(h.stdout_read);
+            child->stderr_read = static_cast<HANDLE>(h.stderr_read);
+            child->job = static_cast<HANDLE>(h.job);
+        } else {
+            // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
+            // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"
+            // 的 && 被 python 当 argv 吞掉）——cmd 路径统一经 /d /s /c 包装。
+            // /s 保留内层引号，/d 禁 Autorun
+            const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
+            if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child,
+                              err, sandboxed_, &degraded)) {
+                // 逃生舱（Claude Code unsandboxed-retry 的降级版）：沙箱路径任何失败
+                // （profile/ACL/属性装配/创建）都不回死错误——结构化提示回灌给 agent
+                // 自我纠正（请示用户切模式/改用工作区内工具），与读错误自修纪律同构。
+                if (sandboxed_)
+                    err += "（沙箱路径失败。可向用户说明并建议切换 suggest/auto-edit 模式"
+                           "重跑，或改用工作区内的工具/venv）";
+                return json{{"ok", false}, {"error", err}};
+            }
         }
         if (degraded && !degrade_warned_) {
             degrade_warned_ = true;   // 每进程一次：日志 + 对话流通告——听得见的降级

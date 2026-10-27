@@ -103,6 +103,9 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
     // 权限模式：selftest 用 suggest 档——剧本的提案→自动批准→迟到 done
     // 死锁回归路径保持确定性覆盖（auto-edit/full-auto 流由 e2e/单测/dogfood 覆盖）
     _putenv("ITHACA_PERMISSION_MODE=suggest");
+    // shell 钉 cmd：runner 的 shell 选择依赖 Git Bash 是否在机（行为差异 = bash
+    // 语义 vs cmd 语义），golden 的跨机器一致性要求 shell 确定
+    _putenv("ITHACA_RUNNER_SHELL=cmd");
 }
 
 void SelftestHarness::set_agent_present(bool v) {

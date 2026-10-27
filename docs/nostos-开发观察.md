@@ -8,6 +8,31 @@
 
 本批次无可内核优化点——agent 实测反馈集中在 list/recall 工具体验，全部产品侧落地。
 
+**挂账：runner shell 路线调研与 MXC 观察项（2026-10-27）**
+
+agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探针），结论与挂账：
+
+- **业界三流派**：权限确认派（OpenCode/Cursor/Cline——无 OS 沙箱靠人审+规则）、
+  POSIX 搬迁派（Claude Code——Git Bash 优先/PS 兜底，native 无沙箱、WSL 2 才有）、
+  原生沙箱工程派（Codex 独一家——MXC/elevated/unelevated 三层实现，迭代一年余）。
+  **没有任何厂家用 AppContainer，也没有人解决"bash + native Windows 沙箱"**。
+- **探针数据**：非沙箱 Git Bash 全语义可用（退出码/短路/树杀/UTF-8，65ms/次）；
+  沙箱内 msys（0xC0000022，BaseNamedObjects 共享节被 AC 命名空间拒）与 PowerShell
+  （.NET runtime 同死）**全灭**——沙箱内 cmd 是唯一已验证 shell，结构性限制非配置可救。
+- **已落地**：非沙箱 Git Bash 优先（检测链 env→PATH git 推导→常见路径）+ 脚本
+  stdin 传递（bash -s + stdin_pipe，-c 引号转义链在 CreateProcess→bash 间断裂）+
+  ITHACA_RUNNER_SHELL=cmd 强制覆盖（selftest/golden 跨机器一致性要求 shell 确定）；
+  full-auto 保持 cmd。
+- **挂账（MXC 观察项）**：Microsoft eXecution Container（github.com/microsoft/mxc，
+  开源多后端沙箱框架）的 BaseContainer 后端（新 OS 沙箱 API，Win11 24H2/25H2
+  .9278+ 构建）是为"容器内跑真实工具链"设计——**msys 在 BaseContainer 下能否
+  存活待实测**；若可行则"bash 语义 + 沙箱"合流（AppContainer 退役）。本机
+  26200.9711 补丁已达标，MXC 铺开稳定后用探针重验。接入形态：打包 wxc-exec.exe
+  （MXC 原生执行器）替代 runner 的 AppContainer 路径。
+- **附带发现**：runner 子进程输出只做 UTF-8 合法性清洗不做码页转换——cmd 兜底
+  场景的中文输出（OEM 码页）会乱码；bash 路线 UTF-8 原生无此问题。码页修复
+  （chcp 65001 包装或按 GetOEMCP 解码）挂账待办。
+
 ## 落地状态
 
 | 日期 | 发现 | 状态 |

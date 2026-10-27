@@ -212,7 +212,9 @@ private:
                                  json::array({"ops"}))}},
              json{{"name", "undo_turn"},
                   {"description",
-                   "撤销一个 turn 的全部编辑（默认最近一个）。外部改动过的文件会让整组拒绝"},
+                   "撤销一个 turn 的全部 workspace 编辑（默认最近一个）。范围仅限"
+                   "编辑：runner 命令产生的文件/副作用不在撤销内；外部改动过的"
+                   "文件会让整组拒绝"},
                   {"schema", object_with({{"turn_id", {{"type", "integer"}}}}, json::array())}}});
         return finish(json{{"ok", true}, {"tools", tools}}, out);
     }
@@ -259,7 +261,10 @@ private:
         if (!store_->read(full, content))
             return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
         if (content.find('\0') != std::string::npos)
-            return json{{"ok", false}, {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm}};
+            return json{{"ok", false},
+                        {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm +
+                                      "（docx/pptx 等容器格式可用 runner 调 Python 等"
+                                      "脚本解析）"}};
         if (!vcws::utf8_valid(content))
             return json{{"ok", false}, {"error", "不是有效的 UTF-8 文本: " + norm}};
         // 按行分页（限制作用在「读」的动作上，结果内联一次回灌、无二次回查协议）。
