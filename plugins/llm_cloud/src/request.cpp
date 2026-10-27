@@ -1,7 +1,7 @@
 // plugin/llm_cloud · 请求登记面：chat/chat_ex/cancel 的 thunk 与实现、start_ 的
 // 注册表登记（凭据快照/重入拒绝/并发上限）。请求线程 → src/stream.cpp。
 
-#include "../include/llm_cloud_plugin.hpp"
+#include "llm_cloud_plugin.hpp"
 
 namespace vc_llm_cloud {
 

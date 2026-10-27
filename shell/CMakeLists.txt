@@ -15,9 +15,13 @@ set(WV2 "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/webview2/build/native")
 
 add_executable(ithaca WIN32 ithaca.cpp app.rc)   # app.rc：品牌图标（标题栏/任务栏）
 target_include_directories(ithaca PRIVATE "${WV2}/include")
-# nostos kit 头（vendored 内核子模块）：一发 HTTP 请求小件
-target_include_directories(ithaca PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../external/nostos/include")
+# nostos kit 头（NOSTOS_ROOT 定位与其他工程同一接线：env 覆盖 > 仓内子模块）；
+# 只用 header-only kit（win/win_http），不挂内核 target——winhttp 库已在下面链接
+include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/nostos_root.cmake")
+if(NOT NOSTOS_ROOT)
+    message(FATAL_ERROR "NOSTOS_ROOT 未定位到（缺 external/nostos 子模块或 NOSTOS_ROOT env）")
+endif()
+target_include_directories(ithaca PRIVATE "${NOSTOS_ROOT}/include")
 # WebView2 加载器动态链接：DLL 随构建拷到 exe 旁（静态库约 10MB 不入仓，见
 # third_party/webview2/README.md）
 target_link_libraries(ithaca PRIVATE

@@ -2,7 +2,7 @@
 // （拼装/取消旗/句柄/凭据快照）随线程走；端点解析/错误人话/句柄 RAII 等网络辅助
 // 收在本 TU 匿名 ns。登记 → src/request.cpp；回流 → src/events.cpp。
 
-#include "../include/llm_cloud_plugin.hpp"
+#include "llm_cloud_plugin.hpp"
 #include "../sse.hpp"  // vcllm::SseParser 等纯逻辑件（tests/unit 直接引用，留插件根）
 
 #include <chrono>  // 请求耗时日志

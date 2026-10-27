@@ -6,7 +6,7 @@
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { S, send, decide, setMode, setModel, newSession, pickFolder,
          ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK } from '../store'
-import Cdl from '../Cdl.vue'
+import Cdl from './Cdl.vue'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
 // 盾勾=编辑放行、叹号=全自动——语义与图3（Codex 式模式选择器）对齐。

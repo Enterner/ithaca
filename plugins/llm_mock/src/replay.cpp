@@ -2,7 +2,7 @@
 // 回宿主线程 emit（回放线程绝不直接碰宿主 API）；内置剧本文本与行切分工具。
 // 登记与回收 -> src/request.cpp。
 
-#include "../include/llm_mock_plugin.hpp"
+#include "llm_mock_plugin.hpp"
 
 #include <chrono>
 #include <thread>

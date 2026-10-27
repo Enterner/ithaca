@@ -1,7 +1,7 @@
 // plugin/llm_mock · 请求登记面：chat/chat_ex/cancel 的 thunk、注册表登记与回收。
 // 入口/配置 -> src/plugin.cpp；回放与回流 -> src/replay.cpp。
 
-#include "../include/llm_mock_plugin.hpp"
+#include "llm_mock_plugin.hpp"
 
 namespace vc_llm_mock {
 

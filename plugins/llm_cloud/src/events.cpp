@@ -2,7 +2,7 @@
 // 线程 emit（worker 线程绝不直接碰宿主 API）。登记 → src/request.cpp；请求线程
 // → src/stream.cpp。
 
-#include "../include/llm_cloud_plugin.hpp"
+#include "llm_cloud_plugin.hpp"
 
 namespace vc_llm_cloud {
 

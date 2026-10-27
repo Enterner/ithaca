@@ -4,7 +4,7 @@
 // SSE folder_picked，那是会话语义，接进来会误触草稿/开新会话）。
 // 编辑在本地副本（vals）进行，保存时整节写回 S.pluginVals → /api/config。
 import { reactive, watch, ref } from 'vue'
-import Cdl from '../Cdl.vue'
+import Cdl from './Cdl.vue'
 import { S, savePluginVals } from '../store'
 
 const vals = reactive({})   // {[plugin]: {[key]: value}} 编辑副本

@@ -2,7 +2,7 @@
 // provider 热切（vc.llm.set_active 订阅）、env 装载、NOSTOS_PLUGIN。
 // 请求登记 → src/request.cpp；请求线程/SSE → src/stream.cpp；产物回流 → src/events.cpp。
 
-#include "../include/llm_cloud_plugin.hpp"
+#include "llm_cloud_plugin.hpp"
 
 #include <nostos/kit/win.hpp>  // utf8_to_wide（env 与热切的宽字符转换）
 

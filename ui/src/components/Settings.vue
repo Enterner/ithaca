@@ -7,7 +7,7 @@
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
 import { ref, reactive, computed, watch } from 'vue'
 import { NModal } from 'naive-ui'
-import Cdl from '../Cdl.vue'
+import Cdl from './Cdl.vue'
 import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx, DEFAULT_CONTEXT,
          fetchProviderModels } from '../store'
 import { PRESETS } from '../presets'

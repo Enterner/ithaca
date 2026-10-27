@@ -2,7 +2,7 @@
 // deactivate（全停全收）、set_model/info、剧本装载、NOSTOS_PLUGIN。
 // 请求登记 -> src/request.cpp；回放与回流 -> src/replay.cpp。
 
-#include "../include/llm_mock_plugin.hpp"
+#include "llm_mock_plugin.hpp"
 
 #include <nostos/kit/win.hpp>  // utf8_to_wide（turn 剧本文件路径）
 
