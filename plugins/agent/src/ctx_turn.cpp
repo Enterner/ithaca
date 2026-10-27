@@ -223,6 +223,26 @@ void AgentCtx::dispatch_loop() {
                 "waiting", 0, pending);
 }
 
+// dispatch 推迟一拍（on_done 专用）：tool_call/tool_result 在 dispatch_one_ 内
+// 同步 emit，而 llm_done 的订阅者不止本插件——webui 靠它落 assistant 收口记录
+// （思考块的数据源）。事件回调按订阅序同步派发，agent 先于 webui 装载时工具
+// 事件就落在收口记录之前，UI/重放里工具卡恒跑到思考块上方。推迟一拍把「产生
+// 工具事件」挪到 llm_done 对全部订阅者派发完成之后（poster 闭包在下一拍排水），
+// 事件序与因果序不再依赖插件装载顺序。安全性：
+//   - 主 ctx 与插件同生命周期，poster 闭包在会话作废时由宿主逐条 dispose
+//     （执行路径碰不到已析构对象），turn 身份（turn_no_）防旧闭包误入新 turn；
+//   - 子代理不推迟：子 ctx 随 turn 销毁（children_ 唯一指针），poster 闭包
+//     无法在宿主丢弃机制之外失效——子代理事件只进右栏明细流，无此顺序问题；
+//   - poster 不可用（宿主 ABI 过旧）或投递失败 ⇒ 回退同步分发，只损失顺序。
+void AgentCtx::dispatch_after_done_() {
+    if (subagent_ || poster_.post == nullptr) return dispatch_loop();
+    const int turn = turn_no_;
+    if (nostos::kit::poster_submit(poster_, [this, turn] {
+            if (state_ == State::TurnActive && turn_no_ == turn) dispatch_loop();
+        }) != NOSTOS_OK)
+        dispatch_loop();
+}
+
 // 单条调用分发（dispatch_loop 的 try 保护体）：emit 调用卡 → 内置工具拦截 →
 // 工具表执行/提案挂起。异常由调用方兜底转错误结果回灌。
 bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {

@@ -43,6 +43,7 @@
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/scratch.hpp>  // Scratch：emit 载荷稳定缓冲（调用期有效）
+#include <nostos/kit/poster.hpp>   // poster_submit：dispatch 推迟一拍的投递原语
 
 #include <atomic>
 #include <cstdint>
@@ -176,6 +177,8 @@ struct AgentCtx {
     // （内核 ABI 边界已按订阅者隔离异常并落日志，但本 ctx 状态机仍会停在抛点
     // ⇒ send_chat 永不执行 ⇒ turn 悬停，见 dispatch_one_）。
     void dispatch_loop();
+    // dispatch 的推迟一拍入口（on_done 专用；动机与安全边界见 ctx_turn.cpp 实现）。
+    void dispatch_after_done_();
     // 单条调用分发（dispatch_loop 的 try 保护体）。返回 true = 挂起即返（提案
     // 等裁决 / 回灌已就地发车）——调用方必须跳过循环尾：挂起期跑尾部的
     // append_results_and_continue 会把无结果的轮次提前收口。
@@ -332,6 +335,8 @@ struct AgentCtx {
     // ---- 状态 -----------------------------------------------------------------------
 
     nostos::abi::Host host_{};
+    // dispatch 推迟投递用（activate 时领取；领取失败保持零值 ⇒ 回退同步分发）。
+    nostos_poster poster_{};
 
     const vc_api::LlmTable* llm_ = nullptr;  // 每次 send_chat 前解析（provider 可被竞争顶掉）
     const vc_api::LlmTable* window_probed_llm_ = nullptr;  // 已向 info() 探过窗口的 provider 实例

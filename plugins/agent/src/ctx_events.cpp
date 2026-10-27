@@ -103,7 +103,7 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
         }
     }
     if (calls_.empty()) return finish_turn();
-    dispatch_loop();
+    dispatch_after_done_();
 }
 
 void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
@@ -162,6 +162,16 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
         llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
         if (llm_ != nullptr && llm_->cancel != nullptr)
             llm_->cancel(llm_->self, inflight_);  // provider 静默终止在途请求（取消不是错误）
+        // 取消 = 回到静默 Idle：排队输入**丢弃不续跑**。cleanup_turn_ 尾部的
+        // flush 会拿队首原地开新 turn——若紧跟切会话（UI 的「切走即取消」：
+        // decision 4 → session/load 两连发），load 撞上进行中的新 turn 被拒，
+        // 旧会话的收口记录还会串写进已切换的新会话 transcript（踩过）。排队
+        // 输入的 user 记录已落 transcript，重新发送即可续上
+        if (!queued_.empty()) {
+            notice("已取消当前 turn，排队的 " + std::to_string(queued_.size()) +
+                   " 条输入已丢弃（可重新发送）");
+            queued_.clear();
+        }
         // 收口事件由 agent 统一发（provider 各家都已取消静默）：transcript 由此
         // 有终态记录，重放不会把「进行中」复活；webui 已在 d=4 时先行解锁
         const std::string msg = "turn #" + std::to_string(turn_no_) + " 已被用户取消";

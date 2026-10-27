@@ -18,6 +18,10 @@ const nostos_manifest* AgentPlugin::manifest = &k_agent_manifest;
 
 nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     ctx_.host_ = host;
+    // poster：dispatch 推迟一拍的投递通道（见 AgentCtx::dispatch_after_done_）。
+    // 领取失败不阻激活——回退同步分发，只是事件顺序回到旧行为。
+    if (host.acquire_poster(&ctx_.poster_) != NOSTOS_OK)
+        host.log(3, "ithaca.agent: 领取 poster 失败——工具分发回退同步（事件顺序退回旧行为）");
 
     sub_input_ = host.on(vc_api::turn_input, [this](const void* p) {
         ctx_.on_input(static_cast<const vc_api::TurnInput*>(p)->text);
