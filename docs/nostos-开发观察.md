@@ -6,11 +6,7 @@
 
 ## 当前发现（批次：内核观察点收口 · 2026-10-27）
 
-1. webui 全量单线程化（E3）：挂起-补响应试点验证后确认 data_mu_ 的真正锚点是
-   GET 类端点（select 线程读宿主线程写的共享状态）——锁整体退役须 20+ 端点
-   （含 GET）全部走挂起-补响应，select 线程退化为纯转发器；改造面大，另行
-   立项。（触发场景：批次 E 试点实施中盘点触碰面时确认）
-2. workspace search 的 regex 走 std::regex ECMAScript（无超时/步数上限）——灾难性
+1. workspace search 的 regex 走 std::regex ECMAScript（无超时/步数上限）——灾难性
    回溯的构造模式会在 agent 线程长阻塞（单文件 1MB 上限内仍可分钟级挂起）。缓解
    方向：换手写有限自动机/限定迭代步数/或 engine 换 RE2 形态；std::regex 无步数
    钩子，属内核 kit 无对应原语。用户裁定另行立项。（触发场景：R4 审查 workspace
@@ -20,6 +16,7 @@
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-27 | webui 全量单线程化（挂起-补响应试点验证后的全量迁移）：data_mu_ 的真正锚点是 GET 类端点（select 线程读宿主线程写的共享状态） | 已落地（20+ 端点含全部 GET 经 defer_ 样板投宿主线程闭包、真响应经内核原语补发；data_mu_ 30 余处 lock_guard 与上下文缓存锁整体退役，tools_/in_flight_ 原子降为普通成员，select 线程只剩解析/投递与静态、SSE 直答；defer_ 编译期强制闭包返回 void——值返回闭包的 fall-through 是 UB 且爆点漂移到无关容器操作，check 全绿） |
 | 2026-10-27 | kit::http 默认 `max_request = 16KB` 对"对话输入即粘贴"类应用过小（webui 粘贴 35KB 实测 413），且注释写"请求头上限"实为整个请求缓冲上限 | 已落地（内核 7ef08f5 默认上调 2MB + 注释对齐语义；产品 aa2af06 webui 启动期 2MB 覆写退役） |
 | 2026-10-27 | kit::http 404 零诊断 | 复核不立项（唯一消费方 webui 已在路由未命中处落 log——api 分发尾部的 404 诊断行；kit 无路由表、handler 返回的 404 是消费方决策，内核再记一层即重复噪音） |
 | 2026-10-27 | kit::http broadcast 死锁无防护（handler 在 select 线程持连接表锁同步执行，事件回调链里再进 broadcast = 同线程非递归锁二次进入，整服务无声挂死） | 已落地（内核 3698e49 线程局部重入闸门：派发中线程的 broadcast 丢弃并计入 stats.reentrant_broadcasts；跨线程锁序形态随后由挂起-补响应原语结构性消解） |
