@@ -132,11 +132,11 @@ nostos_status CloudPlugin::set_model_thunk(void* self, const char* model) noexce
 
 nostos_status CloudPlugin::info_thunk(void* self, const char** out_json) noexcept {
     auto* p = static_cast<CloudPlugin*>(self);
-    // model_/base_utf8_ 由 set_active/set_model 在 webui 线程热写——info 可能从
-    // 宿主线程并发读，取值必须锁内拷快照
-    std::string model, base;
-    { std::lock_guard<std::mutex> lock(p->model_mu_); model = p->model_; base = p->base_utf8_; }
-    json info{{"provider", "cloud"}, {"model", model}, {"base", base}};
+    // 全程持 model_mu_：model_/base_utf8_ 由 set_active/set_model 在 webui 线程
+    // 热写，info 的调用方又在 agent 线程（turn 内探窗）——取值、拼包、写
+    // info_buf_ 三步必须同锁完成，否则并发 info 交错写共享出参缓冲
+    std::lock_guard<std::mutex> lock(p->model_mu_);
+    json info{{"provider", "cloud"}, {"model", p->model_}, {"base", p->base_utf8_}};
     // 模型窗口查表（已知 DeepSeek 模型 128K）。未知模型不报——消费方回落兜底阈值：
     // 虚报窗口（报大）会让压缩阈值越过真实窗口回到爆窗，宁缺勿滥。
     // max_output_tokens 暂不报——各家输出上限口径未核实，待模型表补全。
@@ -146,7 +146,7 @@ nostos_status CloudPlugin::info_thunk(void* self, const char** out_json) noexcep
         {"deepseek-v4-pro", 128000},
         {"deepseek-flash", 128000},
     };
-    if (const auto it = kContextWindows.find(model); it != kContextWindows.end())
+    if (const auto it = kContextWindows.find(p->model_); it != kContextWindows.end())
         info["context_window"] = it->second;
     p->info_buf_ = info.dump();
     *out_json = p->info_buf_.c_str();

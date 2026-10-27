@@ -68,6 +68,16 @@ struct ChildPipes {
         if (stderr_read != nullptr) CloseHandle(stderr_read);
         if (job != nullptr) CloseHandle(job);
     }
+    // 及时整树终止：cmd /c 链的真命令是孙进程，只杀直接子会留孤儿持管道写端
+    // ⇒ 输出永不 EOF、Job 句柄随条目滞留 ⇒ 孤儿长存 + 条目泄漏（与 mcp 同款
+    // 教训）。析构时 KILL_ON_JOB_CLOSE 是兜底，不是及时路径——超时/停用走这里。
+    void kill_tree() {
+        if (job != nullptr) {
+            TerminateJobObject(job, 0xFFFFFFFFu);
+            return;
+        }
+        if (process != nullptr) TerminateProcess(process, 0xFFFFFFFFu);
+    }
 };
 
 // ---- 沙箱（full-auto 模式：AppContainer 进程）--------------------------------

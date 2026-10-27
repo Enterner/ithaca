@@ -10,7 +10,7 @@
 //     （提案→decision），full-auto 在 AppContainer 沙箱内执行（读宽写窄：系统+
 //     PATH 工具目录只读、工作区可写、断网——机制详见 proc.hpp 沙箱段）；
 //   · cwd 限定 jail 内；dry_run=true 只解析并回显 would_run（批准门素材）；
-//   · 超时（默认 600s，上限 1h）⇒ TerminateProcess + 截断通告。
+//   · 超时（默认 600s，上限 1h）⇒ kill_tree 整树终止 + 截断通告。
 //
 // 线程：每条 run 三个自有线程（两路读取 + 一路等待/回收），事件全部经
 // kit::poster_submit 回宿主线程；deactivate 终止全部子进程并 join——无悬空。
@@ -62,8 +62,8 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(
-            env != nullptr && *env != '\0' ? env : "."));
+        std::atomic_store(&jail_, std::make_shared<vcws::Jail>(nostos::kit::win::utf8_to_wide(
+            env != nullptr && *env != '\0' ? env : ".")));
         // 权限模式默认值：webui 事件可热切；ITHACA_RUN_ALLOW
         // 白名单机制已移除（把关责任上移到权限模式与沙箱）
         mode_ = vc_api::normalize_permission_mode(
@@ -77,14 +77,15 @@ public:
         // ITHACA_RUN_SANDBOX=1 强制恢复沙箱路径（诊断/未来 Windows 沙箱可用时）
         const char* fs_env = std::getenv("ITHACA_RUN_SANDBOX");
         force_sandbox_ = fs_env != nullptr && std::string_view(fs_env) == "1";
-        sandboxed_ = (mode_ == "full-auto") && force_sandbox_;
+        sandboxed_.store((mode_ == "full-auto") && force_sandbox_);
         // 工作区热切——重建 jail 边界，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
+            std::atomic_store(&jail_, std::make_shared<vcws::Jail>(
+                nostos::kit::win::utf8_to_wide(e->root)));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
         // 权限模式：full-auto ⇒ 命令执行（沙箱取舍见 activate 的 force_sandbox_
@@ -96,7 +97,7 @@ public:
                 e->mode != nullptr ? e->mode : "");
             if (next == mode_) return;
             mode_ = next;
-            sandboxed_ = (mode_ == "full-auto") && force_sandbox_;
+            sandboxed_.store((mode_ == "full-auto") && force_sandbox_);
         }));
         nostos::abi::init_table(table_);
         table_.self = this;
@@ -114,7 +115,8 @@ public:
         const vc_api::ToolRegister note{vcrun::kToolSvcName};
         host_.emit(vc_api::tool_register, &note);
         host.log(2, "ithaca.runner: 就绪（权限模式 " + mode_ + "，jail 根 = " +
-                        nostos::kit::win::wide_to_utf8(jail_->root().c_str()) + "）");
+                        nostos::kit::win::wide_to_utf8(
+                            std::atomic_load(&jail_)->root().c_str()) + "）");
         return NOSTOS_OK;
     }
 
@@ -123,8 +125,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(runs_mu_);
             for (auto& [id, entry] : runs_)
-                if (entry.child != nullptr && entry.child->process != nullptr)
-                    TerminateProcess(entry.child->process, 0xFFFFFFFFu);
+                if (entry.child != nullptr) entry.child->kill_tree();
         }
         // join 全部线程（子进程被终止 ⇒ 读取端 EOF ⇒ 读取线程自然结束）；
         // 线程对象不持 runs_mu_，锁外 join 无死锁。
@@ -210,7 +211,8 @@ private:
         if (cmd.empty()) return json{{"ok", false}, {"error", "command_line 为空"}};
 
         // cwd：jail 内相对路径（空 = 根）
-        std::wstring cwd_wide = jail_->root();
+        const std::shared_ptr<vcws::Jail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
+        std::wstring cwd_wide = jail->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
             // 纯点/斜杠路径（"."、" ./ "类）在 Jail 折叠后为空，语义 = 根本身；
             // ".." 含转义企图，不在此列——必须走 resolve 被拒
@@ -220,7 +222,7 @@ private:
             std::string err;
             std::wstring full;
             std::string norm;
-            if (!dots_only && !jail_->resolve(rel, full, norm, err))
+            if (!dots_only && !jail->resolve(rel, full, norm, err))
                 return json{{"ok", false}, {"error", "cwd 被拒: " + err}};
             if (!dots_only) cwd_wide = full;
         }
@@ -347,7 +349,7 @@ private:
         std::chrono::steady_clock::time_point proc_gone_at{};
         for (;;) {
             if (stopping_.load(std::memory_order_relaxed) && !killed) {
-                TerminateProcess(entry->child->process, 0xFFFFFFFFu);
+                entry->child->kill_tree();
                 killed = true;
             }
             std::vector<std::pair<int, std::string>> take;
@@ -418,7 +420,7 @@ private:
                 break;
             }
             if (!killed && std::chrono::steady_clock::now() >= deadline) {
-                TerminateProcess(entry->child->process, 0xFFFFFFFFu);
+                entry->child->kill_tree();   // 整树终止：cmd /c 链孙进程一并死（孤儿持管道写端会让宽限期路径滞留条目）
                 killed = true;
                 nostos::kit::poster_submit(poster_, [this, run_id, slot] {
                     const vc_api::RunLine e{run_id, 0, "（超时，已强制终止）"};
@@ -450,10 +452,13 @@ private:
     vc_api::ToolTable table_{};
     std::string out_buf_;
 
-    std::unique_ptr<vcws::Jail> jail_;
+    // Jail 只读不可变：workspace_set 热切（宿主线程）与 run_tool（agent 线程）
+    // 并发访问 ⇒ shared_ptr 原子换装，取局部副本后解引用
+    std::shared_ptr<vcws::Jail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
     bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关，取舍见 activate）
-    bool sandboxed_ = false;          // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控）
+    std::atomic<bool> sandboxed_{false};   // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控；
+                                           // 权限热切在宿主线程写、run_tool 在 agent 线程读）
     bool degrade_warned_ = false;     // 沙箱降级通告只发一次（进程级）
     std::mutex runs_mu_;
     std::map<int, RunEntry> runs_;
