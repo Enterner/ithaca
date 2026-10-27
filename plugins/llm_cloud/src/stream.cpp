@@ -83,9 +83,18 @@ void CloudPlugin::run_request_(int rid, json messages, json tools, std::string m
     if (do_request_(rid, messages, tools, model, key_wide, base_wide, slot, st,
                     stopping, active, http_code, err)) {
         post_done_(rid, slot, st);
+        // value() 对非对象（provider 未回 usage ⇒ st.usage 保持 null）抛
+        // type_error.302——worker 线程无兜底 ⇒ terminate ⇒ abort（glm 流式
+        // 末块 usage=null 实测命中；守卫必须先于取值）
+        const long long cache =
+            st.usage.is_object() ? st.usage.value("cache_tokens", 0LL) : 0LL;
+        const long long prompt =
+            st.usage.is_object() ? st.usage.value("prompt_tokens", 0LL) : 0LL;
         host_.log(1, "ithaca.llm.cloud: 请求完成 rid=" + std::to_string(rid) + " 耗时 " +
                          std::to_string(elapsed_ms()) + "ms（tool_calls " +
-                         std::to_string(st.tc.size()) + " 条）");
+                         std::to_string(st.tc.size()) + " 条" +
+                         (prompt > 0 ? "，prompt " + std::to_string(prompt) : "") +
+                         (cache > 0 ? "，cache " + std::to_string(cache) : "") + "）");
     } else if (stopping.load()) {
         // 取消静默（mock 同款约定）：取消不是错误，收口事件由 agent 统一发——
         // 这里再发会造成双重错误卡
@@ -138,8 +147,12 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                                       WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                       ep.secure ? WINHTTP_FLAG_SECURE : 0)};
     if (req.h == nullptr) { err = last_error_text(); return false; }
+    // 首字节窗 300s：thinking 模型读大上下文后服务端可能长时间不吐首字节，
+    // 固定短窗会掐死合法长思考轮（踩过：122s 无数据 ⇒ 请求失败，同任务另一轮
+    // 顺利通过——纯时序非确定性，不是模型/网络异常）。收到响应头后恢复 120s：
+    // 流式期的判断单位是增量间隔，长窗反而拖慢取消与错误发现。
     WinHttpSetTimeouts(req.h, /*resolve*/ 10000, /*connect*/ 20000, /*send*/ 30000,
-                       /*receive*/ 120000);
+                       /*receive*/ 300000);
 
     json body = {{"model", model}, {"messages", messages}, {"stream", true}};
     if (tools.is_array() && !tools.empty()) {
@@ -184,6 +197,9 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
         err = "接收响应失败: " + last_error_text();
         return false;
     }
+    // 响应头已到 ⇒ 流式期恢复常规接收窗（增量间隔超 120s 才判死）
+    WinHttpSetTimeouts(req.h, /*resolve*/ 10000, /*connect*/ 20000, /*send*/ 30000,
+                       /*receive*/ 120000);
 
     DWORD status = 0, size = sizeof(status);
     WinHttpQueryHeaders(req.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -227,7 +243,10 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                 post_delta_(rid, slot, delta);
             }
             const std::string reasoning = vcllm::delta_reasoning_of(piece);
-            if (!reasoning.empty()) post_reasoning_(rid, slot, reasoning);
+            if (!reasoning.empty()) {
+                st.reasoning += reasoning;
+                post_reasoning_(rid, slot, reasoning);
+            }
             // tool_calls 碎片拼装（OpenAI 流式形态：按 index 分片，arguments 逐段追加）
             if (piece.contains("choices") && piece["choices"].is_array() &&
                 !piece["choices"].empty() && piece["choices"][0].contains("delta") &&

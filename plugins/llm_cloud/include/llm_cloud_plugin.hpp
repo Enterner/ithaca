@@ -77,6 +77,7 @@ private:
     struct StreamState {  // 每请求一份的流式拼装态，随 worker 走——插件成员不持有
                           // 任何"当前请求"态（并发请求各写各的，无共享可变面）
         std::string content;
+        std::string reasoning;  // 思维链累积（默认只进显示流；回传开关见 post_done_）
         std::map<int, TcAcc> tc;
         std::map<std::string, std::string> name_back;  // 净化名 → 原始点分名（请求期有效）
         json usage;  // 末块的结构化用量（done 时回传给 agent 统计）

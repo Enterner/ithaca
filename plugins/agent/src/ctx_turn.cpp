@@ -8,6 +8,16 @@
 #include <algorithm>  // std::clamp：recall 分页参数收敛
 #include <fstream>    // std::ofstream：raw 外置归档
 
+namespace {
+
+// ASCII 小写折叠（通配/路径包含过滤的大小写不敏感口径；无 locale 依赖）
+inline std::string ascii_lower(std::string s) {
+    for (char& c : s) if (c >= 'A' && c <= 'Z') c += 32;
+    return s;
+}
+
+}  // namespace
+
 namespace vc_agent {
 
 namespace {
@@ -16,8 +26,9 @@ constexpr char kSystemPrompt[] =
     "你是 Ithaca——一个运行在终端里的编程代理。用户用自然语言下达任务，"
     "你通过 tools 列出的工具读写工作区文件、执行构建。规则："
     "1) 编辑直接用 apply 提交（write=整文件 / replace=精确块，find 默认必须恰好"
-    "命中一次，replace_all=true 全部替换）；系统会校验、落盘并把 diff 展示给用户，"
-    "用户可随时撤销；"
+    "命中一次，replace_all=true 全部替换）。大段修改优先拆成多个 replace 分块提交"
+    "——参数只携带变化块；write 仅用于新建文件或全文重写。系统会校验、落盘并把 "
+    "diff 展示给用户，用户可随时撤销；"
     "2) 需要批准的操作（如运行命令）由宿主把关，被拒绝时把拒绝当作工具结果继续任务；"
     "3) 命令类工具是异步的：提交后先返回 run_id，构建/测试的输出与退出码随后"
     "作为工具结果回给你，读错误输出自我修复；"
@@ -43,7 +54,10 @@ void AgentCtx::subscribe_turn_slot_() {
         const auto* e = static_cast<const vc_api::RunLine*>(p);
         if (AgentCtx::AsyncRun* run = find_run(e->run_id);
             run != nullptr && e->text != nullptr)
-            run->output += std::string(e->text) + "\n";  // 截断通告也随事件到达
+            // stderr 行打标进合并输出——结果里 stdout/stderr 来源可辨（命令失败
+            // 归因不靠猜）；UI 的 run_line 流保持原样，不受此标记影响
+            run->output += (e->stream == 1 ? "[stderr] " : "") +
+                           std::string(e->text) + "\n";
         if (!subagent_) host_.emit(vc_api::run_line, p);
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::run_exit, slot, [this](const void* p) {
@@ -156,7 +170,7 @@ void AgentCtx::send_chat_impl() {
     // 折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
     if (!subagent_ && session_threshold_ > 0 &&
         estimate_prompt_tokens(body_buf_) > session_threshold_) {
-        if (const vcagent::CompressPlan plan = vcagent::plan_compress(messages_); plan.valid) {
+        if (const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty()); plan.valid) {
             pending_plan_ = plan;
             replace_with_digest_(plan.digest, "发送前预检");
             pending_plan_ = {};
@@ -372,7 +386,8 @@ bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
     child->tool_svcs_ = std::move(svcs);
     child->auto_all_ = true;       // 子代理免批：授权由主会话批准链路负责（task 卡用户可见）
     child->confirm_.clear();
-    child->raw_dir_ = raw_dir_;    // 共享外置目录——归档名带全局唯一 turn_no_ 不相撞
+    child->raw_dir_ = raw_dir_;      // 共享外置目录（R3：归档名带会话 stem 前缀）
+    child->raw_prefix_ = raw_prefix_; // 前缀随目录走——子代理归档与父会话同命名空间
     AgentCtx* raw = child.get();
     child->on_finished_ = [this, index, raw](bool ok, const std::string& report, int turns) {
         on_child_finished_(index, raw, ok, report, turns);
@@ -454,15 +469,29 @@ void AgentCtx::append_results_and_continue() {
 void AgentCtx::append_results_and_continue_impl() {
     for (const auto& ctx : calls_) {
         std::string content = ctx.result;
-        // 内容型工具内联豁免（read/task，量级理由见 kContentInlineCap 声明处）：
-        // 正文一次进上下文——外置+recall 分页留给压缩回查与极端超限结果
+        // 内容型工具内联豁免按工具分档（量级理由与实测依据见各 Cap 声明处）：
+        // read 96KB（逐字素材一次进上下文）/ task 1KB（结论消费型，超限外置 +
+        // 结论头）；其余工具超 kInlineResultCap 即外置
+        const auto last_tool = tool_last(ctx.full_name);
         const bool content_inline =
-            (tool_last(ctx.full_name) == "read" || tool_last(ctx.full_name) == "task") &&
-            content.size() <= kContentInlineCap;
+            last_tool == "read" ? content.size() <= kContentInlineCap
+          : last_tool == "task" ? content.size() <= kTaskInlineCap
+          : false;
         if (content.size() > vcagent::kInlineResultCap && !content_inline) {
             if (tool_last(ctx.full_name) == "recall") {
-                // recall 的 content 本身就是外置归档：直接截断兜底即可
-                content = vcws::trim_utf8(content, 2048) + "…（回查内容过长，已截断）";
+                // recall 回包本身是 JSON——直接 trim 会劈在 content 字符串中间
+                // 产生非法 JSON tool 消息（实地测试踩过：中文页 3B/字，4096 字节
+                // 闸按字符数轻松撞上）。在 content 值内截断后重打包，保持合法 JSON
+                const json rj = json::parse(content, nullptr, false);
+                if (rj.is_object() && rj.contains("content") && rj["content"].is_string()) {
+                    json fixed = rj;
+                    fixed["content"] = vcws::trim_utf8(rj["content"].get<std::string>(), 1024) +
+                                       "…（回查内容过长，已截断）";
+                    content = fixed.dump();
+                } else {
+                    content = vcws::trim_utf8(content, 2048) +
+                              "…（回查内容过长，已截断）";
+                }
             } else {
                 const std::string ref = spool_raw(ctx.full_name, content);
                 if (!ref.empty()) {
@@ -484,9 +513,12 @@ void AgentCtx::append_results_and_continue_impl() {
 // 原始工具结果外置：raw/<turn>_<seq>_<tool>.json；失败 ⇒ 空 ref（调用方内联截断）
 std::string AgentCtx::spool_raw(const std::string& tool, const std::string& result) {
     if (raw_dir_.empty()) return {};
+    // 序号进程级递增：主/子代理各有 turn_no_（都从 1 起）共享同一 raw/，实例内
+    // 计数会撞名互相覆盖——全局计数 + 会话 stem 前缀双重隔离
+    static std::atomic<unsigned long long> g_raw_seq{0};
     try {
-        const std::string name = "t" + std::to_string(turn_no_) + "_" +
-                                 std::to_string(++raw_seq_) + "_" +
+        const std::string name = raw_prefix_ + "t" + std::to_string(turn_no_) + "_" +
+                                 std::to_string(++g_raw_seq) + "_" +
                                  tool_last(tool) + ".json";
         std::ofstream f(fs::path(raw_dir_) / name, std::ios::binary | std::ios::trunc);
         if (!f) return {};
@@ -504,7 +536,7 @@ std::string AgentCtx::exec_recall(const json& args) {
     const std::string ref = args.value("ref", "");
     if (ref.empty() || raw_dir_.empty())
         return json{{"ok", false},
-                    {"error", "ref 为空或本会话未启用外置存储（无 ITHACA_SESSION_FILE）"}}
+                    {"error", "ref 为空，或本会话未启用外置归档（折叠历史不可回查）"}}
             .dump();
     if (ref.find('/') != std::string::npos || ref.find('\\') != std::string::npos ||
         ref.find("..") != std::string::npos)
@@ -514,6 +546,39 @@ std::string AgentCtx::exec_recall(const json& args) {
     const std::string content((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
     const long long total = static_cast<long long>(content.size());
+    // 结构化回查：归档是工具结果的 JSON dump——entries 形态（list 归档）支持
+    // filter（路径包含过滤）与 summary（按目录聚合计数），单页返回不切字节；
+    // 其余形态回退下方字节窗口分页
+    const bool summary = args.value("summary", false);
+    const std::string filter = ascii_lower(args.value("filter", ""));
+    if ((summary || !filter.empty()) && total > 0 && total < (8LL << 20)) {
+        const json rj = json::parse(content, nullptr, false);
+        if (rj.is_object() && rj.contains("entries") && rj["entries"].is_array()) {
+            json filtered = json::array();
+            std::size_t matched = 0;
+            std::map<std::string, long long> by_dir;   // 目录 →（过滤后）文件数
+            for (const auto& e : rj["entries"]) {
+                if (!e.is_object()) continue;
+                const std::string p = e.value("path", "");
+                if (!filter.empty() &&
+                    ascii_lower(p).find(filter) == std::string::npos)
+                    continue;
+                ++matched;
+                const std::size_t slash = p.rfind('/');
+                by_dir[slash == std::string::npos ? "(根)" : p.substr(0, slash)]++;
+                if (filtered.size() < 50) filtered.push_back(e);
+            }
+            json dirs = json::array();
+            for (const auto& [d, n] : by_dir) dirs.push_back(json{{"dir", d}, {"files", n}});
+            json summ = json{{"summary_of", ref},
+                             {"total_entries", rj["entries"].size()},
+                             {"matched", matched}};
+            if (!filter.empty()) summ["matching"] = filtered;   // 前 50 条命中
+            if (summary) summ["dirs"] = dirs;
+            return vcagent::recall_result(ref, summ.dump(), total, 0, false, 0);
+        }
+        // 非 entries 形态：无结构可查，回退字节分页
+    }
     long long offset = args.value("offset", 0LL);
     const long long limit = std::clamp(args.value("limit", 2048LL), 1LL, 4096LL);
     // 页边界不劈 UTF-8 码点：起点落在续字节上则后移到码点首字节；**尾边界同理**——
@@ -652,7 +717,7 @@ bool AgentCtx::maybe_compress_() {
     const bool hard = hard_window_();
     if (!hard && !vcagent::should_compress(last_prompt_tokens_, session_threshold_))
         return false;
-    const vcagent::CompressPlan plan = vcagent::plan_compress(messages_);
+    const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
     if (!plan.valid) return false;
     if (!hard && summary_enabled_) {
         pending_plan_ = plan;
@@ -695,7 +760,12 @@ void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
         {"content", std::string(vcagent::kDigestMarker) +
                         "（历史 turn 已压缩：LLM 自总结。" +
                         std::string(vcagent::kDigestProvenance) +
-                        "工具原始结果外置于 raw/，可用 context.recall 回查）\n" + s}};
+                        // 口径与实际能力一致（与 plan_compress 头同源纪律）：
+                        // raw 未启用时不得承诺 recall——模型会调必败工具
+                        (raw_dir_.empty()
+                             ? "本会话未启用外置归档，被折叠原文不可回查）\n"
+                             : "工具原始结果外置于 raw/，可用 context.recall 回查）\n") +
+                        s}};
     // 外置索引确定性重建（批次三-11）：ref 清单来自折叠计划的结构化记录（calls
     // 提取，非摘要散文、非文本扫描）——摘要怎么改写都不断回查链；旧「补齐 tail」
     // 机制退役（其 ref 对下轮扫描不可见的失真随索引方案消失）
@@ -751,7 +821,8 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     notice(std::string("上下文已压缩（") + via + "折叠：" +
            std::to_string(pending_plan_.segments_folded) + " 段历史，消息 " +
            std::to_string(before) + " → " + std::to_string(messages_.size()) +
-           "；原始结果在 raw/ 可 recall）");
+           (raw_dir_.empty() ? "；本会话未启用外置归档" : "；原始结果在 raw/ 可 recall") +
+           "）");
     persist_session_();
 }
 

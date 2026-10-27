@@ -128,7 +128,7 @@ void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
     if (!subagent_ && state_ == State::TurnActive && runs_.empty() &&
         compress_retries_ < kMaxOverwindowResend &&
         vcagent::is_context_overflow_error(e.message != nullptr ? e.message : "")) {
-        const vcagent::CompressPlan plan = vcagent::plan_compress(messages_);
+        const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
         if (plan.valid) {
             ++compress_retries_;
             pending_plan_ = plan;

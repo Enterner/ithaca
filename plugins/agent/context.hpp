@@ -185,6 +185,17 @@ inline std::string compact_result(const std::string& tool, const json& r,
                ",\"note\":\"仅前 5 条内联；全量已外置，用 context.recall 回查\"" +
                ref_field(ref) + "}";
     }
+    if (last == "task") {
+        // 子代理报告 = 结论消费型：结论头内联（报告首段即结论摘要），全量外置
+        // 按页 recall——旧泛型形态连结论都不留（>96KB 的报告），模型被迫整卷回读
+        std::string head;
+        if (r.contains("report") && r["report"].is_string())
+            head = vcws::trim_utf8(r["report"].get<std::string>(), 800);
+        if (head.empty()) head = vcws::trim_utf8(r.dump(), 400);   // 形态兜底：无 report 字段
+        return "{\"ok\":true,\"tool\":\"task\",\"head\":" + json(head).dump() +
+               ",\"note\":\"报告全文已外置，用 context.recall 回查（支持 offset/limit 分页）\"" +
+               ref_field(ref) + "}";
+    }
     if (last == "undo_turn" || last == "recall") return r.dump();  // 已是最小形态
     return "{\"tool\":" + json(last).dump() +
            ",\"ok\":true,\"note\":\"已最小化，原始结果外置\"" + ref_field(ref) + "}";
@@ -402,7 +413,7 @@ inline std::size_t count_anchors(const json& c) {
 // 统一外置索引。渲染为人话折叠行（批次三-10：不再输出转义 JSON 墙），超 32KB
 // 时最旧段的调用链退化为仅请求行。ref 全部来自 calls 结构化记录——不扫文本
 //（批次三-11：幽灵 ref 无进入路径）。
-inline CompressPlan plan_compress(const json& messages) {
+inline CompressPlan plan_compress(const json& messages, bool raw_enabled) {
     CompressPlan plan;
     std::vector<std::size_t> seg_start;
     for (std::size_t k = 0; k < messages.size(); ++k)
@@ -412,8 +423,13 @@ inline CompressPlan plan_compress(const json& messages) {
 
     constexpr std::size_t kDigestCap = 32 * 1024;  // 机械 digest 体积上限（批次三-10）
     std::string head = kDigestMarker;
-    head += "（历史已折叠：请求=首行、调用=紧凑链，锚点逐字；工具原始结果外置于"
-            " raw/，可分页 recall 回查）\n";
+    // 口径说明必须与实际能力一致：raw 未启用时被折叠原文不可回查——照抄"可
+    // recall"会让模型去调一个必然失败的工具（评测实测：模型转而盲搜工作区）
+    head += raw_enabled
+        ? "（历史已折叠：请求=首行、调用=紧凑链，锚点逐字；工具原始结果外置于"
+          " raw/，可分页 recall 回查）\n"
+        : "（历史已折叠：请求=首行、调用=紧凑链；本会话未启用外置归档，"
+          "被折叠原文不可回查——如需原文请向用户索要或换用其他信息源）\n";
     std::vector<std::string> refs;  // 外置锚点（保序去重；来源 = calls 结构化记录）
     const auto take_ref = [&refs](const std::string& r) {
         if (r.empty() || std::find(refs.begin(), refs.end(), r) == refs.end())

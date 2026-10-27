@@ -25,6 +25,16 @@ void CloudPlugin::post_reasoning_(int rid, std::uint64_t slot, std::string text)
 void CloudPlugin::post_done_(int rid, std::uint64_t slot, const StreamState& st) {
     // 完整 assistant 消息：content + 按序拼装的 tool_calls（契约）
     json assistant = {{"role", "assistant"}, {"content", st.content}};
+    // 思维链回传（实验性，env 门控默认关）：Ark 实测接受 assistant.reasoning_content
+    // 回传（多轮工具链形态 200 + 正确续写），换跨轮思维连续性；代价 = 明文思维链
+    // 计入下轮输入 token（上下文膨胀 ~40%，Z Code 同款取舍）。agent 侧 messages_
+    // 原样入库逐字回发，本插件之外零配合成本。
+    static const bool reasoning_replay = [] {
+        const char* v = std::getenv("ITHACA_LLM_REASONING_REPLAY");
+        return v != nullptr && *v != '\0';
+    }();
+    if (reasoning_replay && !st.reasoning.empty())
+        assistant["reasoning_content"] = st.reasoning;
     if (!st.tc.empty()) {
         json tcs = json::array();
         for (auto& [idx, tc] : st.tc)
