@@ -59,7 +59,7 @@ VC_TEST("context: compact 失败保留详细错误（2KB 内全量）+ ref 兜�
     CHECK(c.size() < detail.size() + 400);                     // 超出部分截断
 }
 
-VC_TEST("context: compact apply——文件清单与 delta 保留，diff 丢弃") {
+VC_TEST("context: compact apply——文件清单与小 diff 保留（核对落点免回读）") {
     json r{{"ok", true},
            {"files",
             json::array({json{{"path", "a.cpp"}, {"diff", "@@ -1,1 +1,1 @@\n（+1 −1 行）\n"}}})},
@@ -67,7 +67,7 @@ VC_TEST("context: compact apply——文件清单与 delta 保留，diff 丢弃"
     const std::string c = compact_result("workspace.apply", r, "");
     CHECK(c.find("a.cpp") != std::string::npos);
     CHECK(c.find("+1 −1") != std::string::npos);
-    CHECK(c.find("@@") == std::string::npos);                  // diff 本体不进上下文
+    CHECK(c.find("@@") != std::string::npos);                  // 小 diff 随 compact 形态内联
 }
 
 VC_TEST("context: compact run——退出码与首行保留，输出外置") {

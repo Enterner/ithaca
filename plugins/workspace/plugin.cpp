@@ -204,8 +204,8 @@ private:
                    "编辑事务：write（整文件）+ replace（精确块，默认必须恰好命中一次，"
                    "replace_all=true 全部替换）。大段修改优先拆成多个 replace 分块提交"
                    "（参数只携带变化块），write 留给新建文件或全文重写。"
-                   "dry_run=true 只校验并生成 diff、不落盘（diff 仅 dry_run 回传）；"
-                   "正式落盘按 turn 记入撤销快照，diff 经 applied 事件展示给用户"},
+                   "dry_run=true 只校验并生成 diff、不落盘；正式落盘按 turn 记入撤销快照，"
+                   "diff 正文随结果回传（8KB/文件护栏）并经 applied 事件展示给用户"},
                   {"schema", object_with(
                                  {{"dry_run", {{"type", "boolean"}}},
                                   {"ops", {{"type", "array"}}}},
@@ -540,23 +540,21 @@ private:
             json f{{"path", e.path},
                    {"is_new", e.is_new},
                    {"edits", e.ops_count}};
-            // 运行类/结果类分类策略：dry_run 的 diff 是模型的决策依据（结果类），
-            // 完整回传；正式落盘成功 = 运行类——只留落盘锚点（路径/编辑数），
-            // diff 正文不回灌（模型已知自己写了什么；diff 已随 applied 事件展示
-            // 给用户）。失败分支的错误全文回灌（自我纠错依据）
-            if (dry) {
-                std::string diff = e.diff;
-                if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
-                f["diff"] = diff;
-            } else {
-                f["delta"] = diff_delta(e.diff);   // 落盘量级（+A −B）——[tool] 卡与模型的锚点
-            }
+            // diff 双通道：dry_run 是决策依据，落盘回执是操作自述（高分辨率）——
+            // 两条路都回传 hunk，模型无需回读或 dry_run 二趟即可核对落点与内容。
+            // "模型已知自己写了什么"不足以省略回执：find 落点、复合编辑的逐 op
+            // 叠加结果都可能与意图有偏差。8KB 护栏防单文件体积失控；diff 同时经
+            // applied 事件展示给用户
+            std::string diff = e.diff;
+            if (diff.size() > kDiffShowCap) diff = vcws::trim_utf8(diff, kDiffShowCap) + "\n（diff 截断）";
+            f["diff"] = diff;
+            if (!dry) f["delta"] = diff_delta(e.diff);   // 落盘量级（+A −B）——[tool] 卡与模型的锚点
             files.push_back(std::move(f));
         }
         json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
         j["files"] = files;
         if (r.ok && !dry)
-            j["note"] = "已落盘；diff 已随 applied 事件展示给用户，工具结果不再回传 diff 正文";
+            j["note"] = "已落盘；diff 正文随结果回传，applied 事件同步展示给用户";
         if (!r.errors.empty()) j["errors"] = fail_json_errors(r.errors);
         if (r.ok && !dry) {
             std::vector<vcws::FileSnap> snaps;

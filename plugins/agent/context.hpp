@@ -130,20 +130,35 @@ inline std::string compact_result(const std::string& tool, const json& r,
                ",\"note\":\"内容已外置，用 context_recall 回查\"" + ref_field(ref) + "}";
     }
     if (last == "apply") {
+        // 逐文件保留小 diff（每文件截 1.5KB、总量 4KB，预算见底降级为 delta）：
+        // 落盘回执的 diff 是操作自述，折叠/外置形态丢掉它，模型核对落点就得
+        // 回读或 dry_run 二趟。delta 直读提供方字段（旧形态从 diff 尾行反解，
+        // 且只算第一个文件）
         std::string files;
+        std::size_t diff_budget = 4096;
         if (r.contains("files") && r["files"].is_array())
             for (const auto& f : r["files"]) {
                 if (!files.empty()) files += ",";
-                files += json(f.is_object() ? f.value("path", "") : "").dump();
+                if (!f.is_object()) {
+                    files += "\"?\"";
+                    continue;
+                }
+                std::string item = "{\"path\":" + json(f.value("path", "")).dump();
+                if (f.contains("delta") && f["delta"].is_string())
+                    item += ",\"delta\":" + json(f["delta"].get<std::string>()).dump();
+                if (f.contains("diff") && f["diff"].is_string() && diff_budget >= 256) {
+                    const std::size_t cap = diff_budget < 1536 ? diff_budget : 1536;
+                    std::string d = f["diff"].get<std::string>();
+                    if (d.size() > cap) d = vcws::trim_utf8(d, cap) + "\n（diff 截断，全文外置）";
+                    diff_budget -= d.size();
+                    item += ",\"diff\":" + json(d).dump();
+                }
+                item += "}";
+                files += item;
             }
-        const std::string stats =
-            r.contains("files") && r["files"].is_array() && !r["files"].empty() &&
-                    r["files"][0].is_object()
-                ? diff_stats_short_str(r["files"][0].value("diff", ""))
-                : "";
-        return "{\"ok\":true,\"tool\":\"apply\",\"files\":[" + files + "]" +
-               (stats.empty() ? "" : ",\"delta\":\"" + stats + "\"") +
-               ",\"note\":\"diff 已随 applied 事件展示，原始结果外置\"" + ref_field(ref) + "}";
+        return "{\"ok\":true,\"tool\":\"apply\",\"files\":[" + files +
+               "],\"note\":\"小 diff 已内联；大 diff 与全文已外置，applied 事件同步展示给用户\"" +
+               ref_field(ref) + "}";
     }
     if (last == "run") {
         const int code = r.contains("exit_code") && r["exit_code"].is_number_integer()
