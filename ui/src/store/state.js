@@ -34,6 +34,9 @@ export const S = reactive({
   // 存档，主会话不收，SSE 实时推送 + 右栏打开时 /api/agent-log 拉历史合并）。
   subView: 0, subLive: {}, subDone: {}, subDetail: {},
   inputText: '',
+  // 待发送附件（+号上传/拖拽进来，发送时随消息带上相对路径并清空）：
+  // {path: 工作区相对路径, name: 显示名}。文件实体已在 .ithaca/uploads 落盘
+  attachments: [],
   booted: false,
   shell: false,   // 多实例壳模式：会话清单来自 /api/shell/sessions，切换 = 整页导航
   // 插件 UI 贡献：registry = 各插件 schema（/api/ui/registry，设置面板

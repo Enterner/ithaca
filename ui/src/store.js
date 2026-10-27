@@ -5,7 +5,7 @@ export { S, X } from './store/state'
 export { api, fetchConfig, fetchFsList, fetchFile, fetchMcpStatus, fetchAgentLog,
          curProvModels, ctxSizeOf, fmtCtx, parseCtx, fetchProviderModels,
          fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT } from './store/api'
-export { render, liveStart } from './store/records'
+export { render, liveStart, pushLocal } from './store/records'
 export { openSession, newSession, delSession, renameSession } from './store/sessions'
 export { send, decide, setModel, setMode, saveConfig, pickFolder,
          loadPluginUi, savePluginVals, saveMcpVals } from './store/actions'

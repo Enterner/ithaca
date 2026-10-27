@@ -212,11 +212,24 @@ div.li { line-height: 1.55; }
 .inbar { padding: 10px 24px 16px 24px; flex: none; }   /* 左右对称；滚动条仅在内容溢出时出现（有槽时的 10px 差异用户接受） */
 .ibwrap { width: 100%; max-width: min(var(--content-w), 100%); margin: 0 auto; }   /* 输入卡与速率行共用限宽容器：速率恒对齐卡片左缘 */
 .inbox { width: 100%;   /* 限宽由 .ibwrap 管（4K 黑边批次教训：flex column 下 margin:auto 单独用会退化收缩宽） */
+         position: relative;   /* .drophint 覆盖层的定位锚 */
          border: 1px solid #313D52; border-radius: 14px;   /* 描边比 --line 亮一档：宽卡也要有清晰边界 */
          background: var(--panel); padding: 10px 12px 8px; display: flex;
          flex-direction: column; gap: 4px;
          box-shadow: 0 8px 28px rgba(0, 0, 0, .40); }   /* 投影浮起，与背景分层 */
 .inbox:focus-within { border-color: var(--acc); }
+/* 附件待发条 + 拖拽上传高亮 */
+.atchips { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 2px 0; }
+.atchip { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--dim);
+          border: 1px solid var(--line); border-radius: 8px; padding: 2px 3px 2px 8px;
+          max-width: 250px; }
+.atchip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atchip .x { cursor: pointer; color: var(--dim); padding: 0 5px; border-radius: 4px; }
+.atchip .x:hover { color: var(--red); background: rgba(255,255,255,.06); }
+.inbox.drop { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 8px 28px rgba(0, 0, 0, .40); }
+.drophint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            background: rgba(10, 14, 22, .78); color: var(--acc); font-size: 13px;
+            border-radius: inherit; pointer-events: none; z-index: 5; }
 .in { width: 100%; background: none; border: none; outline: none; resize: none;
       color: var(--text); font: inherit; line-height: 1.55; height: 26px;
       min-height: 26px; max-height: 108px;   /* 1 行起步、随内容长高、5 行封顶后内部滚动 */
@@ -224,10 +237,9 @@ div.li { line-height: 1.55; }
 .inbox-ctl { display: flex; align-items: center; gap: 12px; }
 .ctl-l { display: flex; align-items: center; gap: 10px; }
 .ctl-r { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.plus-btn { background: none; border: none; color: var(--dim); font-size: 18px; padding: 0;
-            width: 26px; height: 26px; display: inline-flex; align-items: center;
-            justify-content: center; border-radius: 6px; flex: none; }
-.plus-btn:hover { color: var(--acc); background: rgba(255,255,255,.07); }
+.plusmenu .dd-btn { color: var(--dim); font-size: 17px; font-weight: 600; }
+.plusmenu .dd-btn:hover { color: var(--acc); }
+.plusmenu .dd-menu { min-width: 208px; }
 .pm { display: inline-flex; align-items: center; color: var(--teal); }
 /* 触发器按钮内的前导图标（模式语义，随选中项切换） */
 .dd-lead { display: inline-flex; align-items: center; }

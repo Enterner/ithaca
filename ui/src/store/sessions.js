@@ -14,6 +14,7 @@ export function resetView() {
   // 新会话（踩过：新建会话后上下文环仍显示上个会话的几 k 用量）
   S.lastPrompt = 0; S.rate = '0'
   S.waitingSince = 0; S.waitingLeft = 0
+  S.attachments = []   // 附件相对路径随会话（工作区）走，跨会话残留必然错配
   X.turnEdits = new Map(); X.turnEditsTurn = 0; X.lastTurnId = null
   X.runs = new Map(); X.runCall = new Map()   // run 归属随会话走，跨会话残留会错配输出
 }

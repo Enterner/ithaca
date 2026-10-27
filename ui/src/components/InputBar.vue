@@ -5,7 +5,7 @@
 // Esc 拒绝——输入框里的文字随拒绝作为反馈回灌给 agent。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { S, send, decide, setMode, setModel, newSession, pickFolder,
-         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK } from '../store'
+         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api, pushLocal } from '../store'
 import Cdl from './Cdl.vue'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
@@ -116,6 +116,61 @@ function segCount(key) {
   return c[key] ? c[key] + ' 条' : ''
 }
 const submitting = ref(false)   // 防连点（仅提交窗口；turn 排队由后端管）
+// ---- ＋菜单（会话动作 / 附件上传 / 主动压缩）与拖拽上传 -----------------------
+// 附件 = 文件落盘到工作区 .ithaca/uploads（/api/upload），发送时在消息尾带
+// 相对路径——模型据此用 read 工具读取（文档类读取见 workspace read 的 doc 面）。
+const fileEl = ref(null)
+const dropHot = ref(false)
+const plusVal = ref('')   // 恒空：动作菜单不做选中态，重复点同一项仍触发
+const plusItems = [
+  { value: 'upload', label: '上传文件', desc: '附加到工作区，随消息发给 agent',
+    icon: ico('<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>') },
+  { value: 'compress', label: '压缩上下文', desc: '立即折叠历史（不等自动阈值）',
+    icon: ico('<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>') },
+  { value: 'new', label: '新建会话', icon: ico('<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/>') },
+]
+function onMenu(v) {
+  if (v === 'new') newSession()
+  else if (v === 'upload') fileEl.value && fileEl.value.click()
+  else if (v === 'compress') api('/api/session/cmd', { cmd: 1 })   // 结果走 agent 通告回流
+}
+const MAX_UPLOAD = 20 * 1024 * 1024
+async function uploadFiles(files) {
+  for (const f of files) {
+    if (S.attachments.some(a => a.name === f.name)) continue   // 同名已在列：跳过
+    if (f.size > MAX_UPLOAD) { pushLocal('「' + f.name + '」超过 20MB 上传上限'); continue }
+    try {
+      const data = await new Promise((res, rej) => {
+        const r = new FileReader()
+        r.onload = () => res(String(r.result).replace(/^data:[^,]*,/, ''))
+        r.onerror = () => rej(r.error)
+        r.readAsDataURL(f)
+      })
+      const r = await api('/api/upload', { name: f.name, data })
+      if (r.ok) S.attachments.push({ path: r.path, name: f.name })
+      else pushLocal('上传失败：「' + f.name + '」' + (r.error || ''))
+    } catch (e) {
+      pushLocal('上传失败：「' + f.name + '」读取文件出错')
+    }
+  }
+}
+function onFilesChosen(e) {
+  const files = [...(e.target.files || [])]
+  e.target.value = ''   // 允许重复选择同一文件
+  if (files.length) uploadFiles(files)
+}
+function onDragOver(e) { e.preventDefault(); dropHot.value = true }
+function onDragLeave(e) {
+  // 子元素间过渡会触发 dragleave——只有真离开容器才熄灭高亮
+  const to = e.relatedTarget
+  if (!to || !e.currentTarget.contains(to)) dropHot.value = false
+}
+function onDrop(e) {
+  e.preventDefault()
+  dropHot.value = false
+  const files = [...(e.dataTransfer?.files || [])]
+  if (files.length) uploadFiles(files)
+}
 const inEl = ref(null)          // 自动增高：初始 1 行，随内容长高，5 行封顶内部滚动
 function autoGrow() {
   const el = inEl.value
@@ -166,8 +221,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 </script>
 
 <template>
-  <div class="ibwrap">
-    <div class="inbox">
+  <div class="ibwrap" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
+    <div class="inbox" :class="{ drop: dropHot }">
+    <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
+    <div v-if="S.attachments.length" class="atchips">
+      <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip" :title="a.path">
+        <span class="nm">📄 {{ a.name }}</span>
+        <span class="x" title="移除（文件保留在工作区）" @click="S.attachments.splice(i, 1)">×</span>
+      </span>
+    </div>
     <div v-if="S.pending" class="ddock">
       <div class="ddock-head">
         <span class="shield">🛡</span>
@@ -186,11 +248,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
               :placeholder="S.pending ? '拒绝反馈（可选）——Enter 批准 / Esc 拒绝并反馈' : '提出后续修改要求'"></textarea>
     <div class="inbox-ctl">
       <div class="ctl-l">
-        <button class="plus-btn" title="新建会话" @click="newSession()">+</button>
+        <span class="plusmenu" title="会话动作：上传附件 / 压缩上下文 / 新建会话">
+          <Cdl :items="plusItems" v-model="plusVal" placeholder="+" @select="onMenu" />
+        </span>
         <span class="pm" title="权限模式：suggest=编辑与命令逐条批准；auto-edit=编辑免批、命令逐条批准；full-auto=全自动">
           <Cdl :items="pmodeItems" v-model="S.pmode" :amber="true" :lead-icon="pmIcon" @select="setMode" />
         </span>
       </div>
+      <input ref="fileEl" type="file" multiple style="display:none" @change="onFilesChosen">
       <div class="ctl-r">
         <span class="ctxhost" @mouseenter="ctxHover(true)" @mouseleave="ctxHover(false)">
           <span id="ctxRing" :title="ctxCard ? null : ringTitle">
