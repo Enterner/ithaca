@@ -198,11 +198,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     else if (config_.contains("port"))
         port = config_.value("port", 8790);
     std::string err;
-    // 请求体上限调到 2MB：对话输入是用户粘贴大文档/日志的主通道，内核默认 16KB
-    // 会让任何实际粘贴直接 413（评测实测：35KB 材料即拒）。仍远小于会话上下文，
-    // 内存有界（buffer_cap 背压照旧生效）。
     http::ServerOptions opts;
-    opts.max_request = 2 * 1024 * 1024;
     server_ = std::make_shared<http::Server>(static_cast<std::uint16_t>(port), *this,
                                              opts, &err);
     if (server_ == nullptr || !server_->ok()) {
