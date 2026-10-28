@@ -14,6 +14,7 @@ defineProps({ open: { type: Boolean, default: false } })
 </template>
 
 <style scoped>
-.chev { flex: none; color: var(--dim); transition: transform .2s ease; }
+/* 颜色随语境（继承）：折叠块的箭头着所在头行的语义色（琥珀/紫），不再钉灰 */
+.chev { flex: none; color: inherit; transition: transform .2s ease; }
 .chev.open { transform: rotate(90deg); }
 </style>

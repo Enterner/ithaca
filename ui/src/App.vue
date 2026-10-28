@@ -56,6 +56,10 @@ const { w: filesW, on: filesOpen, toggle: toggleFiles, startDrag: startFilesDrag
   lsKey: 'vcFiles', field: 'open', init: 232, min: 200, max: 1000,
   calc: (ev) => window.innerWidth - ev.clientX, initFlag: false,
 })
+// 右栏卡是否占位(树或过程视图任一可见):驱动主卡的让位缝与 fileside 的开合过渡
+const filesShown = computed(() => !!S.curWs && (filesOpen.value || !!S.subView))
+// 树根部条目数(FileTree defineExpose 的 computed,经模板 ref 读取保持响应式)
+const ftCount = computed(() => { const t = fileTreeRef.value; return t ? t.rootCount : '' })
 function onWinKey(e) {
   if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
     toggleSide(); e.preventDefault()
@@ -116,13 +120,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       <button class="mini-btn" title="设置" @click="settingsRef.openPanel()">⚙</button>
     </aside>
 
-    <!-- 主区 -->
-    <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+    <!-- 主区(浮卡):panel 底圆角,与文件树卡之间留缝,开合时 margin 过渡 -->
+    <div class="maincard" :class="{ 'with-files': filesShown }">
       <div class="topbar">
         <span class="kv">工作区 <b>{{ curWs }}</b></span>
         <span class="spacer"></span>
         <span id="conn" :class="{ off: S.conn !== 'on' }">{{ S.conn === 'on' ? '已连接' : '连接中' }}</span>
-        <button class="mini-btn" :title="filesOpen ? '收起文件树' : '展开文件树'" @click="toggleFiles">🗂</button>
+        <!-- 文件树开合:隔线式自绘图标(方框 + 右缘短隔线 + 箭头),树开=箭头朝右推合 -->
+        <button class="mini-btn ft-toggle" :disabled="!S.curWs"
+                :title="filesOpen ? '收起文件树' : '展开文件树'" @click="toggleFiles">
+          <svg v-if="filesOpen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;">
+            <rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/>
+            <line x1="15.5" y1="7.5" x2="15.5" y2="16.5"/>
+            <polyline points="9.5 9.5 12.5 12 9.5 14.5"/>
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;">
+            <rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/>
+            <line x1="15.5" y1="7.5" x2="15.5" y2="16.5"/>
+            <polyline points="12.5 9.5 9.5 12 12.5 14.5"/>
+          </svg>
+        </button>
       </div>
 
       <!-- 无工作区：hero 引导；有工作区：对话流 + dock -->
@@ -145,13 +164,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </template>
     </div>
 
-    <!-- 右栏：子代理过程视图（选中时优先）⇄ 文件树/查看器 -->
-    <aside v-if="(filesOpen || S.subView) && S.curWs" class="fileside" :style="{ width: filesW + 'px' }">
+    <!-- 右栏(浮卡):子代理过程视图（选中时优先）⇄ 文件树/查看器。
+         折叠不卸载只收宽(width→0 过渡),保持树展开态与过渡动画 -->
+    <aside v-if="S.curWs" class="fileside" :class="{ closed: !filesShown }"
+           :style="{ width: (filesShown ? filesW : 0) + 'px' }">
       <div class="fs-head">
         <span class="fs-title">{{ S.subView ? '子代理' : '文件' }}</span>
-        <span class="spacer"></span>
-        <button v-if="!S.subView" class="fs-btn" title="刷新" @click="fileTreeRef && fileTreeRef.refresh()">⟳</button>
-        <button class="fs-btn" :title="S.subView ? '关闭过程视图' : '收起文件树'" @click="S.subView ? S.subView = 0 : toggleFiles()">⟩</button>
+        <span v-if="!S.subView && !S.viewer" class="fs-count">{{ ftCount }} 项</span>
+        <span v-else class="spacer"></span>
+        <!-- 过程视图无自带关闭入口,头部保留其专属关闭;刷新随 fsRev 自动,不再设钮 -->
+        <button v-if="S.subView" class="fs-btn" title="关闭过程视图" @click="S.subView = 0">⟩</button>
       </div>
       <!-- 文件态 ⇄ 查看态/子代理态：树用 v-show 保展开态；查看器与子代理过程
            v-if（退出即释放实例/缓冲）。子代理优先——查看器在点击卡片前置空 -->

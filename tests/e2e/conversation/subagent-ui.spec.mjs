@@ -44,7 +44,7 @@ test.describe("SUB1 完整周期：派发→执行→报告→收口", () => {
 
         // 一次派发只有一张卡：spawn 卡唯一，task 调用卡（派出子代理 ● 行）不出现
         await expect(page.locator(".subcard")).toHaveCount(1);
-        await expect(page.locator(".toolline", { hasText: "派出子代理" })).toHaveCount(0);
+        await expect(page.locator(".fblock", { hasText: "派出子代理" })).toHaveCount(0);
         // 命令在真实 runner 里执行（cmd 包装），子代理收口 ⇒ 卡片终态翻转
         const stat = page.locator(".subcard .stat");
         await expect(stat).toHaveText(/已完成 · 点击查看/, { timeout: 20000 });

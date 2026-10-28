@@ -160,10 +160,10 @@ test.describe("CONV10 工具行人性化", () => {
         await page.locator(".send-btn").click();
 
         // 调用参数摘要（两行制：调用行只说跑了什么）
-        await expect(page.locator(".toolline", { hasText: "列目录 .（深度 1）" }))
+        await expect(page.locator(".fblock", { hasText: "列目录 .（深度 1）" }))
             .toBeVisible({ timeout: 15000 });
-        await expect(page.locator(".toolline", { hasText: "搜索「hello」" })).toBeVisible();
-        await expect(page.locator(".toolline", { hasText: "读取 api.txt" })).toBeVisible();
+        await expect(page.locator(".fblock", { hasText: "搜索「hello」" })).toBeVisible();
+        await expect(page.locator(".fblock", { hasText: "读取 api.txt" })).toBeVisible();
         // read 结果（字节数随内容变化——断言稳定前缀而非具体数字）
         await expect(page.locator(".procres", { hasText: "api.txt · " })).toBeVisible();
         // 结果摘要（独立结果行 └）
@@ -173,6 +173,6 @@ test.describe("CONV10 工具行人性化", () => {
         await expect(page.locator(".msg.a", { hasText: "看完了" }).first())
             .toBeVisible({ timeout: 15000 });
         // 裸 JSON 不应出现
-        await expect(page.locator(".toolline", { hasText: '{"entries"' })).toHaveCount(0);
+        await expect(page.locator(".fblock", { hasText: '{"entries"' })).toHaveCount(0);
     });
 });
