@@ -4,7 +4,7 @@
 // 有待裁决提案 ⇒ 决策坞（ZCode 式）：Enter 批准（所选文件）/ 本轮免批 /
 // Esc 拒绝——输入框里的文字随拒绝作为反馈回灌给 agent。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { S, send, decide, setMode, setModel, newSession, pickFolder,
+import { S, send, decide, setMode, setModel,
          ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api, pushLocal } from '../store'
 import Cdl from './Cdl.vue'
 
@@ -121,21 +121,34 @@ const submitting = ref(false)   // 防连点（仅提交窗口；turn 排队由�
 // 相对路径——模型据此用 read 工具读取（文档类读取见 workspace read 的 doc 面）。
 const fileEl = ref(null)
 const dropHot = ref(false)
-const plusVal = ref('')   // 恒空：动作菜单不做选中态，重复点同一项仍触发
+const uploadHint = ref('')
+let hintTimer = null
+function showHint(text) {
+  uploadHint.value = text
+  clearTimeout(hintTimer)
+  hintTimer = setTimeout(() => { uploadHint.value = '' }, 3500)
+}
+const plusVal = ref('')   // 恒空：动作菜单不做选中态（选完即复位），触发器恒显「+」
 const plusItems = [
-  { value: 'upload', label: '上传文件', desc: '附加到工作区，随消息发给 agent',
+  { value: 'upload', label: '上传文件',
     icon: ico('<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>') },
-  { value: 'compress', label: '压缩上下文', desc: '立即折叠历史（不等自动阈值）',
+  { value: 'compress', label: '压缩上下文',
     icon: ico('<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>') },
-  { value: 'new', label: '新建会话', icon: ico('<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/>') },
 ]
 function onMenu(v) {
-  if (v === 'new') newSession()
-  else if (v === 'upload') fileEl.value && fileEl.value.click()
+  plusVal.value = ''   // 复位：Cdl 的 v-model 会把选中项写回，不复位触发器就变成菜单项文字
+  if (v === 'upload') fileEl.value && fileEl.value.click()
   else if (v === 'compress') api('/api/session/cmd', { cmd: 1 })   // 结果走 agent 通告回流
 }
 const MAX_UPLOAD = 20 * 1024 * 1024
 async function uploadFiles(files) {
+  // hero/草稿态无落点：附件路径必须属于真实工作区，而目录创建延迟到首条消息
+  //（草稿期零创建请求）——此时上传会落到 env/旧会话的工作区（路径错配，agent
+  // 在新会话里读不到）。拦截并明示，用户按正常顺序（发首条消息 → 拖文件）即可
+  if (!S.curSession) {
+    showHint('先发送首条消息创建会话，再上传附件')
+    return
+  }
   for (const f of files) {
     if (S.attachments.some(a => a.name === f.name)) continue   // 同名已在列：跳过
     if (f.size > MAX_UPLOAD) { pushLocal('「' + f.name + '」超过 20MB 上传上限'); continue }
@@ -192,7 +205,12 @@ async function onStop() {
   await decide(4)
 }
 function onKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey && !S.pending && S.inputText.trim()) { onSend(); e.preventDefault() }
+  if (e.key !== 'Enter' || e.shiftKey || S.pending) return
+  if (!S.inputText.trim()) return
+  // 生成中 Enter = 停止（发送键此时画的是停止方框——Enter 跟随视觉而非反着来；
+  // 输入保留，停止后回车即发。排队语义收口后再用，避免「想停止却排队」）
+  if (S.inFlight) { onStop(); e.preventDefault(); return }
+  onSend(); e.preventDefault()
 }
 // ---- 决策坞（ZCode 式裁决）---------------------------------------------------
 const multi = computed(() => S.pending && (S.pending._files || []).length >= 2)
@@ -223,6 +241,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 <template>
   <div class="ibwrap" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
     <div class="inbox" :class="{ drop: dropHot }">
+    <div v-if="uploadHint" class="uploadhint">{{ uploadHint }}</div>
     <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
     <div v-if="S.attachments.length" class="atchips">
       <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip" :title="a.path">
@@ -257,6 +276,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
       <input ref="fileEl" type="file" multiple style="display:none" @change="onFilesChosen">
       <div class="ctl-r">
+        <!-- 实时输出速率：流式期间常显（此前只藏悬停卡里，谈不上实时）；
+             S.live 有正文 = 正在输出文本增量，收口即隐 -->
+        <span v-if="S.live && S.live.text" class="liverate"
+              title="实时输出速率（6 秒滚动窗口）"><b>{{ S.rate }}</b> tok/s</span>
         <span class="ctxhost" @mouseenter="ctxHover(true)" @mouseleave="ctxHover(false)">
           <span id="ctxRing" :title="ctxCard ? null : ringTitle">
             <svg width="14" height="14" viewBox="0 0 36 36">

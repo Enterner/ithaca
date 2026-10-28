@@ -245,6 +245,10 @@ div.li { line-height: 1.55; }
 .dd-lead { display: inline-flex; align-items: center; }
 #ctxRing { color: var(--dim); cursor: default; border-radius: 6px; width: 26px; height: 26px;
            display: inline-flex; align-items: center; justify-content: center; flex: none; }
+/* 实时输出速率（流式期间常显于上下文环旁）+ 上传拦截提示 */
+.liverate { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.liverate b { color: var(--text); font-weight: 600; }
+.uploadhint { color: var(--teal); font-size: 12px; padding: 2px 4px 0; }
 #ctxRing:hover { background: rgba(255,255,255,.07); }
 .send-btn { width: 26px; height: 26px; border-radius: 8px; border: none; background: var(--grad);
             color: #fff; display: inline-flex; align-items: center; justify-content: center;

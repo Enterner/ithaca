@@ -15,10 +15,15 @@ const thinkEl = ref(null)
 function scrollBottom() {
   if (streamEl.value) streamEl.value.scrollTop = streamEl.value.scrollHeight
 }
-// 常规跟随：记录数/流式正文变化即滚底。思考增量不进这条——思考体有自己的
-// 滚动域，推页面滚底会让「思考时页面一直往下走」
+// 常规跟随：记录数/流式正文变化即滚底。用户上翻阅读（离底 > 48px）时不拽回
+// ——与思考体同款守卫：流式增量（每个 delta 都进这条）不能把正在读历史的
+// 用户拽回底部。守卫读的是更新前的位置：新增内容只会让离底更大，不会误判
 watch(() => [S.records.length, S.live && S.live.text],
-  () => nextTick(scrollBottom), { deep: true })
+  () => {
+    const el = streamEl.value
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 48) return
+    nextTick(scrollBottom)
+  }, { deep: true })
 // 思考阶段 = live 块在且正文未开始（reasoning 先于 content 流；收口后 live 置空）
 const thinking = computed(() => !!(S.live && S.live.reasoning && !S.live.text))
 // 思考跟随：展开时吸附思考体内部底部；尚未超出上限（无内部滚动、块体仍在长高）
