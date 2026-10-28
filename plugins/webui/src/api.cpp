@@ -531,7 +531,10 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
     const json args = json{{"path", rel},
                            {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)},
                            {"pattern", query_val(req.target, "pattern")},
-                           {"mode", query_val(req.target, "mode")},
+                           // 树视图要逐文件列名,而 list 工具的默认视图是 aggregate
+                           // (每目录一条汇总、文件只计数——模型侧骨架视图),对树
+                           // 不可用,故钉死 flat,不吃 query 透传。
+                           {"mode", "flat"},
                            {"per_dir", std::atoi(query_val(req.target, "per_dir").c_str())}};
     return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
         json r = call_tool_json_("list", args.dump());
