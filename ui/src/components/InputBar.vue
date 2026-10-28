@@ -180,7 +180,7 @@ async function uploadFiles(files) {
       const r = await api('/api/upload', { name: f.name, data })
       if (r.ok) {
         // 显示名取后端返回的最终落盘名（撞名时带 " (n)" 后缀，chip 才分得清）
-        S.attachments.push({ path: r.path, name: r.path.split('/').pop() })
+        S.attachments.push({ path: r.path, name: r.path.split('/').pop(), mime: f.type || '' })
       } else showHint('上传失败：「' + f.name + '」' + (r.error || ''))
     } catch (e) {
       showHint('上传失败：「' + f.name + '」读取文件出错')
@@ -205,6 +205,14 @@ function onDrop(e) {
   dropHot.value = false
   const files = [...(e.dataTransfer?.files || [])]
   if (files.length) uploadFiles(files)
+}
+function onPaste(e) {
+  // 剪贴板图片直贴：文件型剪贴板内容（截图/复制的图片）走既有上传管线，
+  // 命中即拦住默认插入——图片二进制不能以文本形态混进输入框
+  const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'))
+  if (!files.length) return
+  e.preventDefault()
+  uploadFiles(files)
 }
 const inEl = ref(null)          // 自动增高：初始 1 行，随内容长高，5 行封顶内部滚动
 function autoGrow() {
@@ -273,7 +281,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
     <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
     <div v-if="S.attachments.length" class="atchips">
       <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip" :title="a.path">
-        <span class="nm">📄 {{ a.name }}</span>
+        <span class="nm">{{ a.mime && a.mime.startsWith('image/') ? '🖼' : '📄' }} {{ a.name }}</span>
         <span class="x" title="移除（文件保留在工作区）" @click="S.attachments.splice(i, 1)">×</span>
       </span>
     </div>
@@ -291,7 +299,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <button class="n" type="button" @click="deny">拒绝 (Esc)</button>
       </div>
     </div>
-    <textarea ref="inEl" class="in" v-model="S.inputText" @keydown="onKey" @input="autoGrow"
+    <textarea ref="inEl" class="in" v-model="S.inputText" @keydown="onKey" @input="autoGrow" @paste="onPaste"
               :placeholder="S.pending ? '拒绝反馈——有文字时 Enter = 拒绝并反馈，空框 Enter = 批准 / Esc 拒绝' : '提出后续修改要求'"></textarea>
     <div class="inbox-ctl">
       <div class="ctl-l">

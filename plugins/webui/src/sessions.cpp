@@ -274,7 +274,11 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
     if (in.contains("workspace") && in["workspace"].is_string() &&
         !in["workspace"].get<std::string>().empty())
         ws = in["workspace"].get<std::string>();
-    return defer_(req, [this, msg, ws](std::uint64_t conn) {
+    // 附件相对路径数组（多模态）：载荷构建（读图/编码）在宿主线程闭包内做——
+    // 首条消息的工作区此刻才创建，uploads 内通常无文件，条目按路径注记兜底
+    json att_paths = in.contains("attachments") && in["attachments"].is_array()
+                         ? in["attachments"] : json::array();
+    return defer_(req, [this, msg, ws, att_paths = std::move(att_paths)](std::uint64_t conn) {
         if (in_flight_)
             return server_->respond(conn, json_resp(
                 {{"ok", false}, {"error", "turn 进行中，稍后再试"}}));
@@ -291,7 +295,7 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
         ensure_session_(id, ws);   // 此刻注册（turns=0）；首条消息落盘即 turns=1，
                                    // 中途崩溃由启动清扫兜底
         switch_to_(id);
-        start_turn_(msg);
+        start_turn_(msg, attachments_payload_(att_paths).dump());
         server_->respond(conn, json_resp({{"ok", true}, {"id", id}, {"workspace", ws}}));
     });
 }

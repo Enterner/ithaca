@@ -13,21 +13,21 @@ namespace vc_agent {
 // 入口统一形态：try/catch 包体 → fail_unexpected_ 收口（语义见 agent_plugin.hpp）；
 // 具体逻辑在 *_impl。
 
-void AgentCtx::on_input(const char* text) {
+void AgentCtx::on_input(const std::string& text, const std::string& attachments_json) {
     try {
-        on_input_impl(text);
+        on_input_impl(text, attachments_json);
     } catch (...) {
         fail_unexpected_();
     }
 }
 
-void AgentCtx::on_input_impl(const char* text) {
+void AgentCtx::on_input_impl(const std::string& text, const std::string& attachments_json) {
     if (state_ != State::Idle) {
-        queued_.push_back(text != nullptr ? text : "");
+        queued_.push_back({text, attachments_json});
         notice("当前 turn 进行中，输入已排队（队列 " + std::to_string(queued_.size()) + "）");
         return;
     }
-    begin_turn(text != nullptr ? text : "");
+    begin_turn(text, attachments_json);
 }
 
 void AgentCtx::on_done(const vc_api::LlmDone& e) {

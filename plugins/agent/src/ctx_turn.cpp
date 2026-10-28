@@ -77,7 +77,7 @@ void AgentCtx::subscribe_turn_slot_() {
 
 // ---- turn 状态机 ------------------------------------------------------------
 
-void AgentCtx::begin_turn(const std::string& text) {
+void AgentCtx::begin_turn(const std::string& text, const std::string& attachments_json) {
     turn_no_ = next_turn_no();
     state_ = State::TurnActive;
     runs_.clear();
@@ -97,7 +97,25 @@ void AgentCtx::begin_turn(const std::string& text) {
                                  {"content", system_prompt_.empty()
                                                  ? std::string(kSystemPrompt)
                                                  : system_prompt_}});
-    messages_.push_back(json{{"role", "user"}, {"content", text}});
+    // 多模态附件：图片把 user content 升为 OpenAI parts 数组（text + image_url
+    // data_url 内联，随上下文持久——多轮对话的视觉历史）；非图片仅路径注记（已在
+    // text 尾部，模型可用 read 处理文件本体）。纯文本消息保持字符串形态不变。
+    json att = json::parse(attachments_json.empty() ? "[]" : attachments_json.c_str(),
+                           nullptr, /*allow_exceptions=*/false);
+    json user_content = text;
+    if (att.is_array() && !att.empty()) {
+        json parts = json::array();
+        parts.push_back(json{{"type", "text"}, {"text", text}});
+        for (const auto& a : att) {
+            if (!a.is_object()) continue;
+            const std::string du = a.value("data_url", "");
+            if (!du.empty())
+                parts.push_back(json{{"type", "image_url"},
+                                     {"image_url", json{{"url", du}}}});
+        }
+        if (parts.size() > 1) user_content = parts;
+    }
+    messages_.push_back(json{{"role", "user"}, {"content", user_content}});
     // mission 任务目标卡（上下文压缩阶段一）：turn 边界 = 重建点，整卡重写并
     // 固定在 system 之后——turn 内 append-only（缓存前缀纪律）。子代理是单任务
     // 短命上下文，任务卡与 user 消息逐字重复，纯耗 token
@@ -405,7 +423,7 @@ bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
     };
     children_.push_back(std::move(child));
     child_pends_.insert(index);
-    raw->begin_turn(prompt);
+    raw->begin_turn(prompt, "");
     if (child_pends_.count(index) != 0)
         notice("子代理已派出 [" + type->name + "] " + desc);
     // 工作记录视图（落 transcript 不进上下文）：spawn 卡 + 主会话挂起条的数据源。
@@ -956,9 +974,9 @@ void AgentCtx::cleanup_turn_() {
 // 弹空整队）。
 void AgentCtx::flush_queued_inputs_() {
     if (queued_.empty()) return;
-    const std::string next = queued_.front();
+    const InputItem next = queued_.front();
     queued_.pop_front();
-    begin_turn(next);
+    begin_turn(next.text, next.attachments_json);
 }
 
 // 悬挂工具回合尾巴清理（语义见 agent_plugin.hpp 声明处）：tool 应答与其所属

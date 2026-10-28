@@ -16,7 +16,9 @@ struct LlmTable {
     void* self = nullptr;
 
     // 非阻塞提交一轮对话。
-    //   messages_json：[{"role":"user","content":"..."}]（OpenAI 兼容子集，调用期有效）
+    //   messages_json：[{"role":…,"content":"…"}]（OpenAI 兼容子集，调用期有效）；
+//   多模态：content 亦可为 OpenAI parts 数组（[{"type":"text",…},{"type":"image_url",…}]）——
+//   适配器按原样透传请求体，由模型/供应商决定是否接受视觉输入
     //   增量以 vc.llm.delta、结束以 vc.llm.done / vc.llm.error 事件回（都在宿主线程）。
     //   NOTE: messages 可含多条 role=system（任务目标卡/压缩摘要垫在历史中间）——
     //   provider 必须归一为各家 API 的实际形态（拼接/映射），不得假设单 system。

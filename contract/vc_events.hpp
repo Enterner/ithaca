@@ -22,6 +22,10 @@ namespace vc_api {
 struct TurnInput {
     static constexpr std::string_view name = "vc.turn.input";
     const char* text = nullptr;  // UTF-8，调用期有效
+    // 尾部追加（多模态附件）：JSON 数组字符串 [{"path","name","mime","data_url"}]——
+    // path 为工作区内相对路径，data_url 仅图片（image/*）携带（base64 内联）；
+    // null/空 = 无附件（旧 tui 兼容，文本注记仍由发送方拼在 text 尾部）。
+    const char* attachments_json = nullptr;  // 调用期有效，要留存必须拷贝
 };
 
 // 用户对提案的裁决（tui → agent）。

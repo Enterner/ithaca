@@ -24,7 +24,9 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         host.log(3, "ithaca.agent: 领取 poster 失败——工具分发回退同步（事件顺序退回旧行为）");
 
     sub_input_ = host.on(vc_api::turn_input, [this](const void* p) {
-        ctx_.on_input(static_cast<const vc_api::TurnInput*>(p)->text);
+        const auto* in = static_cast<const vc_api::TurnInput*>(p);
+        ctx_.on_input(in->text != nullptr ? in->text : "",
+                      in->attachments_json != nullptr ? in->attachments_json : "");
     });
     sub_decision_ = host.on(vc_api::turn_decision, [this](const void* p) {
         ctx_.on_decision(*static_cast<const vc_api::TurnDecision*>(p));

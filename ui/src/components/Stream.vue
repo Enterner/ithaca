@@ -153,7 +153,15 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
 
       <template v-for="(rec, i) in S.records" :key="rec.id ?? 'r' + i">
         <template v-if="rec.type === 'user'">
-          <div class="msg u">{{ rec.text }}</div>
+          <!-- 附件 chips 挂在消息上方（ZCode 式）；图标按类型区分（图/文件） -->
+          <div class="uwrap">
+            <div v-if="rec.attachments && rec.attachments.length" class="uatts">
+              <span v-for="a in rec.attachments" :key="a.path" class="uatt" :title="a.path">
+                <span class="ico">{{ a.mime && a.mime.startsWith('image/') ? '🖼' : '📎' }}</span>{{ a.name }}
+              </span>
+            </div>
+            <div class="msg u">{{ rec.text }}</div>
+          </div>
         </template>
 
         <template v-else-if="rec.type === 'assistant' && (rec.text || rec.reasoning)">

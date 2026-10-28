@@ -157,12 +157,12 @@ struct AgentCtx {
     // 一段的意外异常都转成本 turn 的失败终态，绝不悬停 TurnActive（悬停无任何
     // 用户可见痕迹，重启后整段交换从历史蒸发）。内核 ABI 边界已按订阅者隔离
     // 异常并落日志，本层兜底负责把异常变成可见的 turn 终态。
-    void on_input(const char* text);
+    void on_input(const std::string& text, const std::string& attachments_json);
     void on_done(const vc_api::LlmDone& e);
     void on_llm_error(const vc_api::LlmError& e);
     void on_decision(const vc_api::TurnDecision& d);
     void on_session_cmd(const vc_api::SessionCmd& c);
-    void on_input_impl(const char* text);
+    void on_input_impl(const std::string& text, const std::string& attachments_json);
     void on_done_impl(const vc_api::LlmDone& e);
     void on_llm_error_impl(const vc_api::LlmError& e);
     void on_decision_impl(const vc_api::TurnDecision& d);
@@ -171,7 +171,7 @@ struct AgentCtx {
     // ---- turn 状态机 ------------------------------------------------------------
     // （方法体在 src/ctx_turn.cpp）
 
-    void begin_turn(const std::string& text);
+    void begin_turn(const std::string& text, const std::string& attachments_json);
     void send_chat();
     void send_chat_impl();
     // 工具分发循环：跳过已完成项；确认类工具挂起等 decision；异步工具登记等归流；
@@ -393,7 +393,11 @@ struct AgentCtx {
     std::vector<std::string> confirm_;
     std::string mode_ = "auto-edit";  // 权限模式
     std::vector<Bound> bound_;
-    std::deque<std::string> queued_;
+    struct InputItem {                  // 排队输入：文本 + 多模态附件载荷（JSON 数组串）
+        std::string text;
+        std::string attachments_json;
+    };
+    std::deque<InputItem> queued_;
 
     // 等待批准的上下文
     struct Pending {

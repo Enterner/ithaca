@@ -23,15 +23,27 @@ namespace vc_webui {
 // 落盘用户记录 + 延迟广播/开 turn。NOTE: 持连接表锁的 handle 栈内禁直接广播/
 // 发射——跨线程锁序倒挂即死锁（踩过：POST /api/input 即 500）；广播一律经
 // poster defer 到宿主线程。
-void WebuiPlugin::start_turn_(const std::string& text) {
+void WebuiPlugin::start_turn_(const std::string& text, const std::string& attachments_json) {
     in_flight_ = true;
     persist_status_();   // turn 开始（聚合徽标同步）
     json rec = {{"type", "user"}, {"text", text}};
+    json att = json::parse(attachments_json.empty() ? "[]" : attachments_json.c_str(),
+                           nullptr, /*allow_exceptions=*/false);
+    if (att.is_array() && !att.empty()) {
+        // 用户记录只带展示元数据（name/path/mime）——data_url 体量大，不进 transcript
+        json meta = json::array();
+        for (const auto& a : att)
+            if (a.is_object())
+                meta.push_back({{"name", a.value("name", "")},
+                                {"path", a.value("path", "")},
+                                {"mime", a.value("mime", "")}});
+        if (!meta.empty()) rec["attachments"] = std::move(meta);
+    }
     persist_(rec);   // 只落盘；广播 defer 到宿主线程
-    nostos::kit::poster_submit(poster_, [this, text, rec] {
+    nostos::kit::poster_submit(poster_, [this, text, rec, att_json = attachments_json] {
         reasoning_buf_.clear();                // 轮边界兜底：取消/异常残留的思考不串进新轮
         broadcast_(rec);                       // 先广播用户消息
-        const vc_api::TurnInput e{text.c_str()};
+        const vc_api::TurnInput e{text.c_str(), att_json.c_str()};
         host_.emit(vc_api::turn_input, &e);    // 再开 turn（顺序保证）
     });
 }
@@ -46,7 +58,12 @@ http::Response WebuiPlugin::api_input_(const http::Request& req) {
         json in = parse_body_(req.body);
         std::string line = in.value("line", "");
         if (line.empty()) return json_resp({{"ok", false}, {"error", "空输入"}});
-        return defer_(req, [this, line = std::move(line)](std::uint64_t conn) {
+        // 附件相对路径数组（多模态）：载荷构建（读图/编码）在宿主线程闭包内做，
+        // select 线程只收集路径字符串
+        json att_paths = in.contains("attachments") && in["attachments"].is_array()
+                             ? in["attachments"] : json::array();
+        return defer_(req, [this, line = std::move(line),
+                            att_paths = std::move(att_paths)](std::uint64_t conn) {
             if (session_.empty()) {   // 无活跃会话：400 经补发通道回（挂起后唯一出口）
                 server_->respond(conn,
                                  json_resp({{"ok", false},
@@ -55,7 +72,7 @@ http::Response WebuiPlugin::api_input_(const http::Request& req) {
                                            400));
                 return;
             }
-            start_turn_(line);
+            start_turn_(line, attachments_payload_(att_paths).dump());
             server_->respond(conn, json_resp({{"ok", true}}));
         });
     } catch (const std::exception& e) {
@@ -351,6 +368,36 @@ json WebuiPlugin::api_context_breakdown_() {
 
 // ---- 附件上传与会话级命令 ----------------------------------------------------
 
+// base64 编码（标准字母表 + padding）：多模态附件把上传的图片字节内联为 data_url
+static std::string base64_encode(const std::string& in) {
+    static const char* kAlphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    for (std::size_t i = 0; i < in.size(); i += 3) {
+        const unsigned n = static_cast<unsigned>(static_cast<unsigned char>(in[i])) << 16 |
+                           (i + 1 < in.size() ? static_cast<unsigned>(static_cast<unsigned char>(in[i + 1])) << 8 : 0u) |
+                           (i + 2 < in.size() ? static_cast<unsigned>(static_cast<unsigned char>(in[i + 2])) : 0u);
+        out += kAlphabet[(n >> 18) & 63];
+        out += kAlphabet[(n >> 12) & 63];
+        out += i + 1 < in.size() ? kAlphabet[(n >> 6) & 63] : '=';
+        out += i + 2 < in.size() ? kAlphabet[n & 63] : '=';
+    }
+    return out;
+}
+
+// 图片扩展名 → data_url 的 mime（非图片返回空：不走多模态，仅路径注记）
+static std::string image_mime_of(const std::string& ext_in) {
+    std::string e = ext_in;
+    for (char& c : e)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    if (e == ".png") return "image/png";
+    if (e == ".jpg" || e == ".jpeg") return "image/jpeg";
+    if (e == ".webp") return "image/webp";
+    if (e == ".gif") return "image/gif";
+    return {};
+}
+
 // base64 解码（标准字母表 + padding；含空白容忍——浏览器 FileReader 出的是干净
 // 串，这里按宽容口径处理）。失败返回 false。
 static bool base64_decode(const std::string& in, std::string& out) {
@@ -447,6 +494,38 @@ http::Response WebuiPlugin::api_upload_(const http::Request& req) {
     } catch (const std::exception& e) {
         return json_resp({{"ok", false}, {"error", e.what()}});
     }
+}
+
+/// 附件相对路径数组 → 多模态载荷（TurnInput.attachments_json 的 JSON 数组）：
+/// path 必须落在 .ithaca/uploads/ 内（防穿越——上传端点的落点即白名单），图片读
+/// 字节内联为 data_url（mime 按扩展名），非图片/读取失败仅保留元数据供路径注记。
+/// 调用点在宿主线程闭包内（/api/input 的 defer），文件读不占 select 线程。
+json WebuiPlugin::attachments_payload_(const json& rel_paths) {
+    json out = json::array();
+    if (!rel_paths.is_array()) return out;
+    for (const auto& p : rel_paths) {
+        if (!p.is_string()) continue;
+        const std::string rel = p.get<std::string>();
+        json item = {{"path", rel},
+                     {"name", rel.substr(rel.find_last_of('/') + 1)},
+                     {"mime", ""},
+                     {"data_url", ""}};
+        if (rel.rfind(".ithaca/uploads/", 0) == 0 && rel.find("..") == std::string::npos) {
+            std::error_code ec;
+            const fs::path target = fs::path(host_workspace_) / fs::path(rel);
+            std::ifstream in(target, std::ios::binary);
+            if (in.good()) {
+                std::ostringstream buf;
+                buf << in.rdbuf();
+                const std::string mime = image_mime_of(target.extension().string());
+                item["mime"] = mime;
+                if (!mime.empty())
+                    item["data_url"] = "data:" + mime + ";base64," + base64_encode(buf.str());
+            }
+        }
+        out.push_back(std::move(item));
+    }
+    return out;
 }
 
 /// POST /api/session/cmd {cmd} → 会话级命令转发（契约尾部追加事件 vc.session.cmd；

@@ -13,8 +13,9 @@ import { loadSessions } from './sessions'
 export async function send(text) {
   const line = (text || '').trim()
   if (!line) return
-  // 附件随消息带上相对路径（模型据此用 read 读取——附件实体已在
-  // .ithaca/uploads 落盘）。创建失败回退时不清附件，重试仍带上
+  // 附件两路同行：结构化数组（多模态——图片经 data_url 进 LLM 视觉输入）+
+  // 文本尾注（模型据此用 read 处理文件本体）。创建失败回退时不清附件，重试仍带上
+  const attPaths = S.attachments.map(a => a.path)
   const attNote = S.attachments.length
     ? '\n\n（附件已上传至工作区，可用 read 读取：' + S.attachments.map(a => a.path).join('、') + '）'
     : ''
@@ -38,7 +39,7 @@ export async function send(text) {
       return
     }
     S.draft = null
-    const r = await api('/api/session/new', ws ? { workspace: ws, message: line + attNote } : { message: line + attNote })
+    const r = await api('/api/session/new', ws ? { workspace: ws, message: line + attNote, attachments: attPaths } : { message: line + attNote, attachments: attPaths })
     if (!r.ok) {   // 创建失败（如目录不可建）：回到草稿态，消息留在输入框
       S.draft = { workspace: ws }
       S.inputText = line
@@ -58,7 +59,7 @@ export async function send(text) {
       return
     }
   }
-  await api('/api/input', { line: line + attNote })
+  await api('/api/input', { line: line + attNote, attachments: attPaths })
   S.attachments = []
 }
 

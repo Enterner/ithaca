@@ -62,13 +62,32 @@ inline json mission_message(const std::vector<std::string>& tasks) {
     return json{{"role", "system"}, {"content", mission_body(tasks)}};
 }
 
+// 消息文本提取：content 兼容两形态——字符串直取；多模态 parts 数组提取 text
+// 部件拼接（图片部件不可文本化，跳过）。压缩折叠/任务卡/摘要只消费文本，
+// content 为数组的 user 消息（多模态）经此容忍，不得 get<string> 直取（踩过：
+// value("content") 对数组抛 type_error.302，turn 内部异常收口）。
+inline std::string message_text(const json& m) {
+    const auto it = m.find("content");
+    if (it == m.end()) return {};
+    if (it->is_string()) return it->get<std::string>();
+    if (it->is_array()) {
+        std::string out;
+        for (const auto& part : *it)
+            if (part.is_object() && part.value("type", "") == "text" &&
+                part.contains("text") && part["text"].is_string())
+                out += part["text"].get<std::string>();
+        return out;
+    }
+    return {};
+}
+
 inline bool is_mission(const json& m) {
     return m.is_object() && m.value("role", "") == "system" &&
-           m.value("content", "").rfind(kMissionMarker, 0) == 0;
+           message_text(m).rfind(kMissionMarker, 0) == 0;
 }
 inline bool is_digest(const json& m) {
     return m.is_object() && m.value("role", "") == "system" &&
-           m.value("content", "").rfind(kDigestMarker, 0) == 0;
+           message_text(m).rfind(kDigestMarker, 0) == 0;
 }
 
 // 从 messages 收集用户任务文本：末位 = 当前任务（逐字全量）；其余 = 历史任务
@@ -78,7 +97,7 @@ inline std::vector<std::string> collect_tasks(const json& messages) {
     std::vector<std::string> tasks;
     for (const auto& m : messages)
         if (m.is_object() && m.value("role", "") == "user")
-            tasks.push_back(m.value("content", ""));
+            tasks.push_back(message_text(m));
     if (!tasks.empty())
         for (std::size_t i = 0; i + 1 < tasks.size(); ++i) {
             std::string& t = tasks[i];
@@ -478,7 +497,7 @@ inline CompressPlan plan_compress(const json& messages, bool raw_enabled) {
     const auto absorb_old_digests = [&](std::size_t cut_end) {
         for (std::size_t k = 1; k < cut_end; ++k)
             if (is_digest(messages[k])) {
-                std::string c = messages[k].value("content", "");
+                std::string c = message_text(messages[k]);
                 if (c.rfind(kDigestMarker, 0) == 0) {
                     const auto close = c.find("）");
                     if (close != std::string::npos)
@@ -498,8 +517,8 @@ inline CompressPlan plan_compress(const json& messages, bool raw_enabled) {
         for (const auto& c : calls) sa += count_anchors(c);
         plan.anchors_total += sa;
         seg_anchors.push_back(sa);
-        seg_lines.push_back(render_segment(messages[lo].value("content", ""), calls));
-        std::string first = messages[lo].value("content", "");
+        seg_lines.push_back(render_segment(message_text(messages[lo]), calls));
+        std::string first = message_text(messages[lo]);
         const auto nl = first.find('\n');
         if (nl != std::string::npos) first = first.substr(0, nl);
         seg_first.push_back("- 请求：" + first + "（调用已略）");

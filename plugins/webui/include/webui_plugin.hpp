@@ -174,7 +174,8 @@ private:
 
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
 
-    void start_turn_(const std::string& text);
+    void start_turn_(const std::string& text, const std::string& attachments_json);
+    json attachments_payload_(const json& rel_paths);   // 附件路径 → 多模态载荷（data_url 内联）
     http::Response api_input_(const http::Request& req);
     http::Response api_decision_(const http::Request& req);
     http::Response api_permission_mode_(const http::Request& req);
