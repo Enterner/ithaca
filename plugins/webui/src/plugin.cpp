@@ -296,7 +296,18 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     }
     if (m == "GET" && t == "/api/sessions") {
         return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(index_.value("sessions", json::array())));
+            // 逐条补 working/pending（侧栏 ⟳/● 徽标的数据源）：单实例下只有
+            // 活跃会话可能在跑（in_flight_/pending_turn_ 是实例级状态），非活跃
+            // 条目恒 false。壳聚合端点（/api/shell/sessions）另有同名字段。
+            json rows = json::array();
+            for (const auto& s : index_.value("sessions", json::array())) {
+                json row = s;
+                const bool active = row.value("id", "") == session_;
+                row["working"] = active && in_flight_;
+                row["pending"] = active && pending_turn_ >= 0;
+                rows.push_back(std::move(row));
+            }
+            server_->respond(conn, json_resp(std::move(rows)));
         });
     }
     if (m == "POST" && t == "/api/session/new") return api_session_new_(req);

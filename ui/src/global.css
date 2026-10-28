@@ -485,6 +485,9 @@ div.li { line-height: 1.55; }
            border: 1px solid color-mix(in srgb, var(--acc) 55%, transparent);
            border-radius: 3px; padding: 0 5px; }
 .cv-trunc { flex: none; font-size: 10px; color: var(--dim); }
+.cv-doc { flex: none; font-size: 10px; color: var(--teal);
+          border: 1px solid color-mix(in srgb, var(--teal) 55%, transparent);
+          border-radius: 3px; padding: 0 5px; }
 .cv-wrap { flex: 1; min-height: 0; position: relative; }
 .cv-host { position: absolute; inset: 0; }
 .cv-diff { position: absolute; inset: 0; overflow: auto; }

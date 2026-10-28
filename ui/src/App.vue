@@ -64,13 +64,14 @@ function onWinKey(e) {
 
 // ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
 function openFile(path) {   // 内容经 /api/fs/read 代理 workspace read；纯展示态不经 actions 层
-  S.viewer = { path, content: '', truncated: false, loading: true, error: '' }
+  S.viewer = { path, content: '', truncated: false, loading: true, error: '', doc: '' }
   fetchFile(path).then((r) => {
     if (!S.viewer || S.viewer.path !== path) return   // 已返回树/已换文件：丢弃迟到响应
     S.viewer.loading = false
     if (!r.ok) { S.viewer.error = r.error || '读取失败'; return }
     S.viewer.content = r.content || ''
     S.viewer.truncated = !!r.truncated
+    S.viewer.doc = r.doc || ''   // 文档抽取来源（docx / ifilter:pdf…）——查看器据此出「非原文排版」标识
   }).catch(() => {
     if (S.viewer && S.viewer.path === path) { S.viewer.loading = false; S.viewer.error = '网络错误' }
   })

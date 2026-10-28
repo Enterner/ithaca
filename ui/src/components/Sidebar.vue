@@ -1,8 +1,13 @@
 <script setup>
 // 会话栏：品牌 + 新会话 + 工作区分组列表（当前组排最前、可折叠/重命名/删除/组内新建）
-import { ref, computed } from 'vue'
-import { S, openSession, newSession, delSession, renameSession } from '../store'
-import { confirmDialog } from '../confirm'
+import { ref, computed, watch } from 'vue'
+import { S, openSession, newSession, delSession, renameSession, loadSessions } from '../store'
+import { confirmDialog, promptDialog } from '../confirm'
+
+// 徽标刷新：working/pending 由后端 /api/sessions 按实例状态返回，而 turn 开始/
+// 收口、提案弹出/裁决只改前端 inFlight/pending——watch 这两个信号拉一次清单，
+// 侧栏 ⟳/● 才能跟上（壳模式另有 3s 轮询，这里补非壳模式的刷新）
+watch(() => [S.inFlight, S.pending], () => { loadSessions() })
 
 function collapseSet() {
   try { return new Set(JSON.parse(localStorage.getItem('vcCollapsed') || '[]')) }
@@ -33,9 +38,14 @@ function fmtTime(ts) {
   return isNaN(d) ? '' : (d.getMonth() + 1) + '-' + d.getDate() + ' ' +
     String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
 }
-function onRename(s) {
-  const t = prompt('新名称：', s.title || '')
-  if (t && t.trim() && t.trim() !== s.title) renameSession(s.id, t.trim())
+async function onRename(s) {
+  const t = await promptDialog({
+    title: '重命名会话',
+    initial: s.title || '',
+    placeholder: '新的会话名称',
+    positive: '重命名',
+  })
+  if (t && t !== (s.title || '')) renameSession(s.id, t)
 }
 async function onDelete(s) {
   const ok = await confirmDialog({

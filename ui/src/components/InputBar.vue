@@ -5,7 +5,7 @@
 // Esc 拒绝——输入框里的文字随拒绝作为反馈回灌给 agent。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { S, send, decide, setMode, setModel,
-         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api, pushLocal } from '../store'
+         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api } from '../store'
 import Cdl from './Cdl.vue'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
@@ -93,18 +93,33 @@ const freePct = computed(() => Math.max(0, 100 - segWidths.value.reduce((a, b) =
 // 形状为空对象 ⇒ 全 0，重放同样可重建）。输入/输出 = 会话累计；缓存命中 = 累计
 // 命中 tokens 及占累计输入的比例（缺失时整段不显示）。速率读 S.rate——records
 // 的滚动窗口维护（含静默期归零），此处纯展示。
+// hasUsage 区分「没回报」与「真是 0」：缺失显示「—」而非误导性的 0。
 const usage = computed(() => {
-  let prompt = 0, completion = 0, cache = 0
+  let prompt = 0, completion = 0, cache = 0, seen = false
   for (const r of S.records)
     if (r.type === 'assistant' && r.usage && typeof r.usage.total_tokens === 'number') {
+      seen = true
       prompt += r.usage.prompt_tokens || 0
       completion += r.usage.completion_tokens || 0
       cache += r.usage.cache_tokens || 0
     }
-  return { prompt, completion, cache }
+  return { prompt, completion, cache, seen }
 })
 const cachePct = computed(() =>
   usage.value.prompt > 0 ? Math.round(usage.value.cache / usage.value.prompt * 100) : 0)
+// ---- hero 态操作反馈（hero 不挂对话流，records 里的通告无处显示）--------------
+// hero 态下显示最后一条 local/notice/error 记录——上传失败、压缩结果等操作
+// 反馈终于可见（会话态有 Stream，不需要这条）
+const heroNote = computed(() => {
+  if (S.curSession) return ''
+  for (let i = S.records.length - 1; i >= 0; i--) {
+    const r = S.records[i]
+    if (r.type === 'local') return r.text || ''
+    if (r.type === 'notice' && !r._wait && !r.sys) return r.text || ''
+    if (r.type === 'error') return r.msg || ''
+  }
+  return ''
+})
 function segCount(key) {
   const c = (ctxCard.value && ctxCard.value.counts) || {}
   if (key === 'tool') {
@@ -141,6 +156,7 @@ function onMenu(v) {
   else if (v === 'compress') api('/api/session/cmd', { cmd: 1 })   // 结果走 agent 通告回流
 }
 const MAX_UPLOAD = 20 * 1024 * 1024
+const uploadingNames = new Set()   // in-flight 集合：并发 drop 同名文件只传一次
 async function uploadFiles(files) {
   // hero/草稿态无落点：附件路径必须属于真实工作区，而目录创建延迟到首条消息
   //（草稿期零创建请求）——此时上传会落到 env/旧会话的工作区（路径错配，agent
@@ -150,8 +166,10 @@ async function uploadFiles(files) {
     return
   }
   for (const f of files) {
-    if (S.attachments.some(a => a.name === f.name)) continue   // 同名已在列：跳过
-    if (f.size > MAX_UPLOAD) { pushLocal('「' + f.name + '」超过 20MB 上传上限'); continue }
+    if (uploadingNames.has(f.name)) { showHint('「' + f.name + '」正在上传中'); continue }
+    if (S.attachments.some(a => a.name === f.name)) { showHint('「' + f.name + '」已在附件列表'); continue }
+    if (f.size > MAX_UPLOAD) { showHint('「' + f.name + '」超过 20MB 上传上限'); continue }
+    uploadingNames.add(f.name)
     try {
       const data = await new Promise((res, rej) => {
         const r = new FileReader()
@@ -160,10 +178,14 @@ async function uploadFiles(files) {
         r.readAsDataURL(f)
       })
       const r = await api('/api/upload', { name: f.name, data })
-      if (r.ok) S.attachments.push({ path: r.path, name: f.name })
-      else pushLocal('上传失败：「' + f.name + '」' + (r.error || ''))
+      if (r.ok) {
+        // 显示名取后端返回的最终落盘名（撞名时带 " (n)" 后缀，chip 才分得清）
+        S.attachments.push({ path: r.path, name: r.path.split('/').pop() })
+      } else showHint('上传失败：「' + f.name + '」' + (r.error || ''))
     } catch (e) {
-      pushLocal('上传失败：「' + f.name + '」读取文件出错')
+      showHint('上传失败：「' + f.name + '」读取文件出错')
+    } finally {
+      uploadingNames.delete(f.name)
     }
   }
 }
@@ -231,7 +253,12 @@ async function deny() {
 }
 function onWinKey(e) {
   if (!S.pending) return
-  if (e.key === 'Enter' && !e.shiftKey) { approve(); e.preventDefault() }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    // 框里有文字 = 拒绝并反馈（deny 把输入带回去）；空框 = 批准所选——
+    // 「想输入反馈却按成批准」的反直觉在这里分叉
+    if (S.inputText.trim()) deny(); else approve();
+    e.preventDefault()
+  }
   else if (e.key === 'Escape') { deny(); e.preventDefault() }
 }
 onMounted(() => window.addEventListener('keydown', onWinKey))
@@ -241,6 +268,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 <template>
   <div class="ibwrap" @dragover="onDragOver" @dragleave="onDragLeave" @drop="onDrop">
     <div class="inbox" :class="{ drop: dropHot }">
+    <div v-if="heroNote" class="uploadhint">{{ heroNote }}</div>
     <div v-if="uploadHint" class="uploadhint">{{ uploadHint }}</div>
     <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
     <div v-if="S.attachments.length" class="atchips">
@@ -264,7 +292,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
     </div>
     <textarea ref="inEl" class="in" v-model="S.inputText" @keydown="onKey" @input="autoGrow"
-              :placeholder="S.pending ? '拒绝反馈（可选）——Enter 批准 / Esc 拒绝并反馈' : '提出后续修改要求'"></textarea>
+              :placeholder="S.pending ? '拒绝反馈——有文字时 Enter = 拒绝并反馈，空框 Enter = 批准 / Esc 拒绝' : '提出后续修改要求'"></textarea>
     <div class="inbox-ctl">
       <div class="ctl-l">
         <span class="plusmenu" title="会话动作：上传附件 / 压缩上下文 / 新建会话">
@@ -311,14 +339,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
               </div>
             </div>
             <!-- 会话用量（输入含缓存命中 / 输出）+ 输出速率：原左下角速率行与
-                 侧栏「累计 tokens」的收编处——计量语境都在上下文卡里 -->
+                 侧栏「累计 tokens」的收编处——计量语境都在上下文卡里。
+                 provider 未回报 usage 时显示「—」（区分「没数据」与「真是 0」） -->
             <div class="usage">
               <div class="urow">
-                <span class="ulab">输入</span><b class="un">{{ fmt(usage.prompt) }}</b>
+                <span class="ulab">输入</span><b class="un">{{ usage.seen ? fmt(usage.prompt) : '—' }}</b>
                 <small v-if="usage.cache" class="uextra">缓存命中 {{ fmt(usage.cache) }}（{{ cachePct }}%）</small>
               </div>
               <div class="urow">
-                <span class="ulab">输出</span><b class="un">{{ fmt(usage.completion) }}</b>
+                <span class="ulab">输出</span><b class="un">{{ usage.seen ? fmt(usage.completion) : '—' }}</b>
                 <small class="uextra">速率 {{ S.rate }} tok/s</small>
               </div>
             </div>

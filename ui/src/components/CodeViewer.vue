@@ -241,6 +241,8 @@ function showDiff() {
       <button class="fs-btn" title="返回文件树" @click="S.viewer = null">←</button>
       <span class="cv-name" :title="S.viewer?.path">{{ (S.viewer?.path || '').split('/').pop() }}</span>
       <span class="cv-lang">{{ langOf(S.viewer?.path) }}</span>
+      <!-- 文档抽取来源（docx/ifilter:pdf…）：内容是抽取的纯文本而非原文件字节 -->
+      <span v-if="S.viewer?.doc" class="cv-doc" title="内容为文档抽取的纯文本，非原文件排版">📄 {{ S.viewer.doc }} 抽取文本</span>
       <span v-if="S.viewer?.truncated" class="cv-trunc">超 256KB 已截断</span>
       <span class="spacer"></span>
       <button class="mode-btn" :class="{ on: mode === 'diff' }" :disabled="btnDisabled"

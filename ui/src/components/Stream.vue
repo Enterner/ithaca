@@ -106,6 +106,17 @@ function runOutText(rec) {
   return rec._runs.map((b) => b.lines.join('\n')).join('\n')
 }
 
+// ---- 折叠行的选字豁免 ----------------------------------------------------------
+// 在可折叠行（工具卡/编辑行/run 输出）上拖选文字松开，click 仍会触发折叠切换
+// ——mousedown 记起点、click 比位移，>5px 视为选择操作不放行
+let pressPos = null
+function trackPress(e) { pressPos = { x: e.clientX, y: e.clientY } }
+function pressed(e) {
+  if (!pressPos) return true
+  const dx = e.clientX - pressPos.x, dy = e.clientY - pressPos.y
+  return dx * dx + dy * dy <= 25
+}
+
 // 提案卡：只负责展示（diff + 逐文件勾选）；裁决走输入栏上方的决策坞（ZCode 式）。
 // 勾选/裁决标记挂在记录对象上（store render 时初始化），重放与实时共用。
 // 状态列：只有决策坞挂着的「最新」提案显示 待你裁决；其余未决的（历史重放/被
@@ -163,7 +174,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
                无配对兜底结果行（type=tool）保持旧一行制 -->
           <div v-if="rec.type === 'tool_call'" class="toolcard" :class="{ open: rec._open }">
             <div class="toolline proc" :class="{ click: hasToolDetail(rec) }"
-                 @click="toggleTool(rec)">
+                 @mousedown="trackPress" @click="pressed($event) && toggleTool(rec)">
               <Chev v-if="hasToolDetail(rec)" :open="!!rec._open" />
               <span class="tico" :class="{ dim: rec._done }">⚙</span>
               <span class="tlabel" v-html="toolHtml(rec)"></span>
@@ -198,7 +209,8 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               </span>
             </div>
             <template v-for="f in rec.files" :key="f.path">
-              <div class="erow" :class="{ open: f.open }" @click="f.open = !f.open">
+              <div class="erow" :class="{ open: f.open }" @mousedown="trackPress"
+                   @click="pressed($event) && (f.open = !f.open)">
                 <Chev :open="!!f.open" /><span class="p">{{ f.path }}</span>
                 <span v-if="f.isNew" class="ntag">新文件</span>
                 <span class="st">
@@ -224,7 +236,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         <template v-else-if="rec.type === 'run_out'">
           <!-- 无归属 run 的兜底块（映射缺失时自成一行）：同样默认折叠 -->
           <div class="toolline proc click" :class="{ warn: rec.failed, open: rec._open }"
-               @click="rec._open = !rec._open">
+               @mousedown="trackPress" @click="pressed($event) && (rec._open = !rec._open)">
             <Chev :open="!!rec._open" /> run #{{ rec.run_id }} · {{ rec.lines.length }} 行输出<template v-if="rec.exit !== null"> · exit {{ rec.exit }}</template>
           </div>
           <div class="fold" :class="{ open: rec._open }">
