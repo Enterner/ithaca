@@ -316,7 +316,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           </template>
           <div ref="thinkEl" class="think-body">{{ S.live.reasoning }}</div>
         </FoldBlock>
-        <div v-if="S.live.text || !S.live.reasoning" class="msg a">{{ S.live.text }}<span class="cursor"></span></div>
+        <div v-if="S.live.text || !S.live.reasoning" class="msg a plain">{{ S.live.text }}<span class="cursor"></span></div>
       </template>
     </div>
   </div>
