@@ -272,11 +272,7 @@ private:
         // 只拦不抽。显式点名比退化兜底可靠——docx/pptx 是 zip 必含 NUL 会被下方
         // 二进制检查拦住，但纯 ASCII PDF 能通过 UTF-8 校验，会被当正文吐给模型。
         // NOTE: 扩展名清单是共享件（read_paged.hpp），与 office/webui 同源不漂移。
-        std::string ext_lower;
-        {
-            const std::string ext = fs::path(norm).extension().string();
-            for (const char c : ext) ext_lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c));
-        }
+        const std::string ext_lower = vcws::ascii_lower(fs::path(norm).extension().string());
         if (vcws::is_document_ext(ext_lower))
             return json{{"ok", false},
                         {"error", "文档（docx/pptx/xlsx/pdf/doc/ppt/xls）读取请用 "

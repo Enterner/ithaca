@@ -221,11 +221,9 @@ void WebuiPlugin::subscribe_() {
 // tool_register 多次触发叠发。host_workspace_ 已在 switch_to_ 同步段被矫正为会话
 // 工作区，此处直接取用。
 void WebuiPlugin::backfill_workspace_() {
-    std::string session, ws;
-    session = session_;
-    ws = host_workspace_;
-    if (ws_backfilled_ || session.empty() || ws.empty()) return;
+    if (ws_backfilled_ || session_.empty() || host_workspace_.empty()) return;
     ws_backfilled_ = true;
+    const std::string ws = host_workspace_;
     nostos::kit::poster_submit(poster_, [this, ws] {
         const vc_api::WorkspaceSet e{ws.c_str()};
         host_.emit(vc_api::workspace_set, &e);

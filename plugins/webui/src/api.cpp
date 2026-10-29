@@ -389,9 +389,7 @@ static std::string base64_encode(const std::string& in) {
 
 // 图片扩展名 → data_url 的 mime（非图片返回空：不走多模态，仅路径注记）
 static std::string image_mime_of(const std::string& ext_in) {
-    std::string e = ext_in;
-    for (char& c : e)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+    const std::string e = vcws::ascii_lower(ext_in);
     if (e == ".png") return "image/png";
     if (e == ".jpg" || e == ".jpeg") return "image/jpeg";
     if (e == ".webp") return "image/webp";
@@ -648,12 +646,7 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
 /// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（见上）。
 http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
     const std::string rel = query_val(req.target, "path");
-    std::string ext_lower;
-    {
-        const std::string ext = fs::path(rel).extension().string();
-        for (const char c : ext)
-            ext_lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c));
-    }
+    const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
     // 扩展名清单是共享件（workspace/read_paged.hpp），与 office/workspace 同源
     const bool doc = vcws::is_document_ext(ext_lower);
     const json args = json{{"path", rel}};

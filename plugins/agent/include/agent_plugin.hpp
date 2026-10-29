@@ -230,9 +230,6 @@ struct AgentCtx {
 
     // ---- 上下文压缩（判定与折叠执行）-----------
 
-    // 硬保护判定：last_prompt_tokens_ ≥ 0.95×W（*20/19 整数式，宁早勿晚）。独立于
-    // 会话阈值——退避封顶或阈值失灵时仍兜底；命中强制机械折叠（不等摘要）。
-    bool hard_window_() const;
     // 压缩判定共用入口（finish_turn 与 cleanup_turn_——失败/取消收口同样过判定，
     // 否则反复取消/失败的长会话上下文只增不减）：硬保护或会话阈值命中 ⇒ 产出
     // 折叠计划——非硬保护且摘要开 → 异步 LLM 摘要（request_digest_，收口在摘要
@@ -334,8 +331,6 @@ struct AgentCtx {
     // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）
     static std::string summarize_call(const std::string& tool, const json& args);
     static std::string summarize_apply_ops(const json& args);
-    // diff 统计尾行 "（+A −R 行）" → "+A −R"（"（"=3 字节；无 ⇒ 空）
-    static std::string diff_stats_short(const std::string& d);
     // 工具结果 → 人话摘要；失败点名首条错误；认不出的形态回退原 JSON 截断
     static std::string summarize_result(const std::string& tool, const std::string& result);
     static int parse_run_id(const std::string& result);

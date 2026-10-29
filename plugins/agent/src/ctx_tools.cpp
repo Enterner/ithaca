@@ -275,12 +275,6 @@ std::string AgentCtx::summarize_apply_ops(const json& args) {
     return out;
 }
 
-// diff 统计尾行 "（+A −R 行）" → "+A −R"（"（"=3 字节；无 ⇒ 空）——实现收敛在
-// vcagent::diff_stats_short_str（context.hpp），此处只做名字面转发
-std::string AgentCtx::diff_stats_short(const std::string& d) {
-    return vcagent::diff_stats_short_str(d);
-}
-
 // 工具结果 → 人话摘要；失败点名首条错误；认不出的形态回退原 JSON 截断
 std::string AgentCtx::summarize_result(const std::string& tool, const std::string& result) {
     const json r = json::parse(result, nullptr, false);
@@ -316,7 +310,7 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
             const std::string st =
                 f.contains("delta") && f["delta"].is_string()
                     ? f["delta"].get<std::string>()          // stub 形态：workspace 直给落盘量级
-                    : diff_stats_short(d);                   // 旧形态/ dry_run：从 diff 尾行提取
+                    : vcagent::diff_stats_short_str(d);      // 旧形态/ dry_run：从 diff 尾行提取
             return path + note + (st.empty() ? "" : " " + st);
         }
         return std::to_string(r["files"].size()) + " 个文件";

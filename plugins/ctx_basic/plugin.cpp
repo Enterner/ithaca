@@ -1,8 +1,10 @@
 // plugin/ctx_basic —— 上下文管理策略插件（机械策略，发布 vc.ctx.v1）。
 //
-// 策略逻辑 = plugins/agent/context.hpp 纯函数层的组合镜像（include 复用实现，
-// 不复制算法）：plan_compress 折叠计划 / compact_result 最小充分记录 /
-// recall_result 回查包装 / mission_message 任务卡 / is_context_overflow_error
+// 策略逻辑 = plugins/agent/context.hpp 纯函数层的组合（include 复用实现，
+// 不复制算法）：plan_compress 折叠计划 / ingest_tool_result 回灌管线 /
+// recall_fetch·recall_entries_summary·recall_paged 回查 / compact_result 最小
+// 充分记录 / effective_threshold·hard_window·backoff_threshold 阈值件 /
+// summary_digest 摘要定稿 / mission_message 任务卡 / is_context_overflow_error
 // 分类 / kSummarySystem 摘要指令。与 agent 内置回退的口径逐字节一致——本插件
 // 活跃与缺席（内置接管）必须产出相同的上下文形态（A/B golden 逐字验收的根基）。
 //
@@ -28,13 +30,10 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/active_gate.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
-#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -127,28 +126,16 @@ private:
 
     // ---- 策略状态：阈值与退避（不持久化，重启重置）-----------------------------
 
-    // 生效阈值重算（与 agent 内置 recompute_threshold_ 同口径）：W + max_output
-    // 已知 ⇒ W − max_output（输出预留）；仅 W ⇒ 0.9×W（reserved 缺省 = W/10）；
-    // 都未知 ⇒ env 兜底基线。下限 W/4。
+    // 生效阈值重算：公式单源 = vcagent::effective_threshold（W + max_output 已知
+    // ⇒ W − max_output 输出预留；仅 W ⇒ 0.9×W；都未知 ⇒ env 兜底基线；下限 W/4）。
     void recompute_threshold_(long long window, long long max_output) {
-        if (window <= 0) {
-            session_threshold_ = base_threshold_;
-            return;
-        }
-        const long long reserved = max_output > 0 ? max_output : window / 10;
-        const long long th = window - reserved;
-        const long long floor_th = window / 4;
-        session_threshold_ = th > floor_th ? th : floor_th;
+        session_threshold_ = vcagent::effective_threshold(window, max_output, base_threshold_);
     }
 
-    // 硬保护线：0.95×W（*20/19 整数式）。W 未知 ⇒ 不启用。
-    static bool hard_window_(long long last, long long window) {
-        return window > 0 && last * 20 >= window * 19;
-    }
-
-    // 压缩后首 turn 的退避校验：仍超生效阈值 ⇒ 阈值 ×1.25 抬升，封顶 0.95×W
-    //（越过即由硬保护接管）。仅真实 usage 参与——粗估信号调阈值 = 用垃圾调阈值。
-    // 通告与 agent 内置同文案同出口（vc.notice），transcript 表现一致。
+    // 压缩后首 turn 的退避校验：仍超生效阈值 ⇒ 阈值 ×1.25 抬升（公式单源 =
+    // vcagent::backoff_threshold，封顶 0.95×W）。仅真实 usage 参与——粗估信号调
+    // 阈值 = 用垃圾调阈值。通告与 agent 内置同文案同出口（vc.notice），transcript
+    // 表现一致。
     void verify_backoff_(const json& signals) {
         if (!verify_pending_) return;
         verify_pending_ = false;
@@ -156,11 +143,7 @@ private:
         const long long last = signals.value("last_prompt_tokens", 0LL);
         const long long window = signals.value("window", 0LL);
         if (usage_real && session_threshold_ > 0 && last >= session_threshold_) {
-            session_threshold_ = session_threshold_ / 4 * 5;
-            if (window > 0) {
-                const long long cap = window / 20 * 19;
-                if (session_threshold_ > cap) session_threshold_ = cap;
-            }
+            session_threshold_ = vcagent::backoff_threshold(session_threshold_, window);
             // NOTE: 载荷用具名缓冲——emit 同步派发，语句级临时一悬垂就是 UAF
             const std::string text = "上下文仍紧张——压缩阈值已上调至 " +
                                      std::to_string(session_threshold_) +
@@ -195,7 +178,7 @@ private:
             if (!(session_threshold_ > 0 && est > session_threshold_)) return none_();
         } else if (reason == "turn_end") {
             verify_backoff_(signals);
-            const bool hard = hard_window_(last, window);
+            const bool hard = vcagent::hard_window(last, window);
             const bool soft = session_threshold_ > 0 && last > session_threshold_;
             if (!hard && !soft) return none_();
         }
@@ -220,42 +203,17 @@ private:
 
     static json none_() { return json{{"action", "none"}}; }
 
-    // ingest 槽：外置 + 最小充分记录一步完成（与 agent 内置回灌管线同口径镜像）。
+    // ingest 槽：外置 + 最小充分记录一步完成——管线单源 = vcagent::ingest_tool_result
+    //（agent 内置回灌共用，两路产出逐字节一致）；本插件只保留归档命名（turn/seq）。
     json ingest_impl(const json& args) {
-        std::string content = args.value("body", std::string());
+        const std::string content = args.value("body", std::string());
         const std::string tool = args.value("tool", "");
-        const std::string last = tool_last(tool);
-        const bool content_inline =
-            last == "read" ? content.size() <= vcagent::kContentInlineCap
-          : last == "task" ? content.size() <= vcagent::kTaskInlineCap
-          : false;
-        if (content.size() > vcagent::kInlineResultCap && !content_inline) {
-            if (last == "recall") {
-                // recall 回包本身是 JSON——在 content 值内截断后重打包保持合法
-                //（内置回灌管线同款注释：直接 trim 劈 JSON 串 = 非法 tool 消息）
-                const json rj = json::parse(content, nullptr, false);
-                if (rj.is_object() && rj.contains("content") && rj["content"].is_string()) {
-                    json fixed = rj;
-                    fixed["content"] =
-                        vcws::trim_utf8(rj["content"].get<std::string>(), 1024) +
-                        "…（回查内容过长，已截断）";
-                    content = fixed.dump();
-                } else {
-                    content = vcws::trim_utf8(content, 2048) + "…（回查内容过长，已截断）";
-                }
-            } else {
-                const std::string ref = spool_(args.value("turn", 0),
-                                               static_cast<int>(args.value("seq", 0)), last,
-                                               content);
-                if (!ref.empty()) {
-                    const json r = json::parse(content, nullptr, false);
-                    content = vcagent::compact_result(tool, r, ref);
-                } else {
-                    content = vcws::trim_utf8(content, 2048) + "…（超出内联上限且外置失败）";
-                }
-            }
-        }
-        return json{{"content", content}};
+        return json{{"content", vcagent::ingest_tool_result(
+            tool_last(tool), tool, content,
+            [&](const std::string& last, const std::string&, const std::string& body) {
+                return spool_(args.value("turn", 0),
+                              static_cast<int>(args.value("seq", 0)), last, body);
+            })}};
     }
 
     // 工具结果归档：raw/<前缀>t<turn>_<seq>_<tool>.json。NOTE: agent 的折叠原文
@@ -274,71 +232,28 @@ private:
         }
     }
 
-    // recall 槽：ref 校验（裸文件名）→ 读归档 → entries 形态的结构化聚合
-    //（summary/filter）→ 字节窗口分页兜底。与 agent 内置 exec_recall 同口径。
+    // recall 槽：管线单源 = vcagent 的 recall_* 纯函数（agent 内置 exec_recall
+    // 共用，产出逐字节一致）——ref 校验/归档整读 → entries 形态聚合（summary/
+    // filter）→ 字节窗口分页兜底。
     json recall_impl(const json& args) {
         const std::string ref = args.value("ref", "");
-        if (ref.empty() || raw_dir_.empty())
-            return json{{"ok", false},
-                        {"error", "ref 为空，或本会话未启用外置归档（折叠历史不可回查）"}};
-        if (ref.find('/') != std::string::npos || ref.find('\\') != std::string::npos ||
-            ref.find("..") != std::string::npos)
-            return json{{"ok", false}, {"error", "ref 必须是裸文件名"}};
-        std::ifstream in(fs::path(raw_dir_) / ref, std::ios::binary);
-        if (!in) return json{{"ok", false}, {"error", "归档不存在: " + ref}};
-        const std::string content((std::istreambuf_iterator<char>(in)),
-                                  std::istreambuf_iterator<char>());
+        std::string content, err;
+        if (!vcagent::recall_fetch(ref, raw_dir_, content, err))
+            return json{{"ok", false}, {"error", err}};
         const long long total = static_cast<long long>(content.size());
-        const bool summary = args.value("summary", false);
         const std::string filter = vcws::ascii_lower(args.value("filter", ""));
-        if ((summary || !filter.empty()) && total > 0 && total < (8LL << 20)) {
-            const json rj = json::parse(content, nullptr, false);
-            if (rj.is_object() && rj.contains("entries") && rj["entries"].is_array()) {
-                json filtered = json::array();
-                std::size_t matched = 0;
-                std::map<std::string, std::pair<long long, long long>> by_dir;
-                for (const auto& e : rj["entries"]) {
-                    if (!e.is_object()) continue;
-                    const std::string p = e.value("path", "");
-                    if (!filter.empty() &&
-                        vcws::ascii_lower(p).find(filter) == std::string::npos)
-                        continue;
-                    ++matched;
-                    const std::size_t slash = p.rfind('/');
-                    const std::string bucket =
-                        slash == std::string::npos ? "(根)" : p.substr(0, slash);
-                    const std::string type = e.value("type", "file");
-                    if (type == "dir") ++by_dir[bucket].second;
-                    else if (type == "file") ++by_dir[bucket].first;
-                    if (filtered.size() < 50) filtered.push_back(e);
-                }
-                json dirs = json::array();
-                for (const auto& [d, c] : by_dir)
-                    dirs.push_back(json{{"dir", d}, {"files", c.first}, {"subdirs", c.second}});
-                json summ = json{{"summary_of", ref},
-                                 {"total_entries", rj["entries"].size()},
-                                 {"matched", matched}};
-                if (!filter.empty()) summ["matching"] = filtered;
-                if (summary) summ["dirs"] = dirs;
-                return json::parse(vcagent::recall_result(ref, summ.dump(), total, 0, false, 0),
-                                   nullptr, false);
-            }
-        }
-        long long offset = args.value("offset", 0LL);
-        const long long limit = std::clamp(args.value("limit", 2048LL), 1LL, 4096LL);
-        offset = std::clamp(offset, 0LL, total);
-        std::size_t off = static_cast<std::size_t>(offset);
-        const std::string page =
-            vcws::utf8_window(content, off, static_cast<std::size_t>(limit));
-        const bool has_more = off + page.size() < static_cast<std::size_t>(total);
-        return json::parse(vcagent::recall_result(ref, page, total,
-                                                  static_cast<long long>(off), has_more,
-                                                  static_cast<long long>(off + page.size())),
+        if (std::string summ = vcagent::recall_entries_summary(content, ref,
+                                                               args.value("summary", false),
+                                                               filter);
+            !summ.empty())
+            return json::parse(vcagent::recall_result(ref, summ, total, 0, false, 0),
+                               nullptr, false);
+        return json::parse(vcagent::recall_paged(content, args, ref, total),
                            nullptr, false);
     }
 
-    // 摘要回包后处理：provenance 头 + 超长截断 + 外置索引确定性重建（refs 来自
-    // 折叠计划的结构化记录——与 agent 内置 on_compress_done_ 尾段同口径）。
+    // 摘要回包后处理：定稿组装单源 = vcagent::summary_digest（provenance 头 +
+    // 超长截断 + 外置索引确定性重建，agent 内置 on_compress_done_ 共用）。
     json apply_summary_impl(const json& args) {
         std::string s = args.value("summary", std::string());
         if (s.empty()) return {};   // 空回包 = 让 agent 走机械兜底
@@ -346,20 +261,7 @@ private:
         if (args.contains("refs") && args["refs"].is_array())
             for (const auto& r : args["refs"])
                 if (r.is_string()) refs.push_back(r.get<std::string>());
-        if (s.size() > 4096) s = vcws::trim_utf8(s, 4096) + "…";
-        json digest = json{
-            {"role", "system"},
-            {"content", std::string(vcagent::kDigestMarker) +
-                            "（历史 turn 已压缩：LLM 自总结。" +
-                            std::string(vcagent::kDigestProvenance) +
-                            (raw_dir_.empty()
-                                 ? "本会话未启用外置归档，被折叠原文不可回查）\n"
-                                 : "工具原始结果外置于 raw/，可用 context_recall 回查）\n") +
-                            s}};
-        const std::string index = vcagent::index_section(refs);
-        if (!index.empty())
-            digest["content"] = digest["content"].get<std::string>() + "\n" + index;
-        return digest;
+        return vcagent::summary_digest(std::move(s), !raw_dir_.empty(), refs);
     }
 
     // ---- C 槽位（noexcept thunk → 成员；出参缓冲调用期有效）----------------------

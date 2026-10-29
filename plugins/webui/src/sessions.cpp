@@ -405,13 +405,9 @@ http::Response WebuiPlugin::api_session_delete_(const http::Request& req) {
 json WebuiPlugin::session_meta_() {
     // pending：后端当前真有挂起提案（运行时事实，重启即 false）——前端决策坞
     // 以此为门卫，防止任何来源的幻影提案弹审批
-    std::string session, ws;
-    bool pending = false;
+    std::string ws, title = "(新会话)";
     int turns = 0;
     long long tokens = 0;
-    std::size_t count = 0;
-    std::string title = "(新会话)";
-    count = records_.size();
     for (const auto& r : records_) {
         const std::string type = r.value("type", "");
         if (type == "user") {
@@ -428,16 +424,14 @@ json WebuiPlugin::session_meta_() {
     }
     if (json* e = session_entry_(session_); e != nullptr)
         ws = e->value("workspace", "");
-    session = session_;
-    pending = pending_turn_ >= 0;
-    return {{"id", session},
+    return {{"id", session_},
             {"title", title},
             {"turns", turns},
             {"tokens", tokens},
             {"workspace", ws},
             {"in_flight", in_flight_},   // 后端真值：前端重放后对账防 zombie
-            {"records", count},
-            {"pending", pending}};
+            {"records", records_.size()},
+            {"pending", pending_turn_ >= 0}};
 }
 
 }  // namespace vc_webui

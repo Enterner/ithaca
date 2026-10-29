@@ -20,6 +20,10 @@
 #include "../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -264,6 +268,40 @@ inline std::string compact_result(const std::string& tool, const json& r,
            ",\"ok\":true,\"note\":\"已最小化，原始结果外置\"" + ref_field(ref) + "}";
 }
 
+// ---- 回灌管线（agent 内置与 ctx_basic 策略镜像共用一份；两路产出必须逐字节
+// 一致——插件在/不在输出逐字对齐是 A/B 验收口径，算法只许有一份）----------------
+
+// 超内联上限的结果外置 + 最小充分记录。last = 工具名末段（分派与归档命名口径，
+// 由调用方按各自 tool_last 语义派生）；spool(last, full_name, body) → 归档 ref
+//（空 = 外置失败，内联截断兜底），外置目录与命名归调用方。recall 回包本身是
+// JSON——直接 trim 会劈在 content 字符串中间产生非法 JSON tool 消息（踩过），
+// 在 content 值内截断后重打包保持合法。内联豁免按工具分档（量级理由见各 Cap
+// 声明处）：read 96KB 逐字素材、task 1KB 结论消费型。
+template <typename Spool>
+inline std::string ingest_tool_result(const std::string& last, const std::string& full_name,
+                                      const std::string& content, Spool&& spool) {
+    const bool content_inline =
+        last == "read" ? content.size() <= kContentInlineCap
+      : last == "task" ? content.size() <= kTaskInlineCap
+      : false;
+    if (content.size() <= kInlineResultCap || content_inline) return content;
+    if (last == "recall") {
+        const json rj = json::parse(content, nullptr, false);
+        if (rj.is_object() && rj.contains("content") && rj["content"].is_string()) {
+            json fixed = rj;
+            fixed["content"] =
+                vcws::trim_utf8(rj["content"].get<std::string>(), 1024) +
+                "…（回查内容过长，已截断）";
+            return fixed.dump();
+        }
+        return vcws::trim_utf8(content, 2048) + "…（回查内容过长，已截断）";
+    }
+    const std::string ref = spool(last, full_name, content);
+    if (!ref.empty())
+        return compact_result(full_name, json::parse(content, nullptr, false), ref);
+    return vcws::trim_utf8(content, 2048) + "…（超出内联上限且外置失败）";
+}
+
 // ---- recall：provenance 包装 + 分页元数据--------------------
 // content 为归档的 [offset, offset+size) 字节窗口（页边界已对齐码点）；has_more /
 // next_offset 供续读——大归档分段读，不再"永远只看头 2KB"。
@@ -281,10 +319,114 @@ inline std::string recall_result(const std::string& ref, const std::string& cont
     return out.dump();
 }
 
+// ref 校验（裸文件名）+ 归档整读。失败 err 点名原因（调用方原样作工具错误返回）。
+inline bool recall_fetch(const std::string& ref, const std::string& raw_dir,
+                         std::string& content, std::string& err) {
+    if (ref.empty() || raw_dir.empty()) {
+        err = "ref 为空，或本会话未启用外置归档（折叠历史不可回查）";
+        return false;
+    }
+    if (ref.find('/') != std::string::npos || ref.find('\\') != std::string::npos ||
+        ref.find("..") != std::string::npos) {
+        err = "ref 必须是裸文件名";
+        return false;
+    }
+    std::ifstream in(std::filesystem::path(raw_dir) / ref, std::ios::binary);
+    if (!in) { err = "归档不存在: " + ref; return false; }
+    content.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
+}
+
+// entries 形态归档的结构化回查：filter（路径包含过滤，调用方已折叠小写）+
+// summary（按目录聚合计数）。返回聚合结果 JSON 文本；非 entries 形态 / 超 8MB
+// 防线 ⇒ 空串（调用方回退字节窗口分页）。目录条目冒充文件会让聚合数字说谎
+//（实测：归档里的子目录条目被计成"(根) files:1"）；note（省略计数）是元数据，
+// 计入 matched 但不冒充文件/目录。
+inline std::string recall_entries_summary(const std::string& content, const std::string& ref,
+                                          bool summary, const std::string& filter) {
+    if (!(summary || !filter.empty())) return {};
+    const long long total = static_cast<long long>(content.size());
+    if (total <= 0 || total >= (8LL << 20)) return {};
+    const json rj = json::parse(content, nullptr, false);
+    if (!(rj.is_object() && rj.contains("entries") && rj["entries"].is_array())) return {};
+    json filtered = json::array();
+    std::size_t matched = 0;
+    std::map<std::string, std::pair<long long, long long>> by_dir;   // 目录 → {文件数, 子目录数}
+    for (const auto& e : rj["entries"]) {
+        if (!e.is_object()) continue;
+        const std::string p = e.value("path", "");
+        if (!filter.empty() && vcws::ascii_lower(p).find(filter) == std::string::npos)
+            continue;
+        ++matched;
+        const std::size_t slash = p.rfind('/');
+        const std::string bucket =
+            slash == std::string::npos ? "(根)" : p.substr(0, slash);
+        const std::string type = e.value("type", "file");
+        if (type == "dir") ++by_dir[bucket].second;
+        else if (type == "file") ++by_dir[bucket].first;
+        if (filtered.size() < 50) filtered.push_back(e);
+    }
+    json dirs = json::array();
+    for (const auto& [d, c] : by_dir)
+        dirs.push_back(json{{"dir", d}, {"files", c.first}, {"subdirs", c.second}});
+    json summ = json{{"summary_of", ref},
+                     {"total_entries", rj["entries"].size()},
+                     {"matched", matched}};
+    if (!filter.empty()) summ["matching"] = filtered;   // 前 50 条命中
+    if (summary) summ["dirs"] = dirs;
+    return summ.dump();
+}
+
+// 字节窗口分页兜底：offset/limit 收敛 + 双边界窗口（utf8_window，劈码点尾部自洽）
+// + recall_result 包装——大归档分段读，不再"永远只看头 2KB"。
+inline std::string recall_paged(const std::string& content, const json& args,
+                                const std::string& ref, long long total) {
+    long long offset = args.value("offset", 0LL);
+    const long long limit = std::clamp(args.value("limit", 2048LL), 1LL, 4096LL);
+    offset = std::clamp(offset, 0LL, total);
+    std::size_t off = static_cast<std::size_t>(offset);
+    const std::string page =
+        vcws::utf8_window(content, off, static_cast<std::size_t>(limit));
+    const bool has_more = off + page.size() < static_cast<std::size_t>(total);
+    return recall_result(ref, page, total, static_cast<long long>(off), has_more,
+                         static_cast<long long>(off + page.size()));
+}
+
 // ---- 迟滞批量压缩（turn 边界执行）---------------------------------------------
 // 判定信号：provider 回报的最近 prompt_tokens（确定性信号，不由模型自报）
 inline bool should_compress(long long last_prompt_tokens, long long threshold) {
     return threshold > 0 && last_prompt_tokens > threshold;
+}
+
+// ---- 压缩阈值的纯函数件（agent 内置与 ctx_basic 策略镜像共用一份口径）--------
+
+// 生效阈值：W 与 max_output 已知 ⇒ W − max_output（输出预留——给长 diff/长测试
+// 输出留位）；仅 W ⇒ 0.9×W（reserved 缺省 = W/10）；都未知 ⇒ fallback 兜底基线。
+// 下限 W/4：max_output 元数据异常巨大时仍保住 25% 的 prompt 空间。
+inline long long effective_threshold(long long window, long long max_output,
+                                     long long fallback) {
+    if (window <= 0) return fallback;
+    const long long reserved = max_output > 0 ? max_output : window / 10;
+    const long long th = window - reserved;
+    const long long floor_th = window / 4;
+    return th > floor_th ? th : floor_th;
+}
+
+// 硬保护线：last ≥ 0.95×W（*20/19 整数式，宁早勿晚）。W 未知 ⇒ 不启用——判定
+// 交给会话阈值/兜底阈值路径。独立于会话阈值：退避封顶或阈值失灵时仍兜底。
+inline bool hard_window(long long last, long long window) {
+    return window > 0 && last * 20 >= window * 19;
+}
+
+// 压缩后首 turn 的退避抬升：阈值 ×1.25（/4*5 整数式），封顶 0.95×W——越过即由
+// 硬保护接管判定（阈值一旦越过 W，should_compress 永不命中，压缩停摆回到爆窗）。
+inline long long backoff_threshold(long long threshold, long long window) {
+    threshold = threshold / 4 * 5;
+    if (window > 0) {
+        const long long cap = window / 20 * 19;
+        if (threshold > cap) threshold = cap;
+    }
+    return threshold;
 }
 
 // ---- provider 超窗错误识别 ------------------
@@ -293,10 +435,7 @@ inline bool should_compress(long long last_prompt_tokens, long long threshold) {
 // 归一落地前，agent 侧先做保守子串匹配：误判代价可控
 // ——多走一次「折叠+重发」，重发次数有上界；漏判则照旧走报废路径。
 inline bool is_context_overflow_error(const std::string& message) {
-    std::string lower;
-    lower.reserve(message.size());
-    for (const char c : message)
-        lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    const std::string lower = vcws::ascii_lower(message);
     static const char* const kMarkers[] = {"context length", "context_length_exceeded",
                                            "context window", "prompt is too long",
                                            "input length exceeds", "too many tokens"};
@@ -364,6 +503,28 @@ inline std::string index_section(const std::vector<std::string>& refs) {
     std::string out = "【外置索引】\n";
     for (const auto& r : refs) out += "ref=" + r + "\n";
     return out;
+}
+
+// LLM 摘要 → 定稿 digest 消息（agent 内置与 ctx_basic 策略镜像共用）：provenance
+// 头（口径与实际能力一致——raw 未启用时不得承诺 recall，模型会调必败工具）+
+// 超长截断（伤散文不伤回查链）+ 外置索引确定性重建（refs 来自折叠计划的结构化
+// 记录——摘要怎么改写都不断回查链）。
+inline json summary_digest(std::string s, bool raw_enabled,
+                           const std::vector<std::string>& refs) {
+    if (s.size() > 4096) s = vcws::trim_utf8(s, 4096) + "…";
+    json digest = json{
+        {"role", "system"},
+        {"content", std::string(kDigestMarker) +
+                        "（历史 turn 已压缩：LLM 自总结。" +
+                        std::string(kDigestProvenance) +
+                        (raw_enabled
+                             ? "工具原始结果外置于 raw/，可用 context_recall 回查）\n"
+                             : "本会话未启用外置归档，被折叠原文不可回查）\n") +
+                        s}};
+    const std::string index = index_section(refs);
+    if (!index.empty())
+        digest["content"] = digest["content"].get<std::string>() + "\n" + index;
+    return digest;
 }
 
 // 单条调用记录 → 紧凑记法（锚点逐字：路径/文件/退出码/ref 原样进 digest）。

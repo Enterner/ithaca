@@ -4,10 +4,29 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：观察项四批收编 · 2026-10-29）
+## 当前发现（批次：全库审查与镜像收编 · 2026-10-29）
 
-本批次无新增可优化点——四批均为既有发现的落地（竞争发布门 / 路径沙箱 / 管道消费
-形态 / poster 语义），全程未撞出新的内核缺口。
+**观察 1：kit::win 缺 ASCII 大小写折叠件**（触发场景：全库审查清点小写化循环，
+找到 7 处手写——context.hpp 的 provider 错误文案折叠、workspace/office/webui 的
+扩展名折叠 ×4、webui config 的名称去重折叠 ×2、host/profile.hpp 的清单项折叠；
+本批次应用侧 6 处已收编到产品共享件 `vcws::ascii_lower`）。host 的 profile.hpp
+不能 include 插件域共享头，只能保留第 7 份——ASCII 折叠是平台无关的通用原语，
+归 kit::win（与 utf8_to_wide 同层）可让宿主/插件/内核三域共用一份。
+
+**观察 2：kit::win_http 可附 WinHTTP 错误码 → 人话映射**（触发场景：全库审查
+发现 webui `winhttp_error_text_` 与 llm_cloud `last_error_text` 逐字同构 5 分支，
+前者注释自认「复制而非共享——两插件无公共 TU」——该前提已过时，产品插件间本就
+有 workspace 共享头先例，但错误文案语义归属 WinHTTP 平台层，收 kit 最顺）。
+
+**观察 3：win::http_fetch 的 URL crack 结果可暴露结构化出参**（触发场景：同批
+审查发现 llm_cloud stream.cpp 的 `parse_endpoint` 手写 WinHttpCrackUrl 四段解析，
+与 http_fetch 内部同款样板；http_fetch 现只收 URL 串，crack 结果（host/port/
+path/secure）不外露，流式客户端无法复用其解析）。
+
+**不立项记录**：webui 的 base64 编解码（60 行标准实现，唯一消费方）；JSON 文件
+temp+rename 原子落盘样板（agent/webui 共 4 处，应用层文件 IO 不归内核）；ctx_basic
+与 agent 的回灌/回查/摘要/阈值镜像——本批次已在产品侧收编为 context.hpp 共享纯
+函数，无内核缺口。
 
 **挂账：跨插件反向 include 残余（2026-10-29，批 2 路径沙箱迁移时实测确认）**：
 jail 一路已随 kit 收编清零；workspace 的 `text.hpp`（6 处消费）、`read_paged.hpp`、

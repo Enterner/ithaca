@@ -159,12 +159,7 @@ private:
             err = "路径被拒: " + err;
             return json{{"ok", false}, {"error", err}};
         }
-        std::string ext_lower;
-        {
-            const std::string ext = fs::path(norm).extension().string();
-            for (const char c : ext)
-                ext_lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c));
-        }
+        const std::string ext_lower = vcws::ascii_lower(fs::path(norm).extension().string());
         // 本插件只收文档格式：文本文件归 workspace.read（域边界清晰，误指路径
         // 时错误直接教模型换对工具）
         if (!vcws::is_document_ext(ext_lower))

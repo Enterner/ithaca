@@ -76,11 +76,9 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
         compress_verify_ = false;
         if (ctx_tbl_ == nullptr && usage_real && session_threshold_ > 0 &&
             last_prompt_tokens_ >= session_threshold_) {
-            session_threshold_ = session_threshold_ / 4 * 5;
-            if (ctx_window_ > 0) {
-                const long long cap = ctx_window_ / 20 * 19;
-                if (session_threshold_ > cap) session_threshold_ = cap;
-            }
+            // 抬升公式（×1.25 + 0.95×W 封顶）单源 = vcagent::backoff_threshold
+            session_threshold_ =
+                vcagent::backoff_threshold(session_threshold_, ctx_window_);
             notice("上下文仍紧张——压缩阈值已上调至 " +
                    std::to_string(session_threshold_) + " tokens，建议开新会话");
         }

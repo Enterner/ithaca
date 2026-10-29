@@ -6,9 +6,9 @@
 
 #include "vc_events.hpp"  // vc_api::normalize_permission_mode：权限模式归一（读/写路径）
 
-#include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
+#include "../../workspace/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
 
-#include <cctype>  // tolower：名称归一小写
+#include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
 
 namespace vc_webui {
 
@@ -190,8 +190,7 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
             if (name.empty() || name.size() > 64 || type != "cloud") {
                 bad = true; break;   // 面板单侧显示（产品拍板）：mock 内置不接受外部写入
             }
-            std::string low = name;
-            for (char& c : low) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            const std::string low = vcws::ascii_lower(name);
             if (std::find(seen.begin(), seen.end(), low) != seen.end()) { bad = true; break; }
             seen.push_back(low);
             json e = {{"name", name}, {"type", type}};
@@ -215,9 +214,7 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
                                                 ? m["id"].get<std::string>() : "";
                     const int ctx = m.contains("context") && m["context"].is_number_integer()
                                         ? m["context"].get<int>() : 0;
-                    std::string mlow = mid;
-                    for (char& c : mlow)
-                        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                    const std::string mlow = vcws::ascii_lower(mid);
                     if (mid.empty() || mid.size() > 64 || ctx < 1024 ||
                         std::find(mseen.begin(), mseen.end(), mlow) != mseen.end()) {
                         bad = true; break;
