@@ -259,19 +259,24 @@ void AgentCtx::dispatch_loop() {
 // （思考块的数据源）。事件回调按订阅序同步派发，agent 先于 webui 装载时工具
 // 事件就落在收口记录之前，UI/重放里工具卡恒跑到思考块上方。推迟一拍把「产生
 // 工具事件」挪到 llm_done 对全部订阅者派发完成之后（poster 闭包在下一拍排水），
-// 事件序与因果序不再依赖插件装载顺序。安全性：
+// 事件序与因果序不再依赖插件装载顺序（主会话与子代理同规）。安全性：
 //   - 主 ctx 与插件同生命周期，poster 闭包在会话作废时由宿主逐条 dispose
-//     （执行路径碰不到已析构对象），turn 身份（turn_no_）防旧闭包误入新 turn；
-//   - 子代理不推迟：子 ctx 随 turn 销毁（children_ 唯一指针），poster 闭包
-//     无法在宿主丢弃机制之外失效——子代理事件只进右栏明细流，无此顺序问题；
+//     （执行路径碰不到已析构对象）；
+//   - 子代理走 owner 绑定形态：子 ctx 随 turn 销毁（children_ 唯一指针），
+//     cleanup_turn_ 销毁前先作废 owner——未执行的闭包连任务一起回收，不可能
+//     落到已析构对象上（旧宿主无 owner 槽位 ⇒ BAD_STATE 回退同步分发）；
+//   - turn 身份（turn_no_）防旧闭包误入新 turn；
 //   - poster 不可用（宿主 ABI 过旧）或投递失败 ⇒ 回退同步分发，只损失顺序。
 void AgentCtx::dispatch_after_done_() {
-    if (subagent_ || poster_.post == nullptr) return dispatch_loop();
+    if (poster_.post == nullptr) return dispatch_loop();
     const int turn = turn_no_;
-    if (nostos::kit::poster_submit(poster_, [this, turn] {
-            if (state_ == State::TurnActive && turn_no_ == turn) dispatch_loop();
-        }) != NOSTOS_OK)
-        dispatch_loop();
+    const auto body = [this, turn] {
+        if (state_ == State::TurnActive && turn_no_ == turn) dispatch_loop();
+    };
+    const nostos_status st =
+        subagent_ ? nostos::kit::poster_submit_owner(poster_, this, body)
+                  : nostos::kit::poster_submit(poster_, body);
+    if (st != NOSTOS_OK) dispatch_loop();
 }
 
 // 单条调用分发（dispatch_loop 的 try 保护体）：emit 调用卡 → 内置工具拦截 →
@@ -1021,6 +1026,11 @@ void AgentCtx::cleanup_turn_() {
                                  " 尚有 " + std::to_string(c->runs_.size()) +
                                  " 个后台进程在途——留待 runner 超时收尾");
         }
+        // 子 ctx 随现场销毁：销毁前作废各自名下的未执行投递（dispatch 推迟一拍
+        // 的 owner 绑定闭包）——迟到的旧闭包随任务一起回收，不落已析构对象。
+        // 零值 poster（未领取）走 kit 助手的 BAD_STATE 短路，无需预判
+        for (auto& c : children_)
+            nostos::kit::poster_invalidate_owner(poster_, c.get());
         children_.clear();
         child_pends_.clear();
         // 逐子代理的取消卡已承载终态，聚合通告不再发（纯刷屏）

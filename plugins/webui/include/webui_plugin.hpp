@@ -109,19 +109,21 @@ private:
     // 本调用立即挂起返回；post 失败（activate 漏领/会话收尾）没人会补响应 ⇒
     // 同步 503 防连接悬挂。fn 必须返回 void——闭包里顺手 `return json_resp(...)`
     // 会被 auto 推导合法化成"构造完丢弃"，连接永不补响应（编译期挡下）。
-    // NOTE: 闭包异常必须就地兜成 500 补发——poster 吞异常且挂起连接豁免 stall
-    // 超时，不补即永久占一个连接槽（max_clients 占满 = 整个服务停摆）；磁盘
-    // 字段类型漂移（json::value<T> 严格取值抛 type_error）是真实触发源。
+    // NOTE: 闭包异常经 poster 的异常钩子就地兜成 500 补发——poster 吞异常且挂起
+    // 连接豁免 stall 超时，不补即永久占一个连接槽（max_clients 占满 = 整个服务
+    // 停摆）；磁盘字段类型漂移（json::value<T> 严格取值抛 type_error）是真实
+    // 触发源。钩子原语在内核（kit poster_submit 第三参），本插件只提供补发出口。
     template <typename F>
         requires std::is_void_v<std::invoke_result_t<F&, std::uint64_t>>
     http::Response defer_(const http::Request& req, F&& fn) {
         const std::uint64_t conn = req.conn_id;
         const nostos_status st = nostos::kit::poster_submit(
-            poster_, [this, conn, fn = std::forward<F>(fn)]() mutable {
+            poster_, [this, conn, fn = std::forward<F>(fn)]() mutable { fn(conn); },
+            [this, conn](std::exception_ptr e) {
                 try {
-                    fn(conn);
-                } catch (const std::exception& e) {
-                    fail_suspended_(conn, std::string("内部错误: ") + e.what());
+                    if (e) std::rethrow_exception(e);
+                } catch (const std::exception& ex) {
+                    fail_suspended_(conn, std::string("内部错误: ") + ex.what());
                 } catch (...) {
                     fail_suspended_(conn, "内部错误（未知异常）");
                 }
