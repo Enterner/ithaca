@@ -18,6 +18,7 @@
 #include "vc_events.hpp"  // vc_api::LlmSetActive/TurnInput/PermissionMode/SessionLoad/WorkspaceSet + normalize_permission_mode
 
 #include "../../workspace/iface.hpp"  // vcws::kToolSvc：workspace 工具表的稳定契约名
+#include "../../office/iface.hpp"  // vcoffice::kToolSvc：office 工具表（文档分流用）
 
 #include <cstdlib>  // std::getenv/atoi/atol/exit：环境变量、端口解析与关停
 
@@ -103,6 +104,9 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     tools_ = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
     if (tools_ == nullptr)
         host_.log(3, "ithaca.webui: workspace 工具表未就绪——文件树不可用");
+    // office 工具表（/api/fs/read 的文档分流）：可选项，缺席静默——回退 workspace
+    // 由其守卫点名 office.read，行为可预期
+    office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
 
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host_.log(4, "ithaca.webui: 领取 poster 失败");

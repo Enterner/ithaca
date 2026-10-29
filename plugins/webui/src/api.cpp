@@ -14,6 +14,7 @@
 #include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
 
 #include "../../workspace/text.hpp"  // vcws::trim_utf8：错误体截断走码点边界（全仓纪律）
+#include "../../workspace/read_paged.hpp"  // vcws::is_document_ext：/api/fs/read 分流的扩展名清单（共享件）
 
 #include <cstdlib>  // std::atoi：query depth 解析
 
@@ -616,7 +617,7 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
                            {"mode", "flat"},
                            {"per_dir", std::atoi(query_val(req.target, "per_dir").c_str())}};
     return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
-        json r = call_tool_json_("list", args.dump());
+        json r = call_tool_json_(tools_, "list", args.dump());
         // 黑名单：一级目录名精确匹配（树视图噪音；agent 的 list 工具不受影响）
         static const char* kHide[] = {".git",           "node_modules", "build",
                                       "dist",           ".ithaca-data", "__pycache__",
@@ -637,32 +638,45 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
 }
 
 /// GET /api/fs/read?path=<相对路径> → 右栏代码查看器的文件内容。
-/// 代理 workspace 的 read 工具并原样透传：jail 越界防护、NUL 拒二进制、UTF-8
-/// 校验、256KB 封顶（truncated 标记）全在提供方。副作用：无（纯读）。
-/// 线程纪律同 api_fs_list_（见上）。
+/// 按扩展名分流：文档格式（docx/pptx/xlsx/pdf/doc/ppt/xls）路由到 office 表
+///（抽取面所在域，doc 徽标随出参 doc 字段继续工作）；office 未装载回退
+/// workspace——文档被其守卫点名指向 office.read。其余代理 workspace 的 read
+/// 并原样透传：jail 越界防护、NUL 拒二进制、UTF-8 校验、256KB 封顶（truncated
+/// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（见上）。
 http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
-    const json args = json{{"path", query_val(req.target, "path")}};
-    return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
-        server_->respond(conn, json_resp(call_tool_json_("read", args.dump())));
+    const std::string rel = query_val(req.target, "path");
+    std::string ext_lower;
+    {
+        const std::string ext = fs::path(rel).extension().string();
+        for (const char c : ext)
+            ext_lower.push_back(static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c));
+    }
+    // 扩展名清单是共享件（workspace/read_paged.hpp），与 office/workspace 同源
+    const bool doc = vcws::is_document_ext(ext_lower);
+    const json args = json{{"path", rel}};
+    return defer_(req, [this, args = std::move(args), doc](std::uint64_t conn) {
+        const vc_api::ToolTable* table =
+            doc && office_tools_ != nullptr ? office_tools_ : tools_;
+        server_->respond(conn, json_resp(call_tool_json_(table, "read", args.dump())));
     });
 }
 
-// workspace 工具表直调（/api/fs/* 代理共用）：判空 → execute → NOSTOS_OK 判定 →
-// JSON parse → 无效兜底。返回值恒为 object；调用须在宿主线程闭包内（tools_ 读写
-// 纪律见 webui_plugin.hpp）
-json WebuiPlugin::call_tool_json_(const char* tool, const std::string& args_json) {
-    const vc_api::ToolTable* tools = tools_;
-    if (tools == nullptr)
-        return {{"ok", false}, {"error", "workspace 不在"}};
+// 工具表直调（/api/fs/* 代理共用）：判空 → execute → NOSTOS_OK 判定 →
+// JSON parse → 无效兜底。返回值恒为 object；调用须在宿主线程闭包内（table 的
+// 读写纪律见 webui_plugin.hpp）
+json WebuiPlugin::call_tool_json_(const vc_api::ToolTable* table, const char* tool,
+                                  const std::string& args_json) {
+    if (table == nullptr)
+        return {{"ok", false}, {"error", "工具表不在"}};
     const char* out_json = nullptr;
     // NOSTOS_OK + {ok:false} = 工具级失败，原样透传给前端
-    const nostos_status st = tools->execute(tools->self, tool, args_json.c_str(), 0, &out_json);
+    const nostos_status st = table->execute(table->self, tool, args_json.c_str(), 0, &out_json);
     json r = st == NOSTOS_OK && out_json != nullptr
                  ? json::parse(out_json, nullptr, false)
-                 : json{{"ok", false}, {"error", "workspace execute 失败 (" +
+                 : json{{"ok", false}, {"error", "工具表 execute 失败 (" +
                                               std::to_string(static_cast<int>(st)) + ")"}};
     if (r.is_discarded() || !r.is_object())
-        r = json{{"ok", false}, {"error", "workspace 返回了无效 JSON"}};
+        r = json{{"ok", false}, {"error", "工具表返回了无效 JSON"}};
     return r;
 }
 /// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，

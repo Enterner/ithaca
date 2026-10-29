@@ -1,5 +1,5 @@
 #pragma once
-// 主流办公文档 → 纯文本抽取（plugin/workspace 的只读面扩展）。
+// 主流办公文档 → 纯文本抽取（plugin/office 的核心源，只读能力域的唯一实现）。
 //
 // 两层：
 //   - OOXML 族（docx/pptx/xlsx）原生解析：ZIP 容器自解（EOCD 尾扫 → central
@@ -34,7 +34,7 @@
 #include <windows.h>
 #include <objbase.h>
 
-namespace vcws::docs {
+namespace vcoffice::docs {
 
 inline constexpr std::size_t kArchiveCap = 64ull * 1024 * 1024;
 inline constexpr std::size_t kTextCap = 512ull * 1024;
@@ -694,4 +694,4 @@ inline DocText extract(const unsigned char* p, size_t n, const std::string& ext,
     return d;
 }
 
-}  // namespace vcws::docs
+}  // namespace vcoffice::docs

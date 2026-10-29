@@ -365,7 +365,7 @@ void SpawnInstance(size_t idx) {
     // 清单唯一出处 scripts/plugins.mjs（本文件无法 import——改清单时同步此处）
     const wchar_t* plugin_names[] = {
         g_mock_mode ? L"llm_mock_plugin.dll" : L"llm_cloud_plugin.dll",
-        L"workspace_plugin.dll",
+        L"workspace_plugin.dll", L"office_plugin.dll",
         L"runner_plugin.dll", L"agent_plugin.dll", L"mcp_plugin.dll", L"webui_plugin.dll" };
     std::wstring cmdline = L"cmd.exe /d /s /c \"\"" + g_bin + L"\\ithaca_host.exe\"";
     for (const wchar_t* pn : plugin_names) {

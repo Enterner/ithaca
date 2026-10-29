@@ -188,7 +188,9 @@ private:
     json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
     http::Response api_fs_list_(const http::Request& req);
     http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
-    json call_tool_json_(const char* tool, const std::string& args_json);   // /api/fs/* 代理共用
+    // /api/fs/* 代理共用：table 由调用方按分流选定（workspace / office）
+    json call_tool_json_(const vc_api::ToolTable* table, const char* tool,
+                         const std::string& args_json);
     json api_mcp_status_();
     json api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
 
@@ -203,6 +205,8 @@ private:
     const vc_api::LlmTable* llm_ = nullptr;     // activate 时解析（模型热切用）
     const vc_api::ToolTable* tools_ = nullptr;  // workspace 工具表：activate 解析、
         // tool_register 兜底重解析；读写全在宿主线程（/api/fs/* 已迁闭包）
+    const vc_api::ToolTable* office_tools_ = nullptr;  // office 工具表（可选项）：
+        // /api/fs/read 的文档分流数据源；解析与重解析同 tools_ 款
 
     // ---- 兄弟实例探测（聚合 alive 真值，见 start_prober_）----------------------
     std::thread prober_;

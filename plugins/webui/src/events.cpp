@@ -7,6 +7,7 @@
 #include "vc_events.hpp"  // 事件结构/事件 id（tool_register/llm_*/tool_*/edit_*/run_*/notice）
 
 #include "../../workspace/iface.hpp"  // vcws::kToolSvcName：workspace 工具表的稳定契约名
+#include "../../office/iface.hpp"  // vcoffice::kToolSvcName：office 工具表（文档分流）
 
 namespace vc_webui {
 
@@ -27,6 +28,18 @@ void WebuiPlugin::subscribe_() {
             host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
             backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
         }
+    }));
+    // office 工具表后到接入的兜底（/api/fs/read 文档分流的数据源）：同 workspace
+    // 款——可选项，缺席静默（分流回退 workspace，由其守卫点名 office.read）
+    subs_.push_back(host_.on(vc_api::tool_register, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::ToolRegister*>(p);
+        if (e->svc_name == nullptr ||
+            std::string_view(e->svc_name) != vcoffice::kToolSvcName ||
+            office_tools_ != nullptr)
+            return;
+        office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
+        if (office_tools_ != nullptr)
+            host_.log(2, "ithaca.webui: office 工具表已接入（后到）");
     }));
     // LLM 事件只订阅广播（slot=0，主会话）：子会话事件按槽单播、本插件不订阅
     // ——不可见性由 slot 路由结构性保证（迁移前靠载荷标志过滤，已随 slot 迁移退役）
