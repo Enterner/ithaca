@@ -5,6 +5,7 @@
 待加载： <ROOT>\build\debug\bin\runner_plugin.dll
 待加载： <ROOT>\build\debug\bin\agent_plugin.dll
 已加载插件 'ithaca.llm.mock' v0.2.0
+  [日志 2] ithaca.llm.mock: 已激活
   [日志 2] ithaca.llm.mock: 就绪（turn 剧本 9 条，间隔 5ms）
 已加载插件 'vc.workspace' v0.1.0
   [日志 2] ithaca.workspace: 就绪，jail 根 = <ROOT>\tests\regress\.ws

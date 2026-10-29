@@ -57,8 +57,9 @@ void WebuiPlugin::start_prober_() {
                 std::lock_guard<std::mutex> lock(probe_mu_);
                 probe_cache_ = std::move(fresh);
             }
-            for (int i = 0; i < 20 && prober_run_.load(); ++i)
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            nostos::kit::win::sleep_interruptible(std::chrono::milliseconds(2000),
+                                                  std::chrono::milliseconds(100),
+                                                  prober_run_);
         }
     });
 }

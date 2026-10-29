@@ -25,6 +25,7 @@
 #include "vc_llm.hpp"
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/active_gate.hpp>
 #include <nostos/kit/poster.hpp>
 
 #include <nostos/nlohmann/json.hpp>
@@ -78,8 +79,6 @@ private:
 
     // ---- 入口与配置面（src/plugin.cpp）------------------------------------------
 
-    // provider 热切（vc.llm.set_active）：匹配 => 发布自己；否则撤发布
-    void on_set_active_(const std::string& provider);
     void load_script_();
     bool delay_env_();
 
@@ -104,7 +103,10 @@ private:
     nostos::abi::Host host_{};
     nostos_poster poster_{};
     vc_api::LlmTable table_{};
-    bool published_ = false;  // 是否已发布 vc.llm.v1（provider 热切）
+    // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=休眠，产品拍板 mock 仅
+    // 测试模式）+ vc.llm.set_active 热切的机制托管（kit 单源）
+    nostos::kit::active_gate gate_{"ithaca.llm.mock", "ITHACA_LLM_ACTIVE", "mock",
+                                   /*publish_when_unset=*/false};
     std::vector<nostos::abi::Host::Subscription> subs_;
 
     std::map<int, MockWorker> requests_;  // request_id -> 在途请求（回放互不归属）

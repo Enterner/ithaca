@@ -23,27 +23,31 @@ nostos_status MockPlugin::activate(const nostos::abi::Host& host) {
     table_.info = &MockPlugin::info_thunk;
     table_.chat_ex = &MockPlugin::chat_ex_thunk;  // M3：agent 经 chat_ex 带 tools 提交
     table_.set_model = &MockPlugin::set_model_thunk;  // 热切（mock 仅记录，回放不变）
-    // 发布门槛（产品拍板：mock 仅测试模式）——只在 ITHACA_LLM_ACTIVE=mock 时
-    // 发布；缺省（cloud）休眠。启动器同时按模式互斥装载两 llm 插件，本判定
-    // 只防旧启动路径的双装载竞争（同名服务热切竞态，踩过）
-    const char* llm_act = std::getenv("ITHACA_LLM_ACTIVE");
-    published_ = (llm_act != nullptr && std::string_view(llm_act) == "mock");
-    if (published_) {
-        if (host.publish(vc_api::llm, &table_) != NOSTOS_OK) {
-            host.log(4, "ithaca.llm.mock: 发布 vc.llm.v1 失败（同名服务已存在？）");
-            return NOSTOS_ERR_FAILED;
-        }
-    } else {
-        host.log(2, "ithaca.llm.mock: 非测试模式，休眠（不发布）");
-    }
+    // 发布门槛（产品拍板：mock 仅测试模式）收编 kit::active_gate：缺省（env 未设）
+    // 休眠，ITHACA_LLM_ACTIVE=mock 才首发。启动器同时按模式互斥装载两 llm 插件，
+    // 本判定只防旧启动路径的双装载竞争（同名服务热切竞态，踩过）
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host.log(4, "ithaca.llm.mock: 领取 poster 失败（宿主 ABI 过旧或未实现）");
         return NOSTOS_ERR_FAILED;
     }
-    subs_.push_back(host_.on(vc_api::llm_set_active, [this](const void* p) {
-        const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
-        on_set_active_(e->provider != nullptr ? std::string(e->provider) : "");
-    }));
+    auto armed = gate_.arm(
+        host, vc_api::llm_set_active,
+        [this](const void* p) {
+            const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
+            return e->provider != nullptr && std::string_view(e->provider) == "mock"
+                       ? nostos::kit::active_gate::prefer::mine
+                       : nostos::kit::active_gate::prefer::other;
+        },
+        [this] {
+            if (host_.publish(vc_api::llm, &table_) != NOSTOS_OK) {
+                host_.log(4, "ithaca.llm.mock: 发布 vc.llm.v1 失败（同名服务已存在？）");
+                return false;
+            }
+            return true;
+        },
+        [this] { host_.unpublish(vc_api::llm); });
+    if (!armed.ok) return NOSTOS_ERR_FAILED;
+    subs_.push_back(std::move(armed.sub));
     host.log(2, "ithaca.llm.mock: 就绪（" +
                     std::string{turns_mode_ ? "turn 剧本 " + std::to_string(turns_.size()) + " 条"
                                             : "内置文本剧本 " + std::to_string(script_.size()) + " 片"} +
@@ -62,21 +66,6 @@ void MockPlugin::deactivate() noexcept {
         requests_.clear();
     }
     host_.log(2, "ithaca.llm.mock: 已停用");
-}
-
-// provider 热切（vc.llm.set_active）：匹配 => 发布自己；否则撤发布
-void MockPlugin::on_set_active_(const std::string& provider) {
-    const bool want = (provider == "mock");
-    if (want && !published_) {
-        if (host_.publish(vc_api::llm, &table_) == NOSTOS_OK) {
-            published_ = true;
-            host_.log(2, "ithaca.llm.mock: 已激活（热切）");
-        }
-    } else if (!want && published_) {
-        host_.unpublish(vc_api::llm);
-        published_ = false;
-        host_.log(2, "ithaca.llm.mock: 已休眠（provider 热切）");
-    }
 }
 
 void MockPlugin::load_script_() {

@@ -297,42 +297,12 @@ void WorkerLoop(HWND hwnd) {
             else
                 it = health_miss.erase(it);
         }
-        for (int i = 0; i < 20 && g_run.load(); ++i)   // 2s 睡眠（可中断）
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        nostos::kit::win::sleep_interruptible(std::chrono::milliseconds(2000),
+                                              std::chrono::milliseconds(100), g_run);
     }
 }
 
 // ---- 实例 spawn（cmd.exe 受信链 + 每实例 env + Job 托管 + 懒迁移）-----------
-std::wstring BuildEnvBlock(const std::vector<std::pair<std::wstring, std::wstring>>& ov) {
-    std::vector<std::pair<std::wstring, std::wstring>> kv;
-    LPWCH es = GetEnvironmentStringsW();
-    if (es != nullptr) {
-        LPWCH p = es;
-        while (*p) {
-            const std::wstring e(p);
-            p += e.size() + 1;
-            const size_t eq = e.find(L'=');
-            if (eq != std::wstring::npos && eq > 0)
-                kv.push_back({e.substr(0, eq), e.substr(eq + 1)});
-        }
-        FreeEnvironmentStringsW(es);
-    }
-    for (const auto& o : ov) {
-        bool hit = false;
-        for (auto& k : kv)
-            if (_wcsicmp(k.first.c_str(), o.first.c_str()) == 0) { k.second = o.second; hit = true; break; }
-        if (!hit) kv.push_back(o);
-    }
-    // Unicode 环境块必须按名排序（GetEnvironmentStringsW 本就有序，覆盖合并会
-    // 打乱 ⇒ CreateProcessW 报 gle=87 参数无效，踩过）
-    std::sort(kv.begin(), kv.end(), [](const auto& a, const auto& b) {
-        return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0;
-    });
-    std::wstring out;
-    for (const auto& k : kv) out += k.first + L"=" + k.second, out.append(1, L'\0');
-    out.append(1, L'\0');
-    return out;
-}
 
 // 旧会话懒迁移：中央库的 transcript 搬进实例 home，实例自己的 index.json 由中央
 // index 的该条目原文本构成（首次拉起该会话时执行一次）
@@ -404,7 +374,7 @@ void SpawnInstance(size_t idx) {
         {L"ITHACA_SHELL_MANIFEST", g_data + L"\\shell-manifest.txt"},
         {L"ITHACA_LLM_ACTIVE", g_mock_mode ? L"mock" : L"cloud"},   // 模式显式化（webui 面板单侧显示的依据）
     };
-    std::wstring env = BuildEnvBlock(host_env);
+    std::wstring env = nostos::kit::win::build_env_block_w(host_env);
 
     const std::wstring log = it.home + L"\\host.log";
     HANDLE host_log = CreateFileW(log.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,

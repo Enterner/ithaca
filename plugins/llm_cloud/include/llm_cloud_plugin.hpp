@@ -29,6 +29,7 @@
 #include "vc_llm.hpp"
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/active_gate.hpp>
 #include <nostos/kit/poster.hpp>
 
 #include <nostos/nlohmann/json.hpp>
@@ -100,13 +101,13 @@ private:
     // ---- 入口与配置面（src/plugin.cpp）------------------------------------------
 
     void load_env_();
-    // provider 热切（vc.llm.set_active）：匹配 ⇒ 发布自己；否则撤发布。
-    // base_url 非空 ⇒ 同步热切请求目标（多供应商下每个供应商各自的端点）。
+    // set_active 载荷落地（热切 classify 的 mine 分支调用；发布/撤发布的机制在
+    // gate_）：base_url 非空 ⇒ 同步热切请求目标（多供应商下每个供应商各自的端点）。
     // 子档案三元组（尾部追加字段）：完整 ⇒ 存为子 agent 请求的凭据；否则清空
     // （子请求回落主档案——"无覆盖"是常态默认，不算异常）。
-    void on_set_active_(const std::string& provider, const std::string& key,
-                        const std::string& base_url, const std::string& sub_model,
-                        const std::string& sub_key, const std::string& sub_base_url);
+    void apply_profile_(const std::string& key, const std::string& base_url,
+                        const std::string& sub_model, const std::string& sub_key,
+                        const std::string& sub_base_url);
     nostos_status set_model_(const char* model);
 
     // ---- 请求登记面（src/request.cpp）-------------------------------------------
@@ -167,7 +168,10 @@ private:
 
     std::vector<nostos::abi::Host::Subscription> subs_;  // provider 热切订阅（vc.llm.set_active）
     std::mutex model_mu_;
-    bool published_ = false;  // 是否已发布 vc.llm.v1（provider 热切）
+    // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=发布，单 provider 启动
+    // 如 vc.ps1 保持原行为）+ vc.llm.set_active 热切的机制托管（kit 单源）
+    nostos::kit::active_gate gate_{"ithaca.llm.cloud", "ITHACA_LLM_ACTIVE", "cloud",
+                                   /*publish_when_unset=*/true};
 };
 
 }  // namespace vc_llm_cloud

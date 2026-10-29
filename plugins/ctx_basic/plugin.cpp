@@ -26,6 +26,7 @@
 #include "../agent/context.hpp"  // vcagent 纯函数层：plan_compress/compact_result/recall_result/…
 
 #include <nostos/abi/plugin.hpp>
+#include <nostos/kit/active_gate.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -59,13 +60,22 @@ public:
 
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
-        // 生效口径：env 缺省/="basic" 活跃；显式选了别的策略 ⇒ 休眠不发布
-        if (const char* v = std::getenv("ITHACA_CTX_ACTIVE");
-            v != nullptr && *v != '\0' && std::string_view(v) != "basic") {
-            host.log(2, "ithaca.ctx.basic: 休眠（ITHACA_CTX_ACTIVE=" + std::string(v) + "）");
-        } else {
-            publish_();
-        }
+        // 选择开关收编 kit::active_gate（竞争样板单源）：生效口径 env 缺省/="basic"
+        // 活跃；显式选了别的策略 ⇒ 休眠不发布
+        auto armed = gate_.arm(
+            host, vc_api::ctx_set_active,
+            [this](const void* p) {
+                const auto* e = static_cast<const vc_api::CtxSetActive*>(p);
+                if (e->active == nullptr)  // "" = 无偏好，保持现状
+                    return nostos::kit::active_gate::prefer::keep;
+                return std::string_view(e->active) == "basic"
+                           ? nostos::kit::active_gate::prefer::mine
+                           : nostos::kit::active_gate::prefer::other;
+            },
+            [this] { return publish_(); },
+            [this] { host_.unpublish(vc_api::ctx); });
+        if (!armed.ok) return NOSTOS_ERR_FAILED;
+        subs_.push_back(std::move(armed.sub));
         // 外置目录：会话文件派生（activate 期 env 与会话切换事件同源）
         if (const char* v = std::getenv("ITHACA_SESSION_FILE"); v != nullptr && *v != '\0')
             rederive_raw_(v);
@@ -77,32 +87,17 @@ public:
             const auto* e = static_cast<const vc_api::SessionLoad*>(p);
             if (e->path != nullptr && *e->path != '\0') rederive_raw_(e->path);
         }));
-        subs_.push_back(host_.on(vc_api::ctx_set_active, [this](const void* p) {
-            const auto* e = static_cast<const vc_api::CtxSetActive*>(p);
-            if (e->active == nullptr) return;   // "" = 无偏好，保持现状
-            const std::string want = e->active;
-            if (want == "basic" && !published_) {
-                publish_();
-            } else if (want != "basic" && published_) {
-                host_.unpublish(vc_api::ctx);
-                published_ = false;
-                host_.log(2, "ithaca.ctx.basic: 已休眠（vc.ctx.set_active → " + want + "）");
-            }
-        }));
         return NOSTOS_OK;
     }
 
     void deactivate() noexcept {
         subs_.clear();
-        if (published_) {
-            host_.unpublish(vc_api::ctx);
-            published_ = false;
-        }
+        if (gate_.published()) host_.unpublish(vc_api::ctx);
         host_.log(2, "ithaca.ctx.basic: 已停用");
     }
 
 private:
-    void publish_() {
+    bool publish_() {
         nostos::abi::init_table(table_);
         table_.self = this;
         table_.info = &BasicCtxPlugin::info_thunk;
@@ -115,10 +110,9 @@ private:
         table_.apply_summary = &BasicCtxPlugin::apply_summary_thunk;
         if (host_.publish(vc_api::ctx, &table_) != NOSTOS_OK) {
             host_.log(4, "ithaca.ctx.basic: 发布 vc.ctx.v1 失败（同名服务已存在？）");
-            return;
+            return false;
         }
-        published_ = true;
-        host_.log(2, "ithaca.ctx.basic: 已激活（vc.ctx.v1 热切）");
+        return true;
     }
 
     // 外置目录派生（与会话装载同源）：agent 的折叠原文归档同落此目录，ref 互认
@@ -479,7 +473,10 @@ private:
     nostos::abi::Host host_{};
     vc_api::CtxTable table_{};
     std::vector<nostos::abi::Host::Subscription> subs_;
-    bool published_ = false;
+    // 竞争发布门：选择开关（env 缺省/="basic" 活跃 + vc.ctx.set_active 热切，
+    // 与 llm 两供应商同构）的机制托管（kit 单源）
+    nostos::kit::active_gate gate_{"ithaca.ctx.basic", "ITHACA_CTX_ACTIVE", "basic",
+                                   /*publish_when_unset=*/true};
 
     long long base_threshold_ = 32000;    // env 兜底基线（W 未知时的判定基线）
     long long session_threshold_ = 32000; // 生效阈值（窗口/输出上限变化时重算）

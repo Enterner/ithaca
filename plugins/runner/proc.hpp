@@ -14,10 +14,10 @@
 #include <aclapi.h>
 #include <userenv.h>
 
-#include <cwctype>
 #include <filesystem>
 #include <string>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #pragma comment(lib, "userenv.lib")
@@ -259,9 +259,10 @@ inline void sandbox_grant_path_dirs(PSID sid) {
 
 // 子进程环境块：继承宿主环境，TEMP/TMP/LOCALAPPDATA 重定向到容器可写目录。
 // PATH 追加 Git for Windows 的 usr\bin（宿主 PATH 常只有 Git\cmd——git.exe 在而
-// ls/grep/wc 不在；模型写 Unix 命令是高频形态，cmd 包装后由子进程 PATH 找它们）
-inline bool sandbox_env_block(const std::wstring& temp_dir, std::wstring& out,
-                              std::string& err) {
+// ls/grep/wc 不在；模型写 Unix 命令是高频形态，cmd 包装后由子进程 PATH 找它们）。
+// 构建机制（读父块 + 覆盖合并 + 排序 + 双 NUL）在 kit::win::build_env_block_w
+// 单一出处——沙箱策略只负责算覆盖项；PATH 拼接要现值，在策略侧读出后整值覆盖。
+inline std::wstring sandbox_env_block(const std::wstring& temp_dir) {
     std::wstring git_bin;
     {
         wchar_t gfull[MAX_PATH * 4];
@@ -276,34 +277,22 @@ inline bool sandbox_env_block(const std::wstring& temp_dir, std::wstring& out,
             }
         }
     }
-    LPWCH envs = ::GetEnvironmentStringsW();
-    if (envs == nullptr) {
-        err = "GetEnvironmentStrings 失败";
-        return false;
-    }
-    for (LPWCH p = envs; *p != L'\0';) {
-        const std::wstring e = p;
-        p += e.size() + 1;
-        if (e.empty()) break;
-        const auto eq = e.find(L'=');
-        if (eq != std::wstring::npos && eq > 0) {
-            std::wstring key = e.substr(0, eq);
-            for (wchar_t& c : key) c = static_cast<wchar_t>(towupper(c));
-            if (key == L"TEMP" || key == L"TMP" || key == L"LOCALAPPDATA") continue;
-            if (key == L"PATH" && !git_bin.empty()) {
-                out += e + L";" + git_bin + L'\0';
-                continue;
+    std::vector<std::pair<std::wstring, std::wstring>> overrides;
+    overrides.emplace_back(L"TEMP", temp_dir);
+    overrides.emplace_back(L"TMP", temp_dir);
+    overrides.emplace_back(L"LOCALAPPDATA", temp_dir);
+    if (!git_bin.empty()) {
+        const DWORD n = ::GetEnvironmentVariableW(L"PATH", nullptr, 0);
+        if (n != 0) {
+            std::wstring path(n, L'\0');
+            const DWORD got = ::GetEnvironmentVariableW(L"PATH", path.data(), n);
+            if (got != 0 && got < n) {
+                path.resize(got);
+                overrides.emplace_back(L"PATH", path + L";" + git_bin);
             }
         }
-        out += e;
-        out += L'\0';
     }
-    out += L"TEMP=" + temp_dir + L'\0';
-    out += L"TMP=" + temp_dir + L'\0';
-    out += L"LOCALAPPDATA=" + temp_dir + L'\0';
-    out += L'\0';
-    ::FreeEnvironmentStringsW(envs);
-    return true;
+    return nostos::kit::win::build_env_block_w(overrides);
 }
 
 // 沙箱 v2：令牌先行——NtCreateLowBoxToken 直造低盒令牌（AppContainer 令牌本体），
@@ -444,10 +433,7 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
         close_pipes();
         return false;
     }
-    if (!sandbox_env_block(prof.temp_dir, env_block, err)) {
-        close_pipes();
-        return false;
-    }
+    env_block = sandbox_env_block(prof.temp_dir);
 
     // ---- v2 令牌先行：绕开 SECURITY_CAPABILITIES 属性路径 ----
     std::string tok_err;
