@@ -161,9 +161,31 @@ void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
     apply_digest_(pending_plan_.digest, false);   // 摘要失败 ⇒ 机械兜底（计划里已备好）
 }
 
-// 折叠应用核心：区间替换 + 旧 digest 并入 + 持久化 + 通告。先插 digest 再跳过
-// 的顺序纪律见阶段一（踩过：跳过分支先 continue 会漏掉插入，digest 整条丢失）。
+// 折叠应用核心：区间替换 + 旧 digest 并入 + 任务卡锚点吸收 + 持久化 + 通告。
+// 先插 digest 再跳过的顺序纪律见阶段一（踩过：跳过分支先 continue 会漏掉插入，
+// digest 整条丢失）。
 void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
+    // 任务卡折叠重建：在切割前的完整历史上合成——被折叠的 user 消息切割后即不在
+    // messages_ 里，锚点全集只在此刻可见。折叠本身已重置缓存前缀，此刻重写卡
+    // 零前缀代价（卡跨轮冻结的吸收点就在这）。表接管时 mission 槽收到同一份
+    // 完整历史；null/失败 = 保留旧卡（锚点不全好过丢卡）。
+    json mission_fresh;
+    bool mission_valid = false;
+    if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {
+        const std::string msgs = messages_.dump();
+        const char* out = nullptr;
+        if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &out) == NOSTOS_OK &&
+            out != nullptr) {
+            json parsed = json::parse(out, nullptr, /*allow_exceptions=*/false);
+            if (parsed.is_object()) {
+                mission_fresh = std::move(parsed);
+                mission_valid = true;
+            }
+        }
+    } else {
+        mission_fresh = vcagent::build_mission(messages_);
+        mission_valid = true;
+    }
     // 折叠前原文归档：cut 区间全文写入 raw/，ref 附进 digest 正文——agent 视图
     // 丢掉的每一行都可 recall 回查
     json cut = json::array();
@@ -199,6 +221,13 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     }
     if (!digest_placed) nm.push_back(digest);
     messages_ = nm;
+    // 卡原位替换（卡不在切割区间：cut 从首个 user 起，卡在其前）——折叠重建点
+    if (mission_valid)
+        for (std::size_t k = 0; k < messages_.size(); ++k)
+            if (vcagent::is_mission(messages_[k])) {
+                messages_[k] = mission_fresh;
+                break;
+            }
     notice(std::string("上下文已压缩（") + via + "折叠：" +
            std::to_string(pending_plan_.segments_folded) + " 段历史，消息 " +
            std::to_string(before) + " → " + std::to_string(messages_.size()) +

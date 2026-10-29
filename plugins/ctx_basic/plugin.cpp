@@ -4,7 +4,7 @@
 // 不复制算法）：plan_compress 折叠计划 / ingest_tool_result 回灌管线 /
 // recall_fetch·recall_entries_summary·recall_paged 回查 / compact_result 最小
 // 充分记录 / effective_threshold·hard_window·backoff_threshold 阈值件 /
-// summary_digest 摘要定稿 / mission_message 任务卡 / is_context_overflow_error
+// summary_digest 摘要定稿 / build_mission 任务卡 / is_context_overflow_error
 // 分类 / kSummarySystem 摘要指令。与 agent 内置回退的口径逐字节一致——本插件
 // 活跃与缺席（内置接管）必须产出相同的上下文形态（A/B golden 逐字验收的根基）。
 //
@@ -280,7 +280,7 @@ private:
         json msgs = json::parse(messages_json != nullptr ? messages_json : "[]", nullptr,
                                 false);
         if (!msgs.is_array()) return NOSTOS_ERR_INVALID_ARG;
-        p.mission_buf_ = vcagent::mission_message(vcagent::collect_tasks(msgs)).dump();
+        p.mission_buf_ = vcagent::build_mission(msgs).dump();
         *out = p.mission_buf_.c_str();
         return NOSTOS_OK;
     }

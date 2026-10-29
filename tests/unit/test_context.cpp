@@ -8,17 +8,17 @@
 #include <fstream>
 
 using nlohmann::json;
+using vcagent::anchor_line;
+using vcagent::build_mission;
 using vcagent::compact_result;
-using vcagent::collect_tasks;
 using vcagent::is_digest;
 using vcagent::is_mission;
 using vcagent::kRecallProvenance;
-using vcagent::mission_message;
 using vcagent::plan_compress;
 using vcagent::recall_result;
 using vcagent::should_compress;
 
-VC_TEST("context: mission 卡——当前任务逐字保留，历史任务截到首行 120 字节") {
+VC_TEST("context: mission 卡——锚点行全集去重保序，合成幂等（跨轮冻结的结构性保证）") {
     json msgs = json::array();
     msgs.push_back(json{{"role", "system"}, {"content", "sys"}});
     msgs.push_back(json{{"role", "user"},
@@ -27,16 +27,20 @@ VC_TEST("context: mission 卡——当前任务逐字保留，历史任务截到
     const std::string cur(200, 'x');
     msgs.push_back(json{{"role", "user"}, {"content", cur}});
 
-    const auto tasks = collect_tasks(msgs);
-    CHECK(tasks.size() == 2);
-    CHECK(tasks[0].find('\n') == std::string::npos);   // 历史任务截到首行
-    CHECK(tasks[0].size() <= 121);
-    CHECK(tasks[1] == cur);                            // 当前任务逐字节保留
-
-    const auto m = mission_message(tasks);
+    const auto m = build_mission(msgs);
     CHECK(is_mission(m));
-    CHECK(m["content"].get<std::string>().find(cur) != std::string::npos);
-    CHECK(m["content"].get<std::string>().find("◀ 逐字") != std::string::npos);
+    const std::string body = m["content"].get<std::string>();
+    CHECK(body.find("旧任务第一行") != std::string::npos);   // 首行锚点保留
+    CHECK(body.find("旧任务第二行") == std::string::npos);   // 非首行截掉
+    CHECK(body.find(cur) == std::string::npos);              // 只留锚点行（120B 截断）
+    CHECK(body.find("· " + anchor_line(cur)) != std::string::npos);
+
+    // 幂等 + 既有卡锚点合并：对含卡的消息再合成，输出逐字节一致——轮边界重写
+    // 因此零前缀代价，卡冻结由构建函数结构性保证
+    json with_card = msgs;
+    with_card.push_back(m);
+    const auto m2 = build_mission(with_card);
+    CHECK(m2["content"].get<std::string>() == body);
 }
 
 VC_TEST("context: compact read——内容丢弃只留锚点与 ref") {

@@ -126,10 +126,11 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
         user_content = std::move(image_parts);
     }
     messages_.push_back(json{{"role", "user"}, {"content", user_content}});
-    // mission 任务目标卡（上下文压缩阶段一）：turn 边界 = 重建点，整卡重写并
-    // 固定在 system 之后——turn 内 append-only（缓存前缀纪律）。子代理是单任务
-    // 短命上下文，任务卡与 user 消息逐字重复，纯耗 token
-    if (!subagent_) rebuild_mission_();
+    // mission 任务目标卡（上下文压缩阶段一）：首轮建档后跨轮冻结——卡坐在
+    // system 之后，逐轮重写会让其后整段历史前缀失效（缓存前缀纪律）；锚点在
+    // 压缩折叠时吸收。子代理是单任务短命上下文，任务卡与 user 消息逐字重复，
+    // 纯耗 token
+    if (!subagent_) ensure_mission_();
     // 开轮即落盘（含本条 user 消息与任务卡）：持久化点若只在 turn 收口/压缩，
     // 进程在 turn 中途死掉时本条请求从历史蒸发，重放与恢复都不留痕（踩过：
     // 子代理在途挂死 → 重启 → 「继续」被接进上一个任务的语境）。恢复后未应答

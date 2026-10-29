@@ -106,11 +106,14 @@ void AgentCtx::persist_session_() {
     }
 }
 
-// mission 任务目标卡重建（turn 边界 = 重建点）：已存在则原位重写内容，否则
-// 插到 system 之后（下标 1）。策略缝：表接管时卡内容由 mission 槽产出
-//（null/失败 = 本轮不动）；原位替换依赖 is_mission 标记识别——产出须沿用内置
-// 标记形态（契约注明）。
-void AgentCtx::rebuild_mission_() {
+// 任务卡建档（仅缺卡时插到 system 之后）：跨轮冻结是缓存前缀纪律——卡坐在
+// system 之后，逐轮重写会让其后整段历史前缀失效（Ark GLM 实测轮边界命中率塌到
+// 个位数）；锚点的吸收点在压缩折叠（replace_with_digest_ 切割前合成）。策略缝：
+// 表接管时卡内容由 mission 槽产出（null/失败 = 本轮不建档）；产出须沿用
+// is_mission 标记形态（契约注明），原位替换靠标记识别。
+void AgentCtx::ensure_mission_() {
+    for (std::size_t k = 0; k < messages_.size(); ++k)
+        if (vcagent::is_mission(messages_[k])) return;
     json mission;
     if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {
         const std::string msgs = messages_.dump();
@@ -121,13 +124,8 @@ void AgentCtx::rebuild_mission_() {
         mission = json::parse(out, nullptr, /*allow_exceptions=*/false);
         if (!mission.is_object()) return;
     } else {
-        mission = vcagent::mission_message(vcagent::collect_tasks(messages_));
+        mission = vcagent::build_mission(messages_);
     }
-    for (std::size_t k = 1; k < messages_.size(); ++k)
-        if (vcagent::is_mission(messages_[k])) {
-            messages_[k] = mission;
-            return;
-        }
     const std::size_t at = (!messages_.empty() && messages_[0].is_object() &&
                             messages_[0].value("role", "") == "system") ? 1 : 0;
     messages_.insert(messages_.begin() + static_cast<long>(at), mission);

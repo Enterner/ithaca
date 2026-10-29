@@ -1,8 +1,8 @@
 #pragma once
 // 上下文压缩阶段一（agent 侧落地，纯逻辑层）：
 //
-//   · mission 任务目标卡——harness 写定、逐字引用用户请求（锚点白名单：请求文本
-//     永不压缩）；重建点 = turn 边界（缓存冷启动的自然边界，一次性 miss 可摊销）
+//   · mission 任务目标卡——harness 写定（锚点白名单：请求文本永不压缩）；卡跨轮
+//     逐字节冻结（缓存前缀纪律），锚点只在压缩折叠时吸收
 //   · 工具结果最小充分记录——确定性模板抽取（不经 LLM 改写）：成功精简为结构化
 //     行、失败保留详细错误；锚点（路径/命令/参数值）逐字节保留
 //   · raw 外置——超内联上限的原始结果写外置文件，上下文只留 ref；recall 回查
@@ -62,23 +62,6 @@ inline constexpr std::size_t kInlineResultCap = 4 * 1024;  // 超过 ⇒ 原始�
 inline constexpr std::size_t kContentInlineCap = 96 * 1024;
 inline constexpr std::size_t kTaskInlineCap = 1024;
 
-// ---- mission 任务目标卡 ------------------------------------------------------
-// 缓存前缀纪律：历史行渲染确定性——逐轮重建逐字节一致，行序冻结只增
-// 不改；当前任务以「◀ 逐字」段挂在末尾，每轮轮转只有该段与其降级行变化，前缀缓存
-// 覆盖整卡历史区。历史行 = 首行 ≤120B（锚点行口径）；当前段 = 逐字全文（锚点白名
-// 单）。压缩折叠后整卡重建——折叠本身已重置前缀，不再追求冻结。
-inline std::string mission_body(const std::vector<std::string>& tasks) {
-    std::string body = kMissionMarker;
-    body += "（历史任务 = 锚点行，行序冻结只增不改；◀ 段 = 当前任务逐字，不得改写）\n";
-    for (std::size_t i = 0; i < tasks.size(); ++i)
-        body += i + 1 == tasks.size() ? "◀ 逐字：" + tasks[i] + "\n" : "· " + tasks[i] + "\n";
-    return body;
-}
-
-inline json mission_message(const std::vector<std::string>& tasks) {
-    return json{{"role", "system"}, {"content", mission_body(tasks)}};
-}
-
 // 消息文本提取：content 兼容两形态——字符串直取；多模态 parts 数组提取 text
 // 部件拼接（图片部件不可文本化，跳过）。压缩折叠/任务卡/摘要只消费文本，
 // content 为数组的 user 消息（多模态）经此容忍，不得 get<string> 直取（踩过：
@@ -107,22 +90,83 @@ inline bool is_digest(const json& m) {
            message_text(m).rfind(kDigestMarker, 0) == 0;
 }
 
-// 从 messages 收集用户任务文本：末位 = 当前任务（逐字全量）；其余 = 历史任务
-//（首行 ≤120B 截断，锚点行口径）。不做条数截顶——截顶会让历史行整体移位、冻结
-// 失效；卡片体积由压缩折叠兜底。
-inline std::vector<std::string> collect_tasks(const json& messages) {
-    std::vector<std::string> tasks;
-    for (const auto& m : messages)
-        if (m.is_object() && m.value("role", "") == "user")
-            tasks.push_back(message_text(m));
-    if (!tasks.empty())
-        for (std::size_t i = 0; i + 1 < tasks.size(); ++i) {
-            std::string& t = tasks[i];
-            const auto nl = t.find('\n');
-            if (nl != std::string::npos) t = t.substr(0, nl);
-            if (t.size() > 120) t = vcws::trim_utf8(t, 120) + "…";
+// ---- mission 任务目标卡 ------------------------------------------------------
+// 缓存前缀纪律：卡是 system 之后的单条消息——严格前缀缓存下，卡内任何字节变化
+//（哪怕追加一行锚点）都会让其后整段历史失效（Ark GLM 实测：轮边界命中率塌到
+// 个位数，命中量恒等于卡前稳定前缀）。因此卡跨轮逐字节冻结：内容 = 任务锚点行
+// 全集（首行 ≤120B，去重保序），锚点只在压缩折叠时吸收——切割前在完整历史上
+// 合成、切割后原位替换，此刻前缀本就重置，重写零缓存代价。当前任务不进卡：它
+// 恒以最新 user 消息的形态挂在尾部（折叠永不切末段），卡只负责折叠后目标不丢。
+inline std::string anchor_line(const std::string& text) {
+    std::string t = text;
+    const auto nl = t.find('\n');
+    if (nl != std::string::npos) t = t.substr(0, nl);
+    if (t.size() > 120) t = vcws::trim_utf8(t, 120) + "…";
+    return t;
+}
+
+// 锚点行前缀（· = U+00B7，UTF-8 两字节 + 空格 = 3 字节）——写卡与回读共用一份
+// 常量：按视觉宽度写 substr(2) 会留下残字节，锚点与 user 侧对不上、去重失效
+//（单测踩过）
+inline constexpr std::string_view kAnchorBullet = "· ";
+
+// 卡内既有锚点行（前缀行；头与口径行不参与）——折叠合并的基准，去重保序
+// 由 build_mission 收口。旧格式卡（◀ 逐字段）解析不出锚点行也不丢失：user 锚点
+// 全集本来就覆盖它，首次折叠即归一为新格式。
+inline std::vector<std::string> card_anchor_lines(const json& messages) {
+    std::vector<std::string> out;
+    for (const auto& m : messages) {
+        if (!is_mission(m)) continue;
+        std::string body = message_text(m);
+        body.erase(0, std::string_view(kMissionMarker).size());
+        const auto head_end = body.find('\n');   // 跳过口径说明行
+        if (head_end != std::string::npos) body = body.substr(head_end + 1);
+        for (std::size_t start = 0; start < body.size();) {
+            const auto end = body.find('\n', start);
+            const std::string line =
+                body.substr(start, end == std::string::npos ? std::string::npos
+                                                            : end - start);
+            if (line.rfind(kAnchorBullet, 0) == 0)
+                out.push_back(line.substr(kAnchorBullet.size()));
+            if (end == std::string::npos) break;
+            start = end + 1;
         }
-    return tasks;
+        break;   // 卡至多一张（原位替换纪律），取首张即止
+    }
+    return out;
+}
+
+// 全部 user 消息的锚点行（含最新一条——折叠时其后的段落可能被切走，锚点全集
+// 只在切割前可见）。纯多模态（无文本部件）的 user 消息不成锚点。
+inline std::vector<std::string> collect_task_anchors(const json& messages) {
+    std::vector<std::string> out;
+    for (const auto& m : messages)
+        if (m.is_object() && m.value("role", "") == "user") {
+            const std::string a = anchor_line(message_text(m));
+            if (!a.empty()) out.push_back(a);
+        }
+    return out;
+}
+
+inline json mission_message(const std::vector<std::string>& anchors) {
+    std::string body = kMissionMarker;
+    body += "（历史任务锚点行，行序冻结；当前任务以最新用户消息为准）\n";
+    for (const auto& a : anchors) {
+        body += kAnchorBullet;
+        body += a;
+        body += '\n';
+    }
+    return json{{"role", "system"}, {"content", body}};
+}
+
+// 任务卡合成：既有卡锚点 ∪ 全部 user 锚点（去重保序）。幂等——输入不变则输出
+// 逐字节一致。调用点 = 首轮建档与压缩折叠切割前；轮边界不调用（跨轮冻结）。
+inline json build_mission(const json& messages) {
+    std::vector<std::string> anchors = card_anchor_lines(messages);
+    for (const auto& a : collect_task_anchors(messages))
+        if (std::find(anchors.begin(), anchors.end(), a) == anchors.end())
+            anchors.push_back(a);
+    return mission_message(anchors);
 }
 
 // ---- 工具结果最小充分记录（确定性模板；锚点逐字节保留）------------------------
@@ -557,7 +601,7 @@ inline std::string render_call(const json& c) {
 }
 
 // 段 → 人话折叠行：请求取首行（当前任务逐字锚点由 mission 卡承担，历史任务
-// 只锚目标行——同 collect_tasks 口径），调用链紧凑串联。
+// 只锚目标行——同 anchor_line 口径），调用链紧凑串联。
 inline std::string render_segment(const std::string& request, const json& calls) {
     std::string first = request;
     const auto nl = first.find('\n');

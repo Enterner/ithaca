@@ -40,10 +40,12 @@ struct CtxTable {
     //（如无 recall 能力则不暴露 context.recall）。
     nostos_status (*info)(void* self, const char** out_json);
 
-    // 轮边界任务卡重建。入：{"messages":[…]}；出：要垫/改写的 mission 消息
-    //（{"role":"system","content":…}），null 出参 = 不动。NOTE: agent 靠内容
-    // 头部标记识别既有 mission 做原位替换——产出应沿用内置标记形态，否则逐轮
-    // 重复插入。
+    // 任务卡建档/折叠重建。调用点 = 首轮建档与压缩折叠切割前（切割后原位替换）；
+    // 轮边界不调用——卡跨轮逐字节冻结是缓存前缀纪律（卡在 system 之后，逐轮
+    // 重写会让其后整段历史前缀失效）。入：{"messages":[…]}；出：要垫/改写的
+    // mission 消息（{"role":"system","content":…}），null 出参 = 不动。NOTE:
+    // agent 靠内容头部标记识别既有 mission 做原位替换——产出应沿用内置标记
+    // 形态，否则重复插入。
     nostos_status (*mission)(void* self, const char* messages_json, const char** out_json);
 
     // 工具结果收编：外置 + 最小充分记录一步完成（落盘策略插件自理）。

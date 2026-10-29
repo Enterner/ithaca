@@ -268,8 +268,9 @@ struct AgentCtx {
     void load_session_state_(const std::string& path);
     // M6 session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
     void persist_session_();
-    // mission 任务目标卡重建（turn 边界 = 重建点，插到 system 之后；turn 内不动）
-    void rebuild_mission_();
+    // mission 任务目标卡建档（仅缺卡时插到 system 之后；跨轮冻结——缓存前缀
+    // 纪律，锚点在压缩折叠时吸收，折叠重建走 replace_with_digest_）
+    void ensure_mission_();
 
     // ---- 工具桥（src/ctx_tools.cpp）-----------------------------------------------
 
