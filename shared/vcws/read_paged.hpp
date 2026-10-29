@@ -1,14 +1,14 @@
 #pragma once
 // read 工具族的共享管线（纯逻辑头）：分页出参 + 文档扩展名清单。
 //
-// 消费方两路：workspace 的文本 read、office 插件的文档抽取 read（跨插件相对
-// include，与 text.hpp 的共享先例同款）——两条路的出参形状必须逐字段一致
+// 消费方两路：workspace 的文本 read、office 插件的文档抽取 read（shared/ 共享
+// 树，与 text.hpp 同层）——两条路的出参形状必须逐字段一致
 //（agent 压缩按工具名末段分派摘要分支、前端徽标读 doc 字段），形状分叉即事故，
 // 所以管线只此一份；文档扩展名清单同理（workspace 守卫 / office 受理 / webui
 // /api/fs/read 分流三处消费，各抄一份必然漂移）。
 #include <nostos/nlohmann/json.hpp>
 
-#include "text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
+#include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <algorithm>
 #include <string>

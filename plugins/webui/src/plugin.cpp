@@ -17,8 +17,8 @@
 
 #include "vc_events.hpp"  // vc_api::LlmSetActive/TurnInput/PermissionMode/SessionLoad/WorkspaceSet + normalize_permission_mode
 
-#include "../../workspace/iface.hpp"  // vcws::kToolSvc：workspace 工具表的稳定契约名
-#include "../../office/iface.hpp"  // vcoffice::kToolSvc：office 工具表（文档分流用）
+#include "vcws/iface.hpp"  // vcws::kToolSvc：workspace 工具表的稳定契约名
+#include "vcoffice/iface.hpp"  // vcoffice::kToolSvc：office 工具表（文档分流用）
 
 #include <cstdlib>  // std::getenv/atoi/atol/exit：环境变量、端口解析与关停
 

@@ -28,12 +28,6 @@ temp+rename 原子落盘样板（agent/webui 共 4 处，应用层文件 IO 不�
 与 agent 的回灌/回查/摘要/阈值镜像——本批次已在产品侧收编为 context.hpp 共享纯
 函数，无内核缺口。
 
-**挂账：跨插件反向 include 残余（2026-10-29，批 2 路径沙箱迁移时实测确认）**：
-jail 一路已随 kit 收编清零；workspace 的 `text.hpp`（6 处消费）、`read_paged.hpp`、
-`iface.hpp` 仍被 office/runner/agent/llm_cloud/webui 反向 include（共 9 文件 12
-条）。三者是产品级共享件而非安全原语，不属内核职责、不收编；如需解绑，方向是
-产品仓内的共享 include 目录，不进内核。
-
 **挂账：runner shell 路线调研与 MXC 观察项（2026-10-27，仍有效）**
 
 agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探针），结论与挂账：
@@ -60,6 +54,7 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-29 | 跨插件反向 include（text.hpp/read_paged.hpp/iface.hpp/context.hpp 四头 14 条边；jail 一路此前已随 kit 收编清零）——产品级共享件不属内核职责，解绑方向 = 产品仓内共享 include 目录 | 已落地（产品仓 shared/ 共享树：namespace 子目录、准入 ≥2 插件消费、include 路径裸名形态；scripts/check_includes.mjs DEPS-lite 机械检查零白名单进 check 链首步；AGENTS.md「目录与 include 纪律」三级可见性成文。对齐 LLVM include/lib 分层与 Chromium DEPS 形态，反向验证探针确认拦截有效） |
 | 2026-10-29 | poster 投递的两个语义缺口：闭包异常块内静默吞（挂起-补响应消费方闭包抛一次 = 连接槽位永久泄漏，只能每个消费方自建中央 catch）；亚生命周期对象投递不安全（agent 子会话 ctx 随 turn 销毁，闭包无法在会话级回收之外失效，推迟一拍只能收窄到主 ctx）。附带：EventHub 嵌套 emit 语义未文档化 | 已落地（内核 8bdae22：nostos_poster 尾部追加 post_owner/invalidate_owner 两槽——owner 令牌作废回收复用 on_drop 通路；kit poster_submit 异常钩子形态 + poster_submit_owner/poster_invalidate_owner；EventHub 头注释补嵌套 emit 实际语义。产品仓：webui defer_ 手写中央 catch 改传钩子；agent 子代理与主会话同规推迟一拍——cleanup_turn_ 销毁子 ctx 前作废 owner，旧宿主 BAD_STATE 回退同步；回归 golden 无基线变化） |
 | 2026-10-29 | PipedProcess::release_handles 五句柄整体移交而消费方容器只收四句柄——stdin_pipe 的「推迟写后即关送 EOF」只能绕开 adopt 手动逐句柄接管；runner cmd 兜底路线中文输出乱码（OEM 码页字节流直按 UTF-8 净化，MXC 批次附带发现） | 已落地（内核 ebd583d：PipedHandles 补 take_stdin_write + 五句柄三面消费纪律；产品仓 ChildPipes 增 stdin 位、adopt 交五收五，bash 路径句柄体操收敛为 adopt + take_stdin——写端写后即关送 EOF 的语义不变；cmd 兜底输出按 CP_OEMCP 逐行解到 UTF-8 再净化，DBCS 尾字节不含 0x0A 故按行解码安全，bash 路线不 decode） |
 | 2026-10-29 | kit 缺「路径沙箱」件：jail 三道闸（词法校验 + GetFullPathNameW 规范化复核 + reparse 逐组件扫描）是「接受模型给定路径」插件的共性安全原语，唯一实现挂在 workspace 插件内部，office/runner 反向 `../workspace/jail.hpp` include（独立构建被绑架） | 已落地（内核 a36a0d8：kit/path_jail.hpp 单源——三道闸原样上收、非 Windows 显式拒绝桩；产品仓 workspace/office/runner + test_jail/test_edit 六处 include 跟迁、workspace/jail.hpp 删除，跨插件反向 include 中 jail 一路清零。text/read_paged/iface 的反向 include 非安全原语，不属内核职责，维持观察） |

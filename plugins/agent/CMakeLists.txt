@@ -28,8 +28,10 @@ nostos_plugin_module(agent_plugin
     src/agent_types.cpp # 子代理类型注册表（.ithaca/agent/*.md + 内置 general）
 )
 # 内部头（include/agent_plugin.hpp：AgentCtx/AgentPlugin 声明 + 职责地图；
-# context/permission/tools_bridge.hpp 留插件根——tests 直接引用，不迁）
+# context.hpp 迁 shared/vcagent（ctx_basic 共享），permission/tools_bridge.hpp
+# 留插件根——单消费者私有头，tests 直接引用）
 target_include_directories(agent_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # kit：nlohmann/json（messages/tools/工具结果的编解码）
 target_link_libraries(agent_plugin PRIVATE nostos::kit)
 target_include_directories(agent_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+target_include_directories(agent_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

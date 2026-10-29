@@ -9,7 +9,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "text.hpp"  // utf8_valid / trim_utf8（收敛点，多插件共用）
+#include "vcws/text.hpp"  // utf8_valid / trim_utf8（收敛点，多插件共用）
 
 namespace vcws {
 

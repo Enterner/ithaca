@@ -31,6 +31,20 @@
 - 统一标记 `NOTE:` / `踩过:` / `TODO:`；公开面（store.js 的 export、plugin.cpp 的
   `api_*`）必须带文档注释；license 头闭源期不写，公开时统一补。
 
+## 目录与 include 纪律（写/改任何 C++ 代码必踩）
+
+三级可见性，路径即答案（对齐 LLVM include/lib 三层与 Chromium DEPS 的机制执行）：
+
+- `contract/` —— 冻结 C ABI，唯一的插件间稳定契约（改动见边界 Ask-first）。
+- `shared/` —— 跨插件共享头（准入：**≥2 个插件消费**；按 namespace 分子目录，
+  include 形态 `"vcws/text.hpp"`）。单消费者头永远留在插件内，消费者消失时迁回。
+- `plugins/<名>/` 全私有 —— `include/` = 内部类头（多 TU 插件的锚点）；根 = 私有
+  纯逻辑头（单测白盒可达）；`src/` = 翻译单元。单 TU 插件平铺不建目录。
+
+跨插件相对 include **禁止**（`scripts/check_includes.mjs` 机械检查，check 链首步）：
+跨插件取头只许 contract/ 或 shared/ 的 include 路径裸名；host/、shell/ 不得相对
+include plugins/**；tests/ 白盒放行（单测可 include 插件私有头，LLVM 同款）。
+
 ## 提交纪律（写 commit message 必踩；全文与裁决：docs/提交规范.md）
 
 - **按种类归组提交**：同类改动合一笔（并发修复、数据完整性、诊断基建、文档……），

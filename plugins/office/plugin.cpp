@@ -15,14 +15,14 @@
 //
 // 线程纪律：无自有线程、无 poster 需求；表调用来自 agent 的宿主线程与 webui
 // 的 /api/fs/read 分流闭包，tool_execute 以全工具串行锁（tool_mu_）串行化。
-#include "iface.hpp"
+#include "vcoffice/iface.hpp"
 
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
 
 #include "docs.hpp"
 #include <nostos/kit/path_jail.hpp>
-#include "../workspace/read_paged.hpp"
+#include "vcws/read_paged.hpp"
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/win.hpp>

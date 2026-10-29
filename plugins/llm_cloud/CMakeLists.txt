@@ -33,4 +33,5 @@ if(WIN32)
 endif()
 target_include_directories(llm_cloud_plugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

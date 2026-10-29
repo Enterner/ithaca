@@ -12,7 +12,7 @@
 // （事件回调链）与 webui 的 HTTP select 线程（文件树 /api/fs/list 直调），
 // tool_execute 以全工具串行锁（tool_mu_）串行化两路调用。
 // 状态边界：快照是纯内存态——插件卸载即弃，撤销能力随激活会话一起撤销（文档明示）。
-#include "iface.hpp"
+#include "vcws/iface.hpp"
 
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
@@ -21,7 +21,7 @@
 #include "edit.hpp"
 #include "fs.hpp"
 #include <nostos/kit/path_jail.hpp>
-#include "read_paged.hpp"
+#include "vcws/read_paged.hpp"
 #include "snapshots.hpp"
 
 #include <nostos/abi/plugin.hpp>

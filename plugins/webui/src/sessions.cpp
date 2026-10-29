@@ -6,7 +6,7 @@
 
 #include "vc_events.hpp"  // vc_api::SessionLoad/WorkspaceSet：会话切换的上下文加载/工作区热切
 
-#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断（收敛点）
+#include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断（收敛点）
 
 #include <cstdlib>  // std::atoi：/api/agent-log 的 turn 查询参数
 

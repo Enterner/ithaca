@@ -2,7 +2,7 @@
 // 沙箱（AppContainer）与 Job Object 是 Windows API 集成，走 e2e/dogfood 验证。
 #include "ithaca_test_framework.hpp"
 
-#include "context.hpp"
+#include "vcagent/context.hpp"
 #include "permission.hpp"
 
 #include <string>

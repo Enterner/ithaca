@@ -4,7 +4,7 @@
 #include "ithaca_test_framework.hpp"
 
 #include "diff.hpp"
-#include "text.hpp"
+#include "vcws/text.hpp"
 
 #include <string>
 

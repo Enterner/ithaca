@@ -13,7 +13,7 @@
     "e2e:ui": "playwright test --project=ui",
     "e2e:all": "playwright test",
     "eval": "node scripts/eval.mjs",
-    "check": "npm run build && npm run regress && npm run e2e:all",
+    "check": "node scripts/check_includes.mjs && npm run build && npm run regress && npm run e2e:all",
     "dev": "node scripts/dev.mjs",
     "pack": "node scripts/pack.mjs",
     "pack:zip": "node scripts/pack.mjs --no-installer",

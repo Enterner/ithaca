@@ -25,7 +25,7 @@
 #include "vc_ctx.hpp"
 #include "vc_events.hpp"
 
-#include "../agent/context.hpp"  // vcagent 纯函数层：plan_compress/compact_result/recall_result/…
+#include "vcagent/context.hpp"  // vcagent 纯函数层：plan_compress/compact_result/recall_result/…
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/active_gate.hpp>

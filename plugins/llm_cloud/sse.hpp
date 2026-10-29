@@ -10,7 +10,7 @@
                                          // 与子进程输出逐行读是同一件事，无第二份实现
 #include <nostos/nlohmann/json.hpp>
 
-#include "../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现（错误体截断用）
+#include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现（错误体截断用）
 
 #include <string>
 

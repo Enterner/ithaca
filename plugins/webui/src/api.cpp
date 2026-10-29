@@ -13,8 +13,8 @@
 
 #include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
 
-#include "../../workspace/text.hpp"  // vcws::trim_utf8：错误体截断走码点边界（全仓纪律）
-#include "../../workspace/read_paged.hpp"  // vcws::is_document_ext：/api/fs/read 分流的扩展名清单（共享件）
+#include "vcws/text.hpp"  // vcws::trim_utf8：错误体截断走码点边界（全仓纪律）
+#include "vcws/read_paged.hpp"  // vcws::is_document_ext：/api/fs/read 分流的扩展名清单（共享件）
 
 #include <cstdlib>  // std::atoi：query depth 解析
 

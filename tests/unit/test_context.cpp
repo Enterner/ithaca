@@ -2,7 +2,7 @@
 // provenance 回查/压缩判定与折叠计划——纯逻辑层直接驱动。
 #include "ithaca_test_framework.hpp"
 
-#include "context.hpp"
+#include "vcagent/context.hpp"
 
 #include <string>
 #include <fstream>

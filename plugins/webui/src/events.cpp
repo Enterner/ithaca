@@ -6,8 +6,8 @@
 
 #include "vc_events.hpp"  // 事件结构/事件 id（tool_register/llm_*/tool_*/edit_*/run_*/notice）
 
-#include "../../workspace/iface.hpp"  // vcws::kToolSvcName：workspace 工具表的稳定契约名
-#include "../../office/iface.hpp"  // vcoffice::kToolSvcName：office 工具表（文档分流）
+#include "vcws/iface.hpp"  // vcws::kToolSvcName：workspace 工具表的稳定契约名
+#include "vcoffice/iface.hpp"  // vcoffice::kToolSvcName：office 工具表（文档分流）
 
 namespace vc_webui {
 

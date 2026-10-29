@@ -22,3 +22,4 @@ nostos_plugin_module(ctx_basic_plugin plugin.cpp)
 # kit：nlohmann/json（plan/ingest/recall 的 JSON 数据面）
 target_link_libraries(ctx_basic_plugin PRIVATE nostos::kit)
 target_include_directories(ctx_basic_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+target_include_directories(ctx_basic_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

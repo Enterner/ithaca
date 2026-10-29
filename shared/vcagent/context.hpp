@@ -17,7 +17,7 @@
 // 后续扩展按测量数据决定，不在本层预建。
 #include <nostos/nlohmann/json.hpp>
 
-#include "../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
+#include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <algorithm>
 #include <filesystem>

@@ -6,7 +6,7 @@
 
 #include "vc_events.hpp"  // vc_api::normalize_permission_mode：权限模式归一（读/写路径）
 
-#include "../../workspace/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
+#include "vcws/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
 
 #include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
 

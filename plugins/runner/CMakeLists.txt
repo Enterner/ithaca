@@ -21,3 +21,4 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 nostos_plugin_module(runner_plugin plugin.cpp)
 target_link_libraries(runner_plugin PRIVATE nostos::kit)  # json
 target_include_directories(runner_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+target_include_directories(runner_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

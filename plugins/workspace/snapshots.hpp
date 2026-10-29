@@ -3,7 +3,7 @@
 // 不一致 ⇒ 整组拒绝——不覆盖用户手改。恢复用两段式（先全组只读裁决，再统一写回），
 // 保证"任一冲突 ⇒ 整组零改动"。
 #include "fs.hpp"
-#include "text.hpp"  // wc_lower：合并键用大小写折叠的 full（路径写法变体同一文件）
+#include "vcws/text.hpp"  // wc_lower：合并键用大小写折叠的 full（路径写法变体同一文件）
 
 #include <cstddef>
 #include <string>

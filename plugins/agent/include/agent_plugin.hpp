@@ -32,7 +32,7 @@
 
 #include "../tools_bridge.hpp"  // vcagent：工具清单 CSV 拆分 / 自述 JSON 构造 / 工具集名映射
 
-#include "../context.hpp"  // 上下文压缩阶段一（mission 卡/最小充分记录/raw 外置/迟滞压缩）
+#include "vcagent/context.hpp"  // 上下文压缩阶段一（mission 卡/最小充分记录/raw 外置/迟滞压缩）
 #include "../permission.hpp"  // 权限模式三档（归一/确认清单映射）
 
 #include "vc_ctx.hpp"
@@ -40,7 +40,7 @@
 #include "vc_llm.hpp"
 #include "vc_tool.hpp"
 
-#include "../../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
+#include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/scratch.hpp>  // Scratch：emit 载荷稳定缓冲（调用期有效）

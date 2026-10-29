@@ -28,4 +28,5 @@ nostos_plugin_module(llm_mock_plugin
 target_link_libraries(llm_mock_plugin PRIVATE nostos::kit)
 target_include_directories(llm_mock_plugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

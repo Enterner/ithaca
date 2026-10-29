@@ -23,7 +23,7 @@
 #include "vc_tool.hpp"
 
 #include <nostos/kit/path_jail.hpp>   // cwd 容纳检查（安全原语在 kit 单源）
-#include "../workspace/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
+#include "vcws/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/piped_process.hpp>
