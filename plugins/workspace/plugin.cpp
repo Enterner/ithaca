@@ -77,10 +77,15 @@ std::string clip_diff(const std::string& d) {
 }
 
 // 目录遍历三模式（平铺/聚合/搜索）共用：重解析点跳过（防环、防出 jail）+ 文件名
-// UTF-8 化 + 相对路径拼接。symlink ⇒ 返回空串作跳过信号。
+// UTF-8 化 + 相对路径拼接。返回空串作跳过信号。
 std::string entry_rel(const fs::directory_entry& it, const std::string& rel_prefix,
                       std::error_code& se) {
-    if (it.is_symlink(se) && !se) return {};
+    // symlink 与 junction 都要拦：MSVC STL 把 IO_REPARSE_TAG_MOUNT_POINT 映射为
+    // file_type::junction，is_symlink() 对它返回 false（踩过：pnpm 的 node_modules
+    // junction 被照常递归，遍历越过 jail 边界）；状态查询出错同样跳过——出错条目
+    // 按"不可知"处理，与重解析点同侧（旧写法 is_symlink(se) && !se 在出错时反而不跳）
+    const fs::file_type ft = it.status(se).type();
+    if (se || ft == fs::file_type::symlink || ft == fs::file_type::junction) return {};
     const std::string name =
         nostos::kit::win::wide_to_utf8(it.path().filename().c_str());
     return rel_prefix.empty() ? name : rel_prefix + "/" + name;
@@ -117,9 +122,14 @@ public:
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
+            const std::wstring next = nostos::kit::win::utf8_to_wide(e->root);
+            if (jail_ != nullptr && jail_->root() == next) return;   // 同值热切幂等（backfill 补发）
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
+            jail_ = std::make_unique<vcws::Jail>(next);
+            // 快照栈随根清空：FileSnap.full 是旧根解析的绝对路径，undo_write 直写
+            // 该路径全程不再过新 jail——不清栈则切根后撤销会对旧工作区做 jail 外写
+            snaps_ = vcws::SnapshotStack{};
             host_.log(2, "ithaca.workspace: 工作区已热切为 " + std::string(e->root));
         }));
         return NOSTOS_OK;
@@ -271,6 +281,19 @@ private:
             return json{{"ok", false},
                         {"error", "文档（docx/pptx/xlsx/pdf/doc/ppt/xls）读取请用 "
                                   "office.read 工具（office 插件未装载时不可用）: " + norm}};
+        // 大小预检先于整读：DiskStore::read 全量 slurp（流缓冲 + str() 拷贝 = 峰值
+        // 2 倍体积），NUL/UTF-8 校验都在读完之后——2GB 数据文件一次 read 即 4GB
+        // 内存峰值。查询失败放行：不存在（撤销后读取是常规路径，错误必须点名
+        // "文件不存在"）与权限失败都由读侧的打开失败如实上报；残余缺口只有
+        // "查询失败但打开成功"的窄竞态
+        std::error_code sz_ec;
+        const auto sz = fs::file_size(full, sz_ec);
+        if (!sz_ec && sz > vcws::kReadSlurpCap)
+            return json{{"ok", false},
+                        {"error", "文件过大（" + std::to_string(sz / (1024 * 1024)) +
+                                      "MB > " + std::to_string(vcws::kReadSlurpCap / (1024 * 1024)) +
+                                      "MB 上限）: " + norm +
+                                      "（数据类大文件用 runner 调脚本按需切片）"}};
         std::string content;
         if (!store_->read(full, content))
             return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
@@ -566,9 +589,12 @@ private:
         const int turn_id = group->turn_id;  // 先拷贝：pop 之后 group 指针失效（ASan 捕获过）
 
         // 两段式：先全组只读裁决——任一冲突（外部改过 / 被删）⇒ 整组零改动并点名。
+        // 已恢复文件（上次写回中途失败）跳过裁决：其 current == before，对 after
+        // 的陈旧检测必然不符，不跳过即整组重试恒拒（永久卡死）
         json conflicts = json::array();
         for (const auto& f : group->files) {
             std::string err;
+            if (snaps_.is_restored(*group, f)) continue;
             if (!vcws::undo_check(*store_, f, err)) conflicts.push_back(err);
         }
         if (!conflicts.empty())
@@ -577,13 +603,29 @@ private:
                                       " 存在外部改动（陈旧检测）"},
                         {"conflicts", conflicts}};
 
+        // 写回：单个失败不再弃恢复——继续恢复其余文件并保留组（重试只处理
+        // 未恢复项）。旧写法一失败即 return：组不弹出且重试裁决恒不符，该 turn
+        // 的撤销能力整组报废
         json restored = json::array();
+        json failures = json::array();
         for (auto it = group->files.rbegin(); it != group->files.rend(); ++it) {
+            if (snaps_.is_restored(*group, *it)) {
+                restored.push_back(it->path);
+                continue;
+            }
             std::string err;
-            if (!vcws::undo_write(*store_, *it, err))
-                return json{{"ok", false}, {"error", err}};  // 裁决通过后失败极罕见；如实上报
+            if (!vcws::undo_write(*store_, *it, err)) {
+                failures.push_back(err);
+                continue;
+            }
+            snaps_.mark_restored(turn_id, it->full);
             restored.push_back(it->path);
         }
+        if (!failures.empty())
+            return json{{"ok", false},
+                        {"error", "撤销部分失败（组已保留，重试只处理未恢复的文件）"},
+                        {"restored", restored},
+                        {"errors", failures}};   // 不弹组不广播：undo 未完成，无终态
         if (has_turn) snaps_.pop_turn(turn_id);
         else snaps_.pop_latest();
         // 撤销结果必须广播——EditUndone 是 tui/webui「已撤销」卡的唯一事件源

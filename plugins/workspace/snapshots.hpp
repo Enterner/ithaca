@@ -21,7 +21,10 @@ struct FileSnap {
 
 struct TurnGroup {
     int turn_id = 0;
-    std::vector<FileSnap> files;  // 按首次触碰顺序
+    std::vector<FileSnap> files;        // 按首次触碰顺序
+    std::vector<std::wstring> restored; // 已恢复文件的 full（写回中途失败的组保留在栈，
+                                        // 重试只处理未恢复项——陈旧检测对已恢复文件
+                                        // 恒不符，不跳过即永久卡死）
 };
 
 class SnapshotStack {
@@ -75,6 +78,20 @@ public:
                 stack_.erase(it);
                 return true;
             }
+        return false;
+    }
+
+    // 写回中途失败的重试支持：登记/查询"该组已恢复的文件"（大小写折叠与 add 同口径）
+    void mark_restored(int turn_id, const std::wstring& full) {
+        for (auto& g : stack_)
+            if (g.turn_id == turn_id) {
+                g.restored.push_back(full);
+                return;
+            }
+    }
+    bool is_restored(const TurnGroup& group, const FileSnap& snap) const {
+        for (const auto& k : group.restored)
+            if (wc_lower(k) == wc_lower(snap.full)) return true;
         return false;
     }
 

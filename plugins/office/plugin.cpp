@@ -173,6 +173,8 @@ private:
                                   "xls），文本文件用 workspace.read: " + norm}};
         std::error_code ec;
         const auto sz = fs::file_size(full, ec);
+        // 查询失败放行：不存在/权限失败由下方 ifstream 打开失败如实上报（错误
+        // 口径单一）；只挡"确实大"的文件——整读 slurp 无分页，护栏必须在读之前
         if (!ec && sz > vcoffice::docs::kArchiveCap)
             return json{{"ok", false},
                         {"error", "文档过大（" + std::to_string(sz / (1024 * 1024)) +

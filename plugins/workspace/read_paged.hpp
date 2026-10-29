@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <string>
+#include <utility>
 
 namespace vcws {
 
@@ -19,7 +20,29 @@ using nlohmann::json;
 
 inline constexpr std::size_t kReadCap = 256 * 1024;   // read 的内容字节上限（切片前的整读护栏）
 inline constexpr int kReadLinesCap = 2000;            // read 单次返回行数上限（默认值 = 参数上限）
-inline constexpr int kReadLineCharCap = 2000;         // read 单行字符上限（超长行截断行尾）
+inline constexpr int kReadLineCharCap = 2000;         // read 单行字符上限（超长行按字符数截断行尾）
+inline constexpr std::size_t kReadSlurpCap = 64ull * 1024 * 1024;  // 整读护栏：超过拒绝
+                                      //（DiskStore 全量 slurp 无分页，护栏必须在读之前）
+
+// 按字符数截断（码点边界）：工具自述的行上限是字符口径——trim_utf8 是字节预算，
+// 中文 3 字节/字会提前 3 倍截断，模型按截断文本做 replace 锚点必失败。粗判先行：
+// 字节数 ≤ cap 时字符数必 ≤ cap，零开销通过。内容已过 UTF-8 校验，多字节序列完整。
+inline std::pair<std::string, bool> trim_utf8_chars(const std::string& s,
+                                                    std::size_t max_chars) {
+    if (s.size() <= max_chars) return {s, false};
+    std::size_t chars = 0, i = 0;
+    while (i < s.size()) {
+        if (chars == max_chars) return {s.substr(0, i), true};
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t len = 1;
+        if (c >= 0xF0) len = 4;
+        else if (c >= 0xE0) len = 3;
+        else if (c >= 0xC0) len = 2;
+        i += len;
+        ++chars;
+    }
+    return {s, false};
+}
 
 // 文档扩展名（含点、小写）是否走文档抽取面（office 插件的域）。
 inline bool is_document_ext(const std::string& ext) {
@@ -55,10 +78,14 @@ inline json read_paged(std::string&& content, const std::string& norm, const jso
             const std::size_t end = content.find('\n', pos);
             const std::size_t stop = end == std::string::npos ? content.size() : end + 1;
             std::string line = content.substr(pos, stop - pos);
-            if (line.size() > static_cast<std::size_t>(kReadLineCharCap) + 1) {
-                // 保留行尾 \n：截断到字符边界再补回（行内容仍以换行收尾）
-                line = vcws::trim_utf8(line, static_cast<std::size_t>(kReadLineCharCap));
-                line += "\n";
+            // 超长行按字符数截断（码点边界）；换行归属保真——原行带 \n 才补回，
+            // 末行无 \n 不凭空造行（旧写法按字节截且无条件补 \n）
+            const bool ends_nl = !line.empty() && line.back() == '\n';
+            const auto [cut, clipped] = trim_utf8_chars(
+                ends_nl ? line.substr(0, line.size() - 1) : line,
+                static_cast<std::size_t>(kReadLineCharCap));
+            if (clipped) {
+                line = cut + (ends_nl ? "\n" : "…（行尾截断）");
                 line_truncated = true;
             }
             picked += std::to_string(offset + ln) + "\t" + line;

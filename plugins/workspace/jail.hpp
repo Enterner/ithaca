@@ -7,8 +7,10 @@
 //      丢弃。绝对路径（盘符 / 根斜杠）不再一刀切拒绝——在根内的转成相对路径
 //      放行（模型常把工具输出里的绝对形态原样送回来，拒掉只会逼它无谓重试），
 //      根外按越界拒绝，边界本身不松。
-//   2) 规范化复核：GetFullPathNameW 之后必须仍落在根内——文本校验管不住
-//      junction / 符号链接这类重解析点。
+//   2) 规范化复核：GetFullPathNameW 之后必须仍落在根内。
+//   3) 物理复核：逐组件查重解析属性——词法规范化管不住 junction / 符号链接
+//      （GetFullPathNameW 不解析重解析点，工作区内 junction 即逃逸），组件带
+//      reparse 标记一律拒绝。
 // 失败一律经 err 出参点名原因，由调用方回灌给模型自我纠正。
 //
 // 与内核 video_stream 插件的 stream.hpp 路径安全同族——第二份独立实现
@@ -105,6 +107,31 @@ public:
 
         const std::wstring canon = canonical(root_ + L"\\" + nostos::kit::win::utf8_to_wide(out_norm));
         if (!under_root(canon)) { err = "规范化后越出工作区根"; return false; }
+        // 第三道闸（重解析点）：GetFullPathNameW 是纯词法操作，不解析 junction /
+        // symlink——工作区内任何 junction 都能把"根内词法路径"映射到根外物理位置
+        //（pnpm 的 node_modules、模型自建的 mklink /J），前两道闸全部放行。
+        // 逐组件查 reparse 属性：任一存在的组件带重解析点 ⇒ 拒绝。等价于真实解析
+        //（GetFinalPathNameByHandle）但无需句柄、对不存在末端（新建文件）同样成立；
+        // 短名（PROGRA~1）、大小写、尾随空白等词法-物理差异不出目录边界，无需另防。
+        // TOCTOU 残窗（校验后组件被换成 junction）依赖调用方单线程串行（校验与
+        // 落盘同帧）收敛——与 apply 的 dirty-check 同级取舍。
+        {
+            std::wstring probe = root_;
+            std::size_t pos = 0;
+            for (;;) {
+                const auto slash = out_norm.find('/', pos);
+                const std::string seg = out_norm.substr(
+                    pos, slash == std::string::npos ? std::string::npos : slash - pos);
+                probe += L"\\" + nostos::kit::win::utf8_to_wide(seg);
+                const DWORD attr = ::GetFileAttributesW(probe.c_str());
+                if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                    err = "路径含符号链接/junction（重解析点拒绝）: " + seg;
+                    return false;
+                }
+                if (slash == std::string::npos) break;
+                pos = slash + 1;
+            }
+        }
         out_full = canon;
         return true;
     }

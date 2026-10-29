@@ -53,7 +53,6 @@ std::wstring g_bin;           // 宿主与插件所在目录
 std::wstring g_webdir;        // 前端 dist 目录（页面由实例服务，此路径只注入 env）
 std::wstring g_data;          // 数据目录（中央：manifest/共享 config/旧会话库/hosts）
 HWND g_hwnd = nullptr;
-HANDLE g_job = nullptr;       // 全部本壳拉起的宿主树（退出 KILL_ON_JOB_CLOSE 收走）
 std::atomic<bool> g_run{true};
 bool g_mock_mode = false;     // --mock 测试模式：实例只装载 llm_mock（默认只装 cloud）
 
@@ -67,6 +66,10 @@ struct Inst {
     DWORD pid = 0;           // 本壳拉起的进程 id（孤儿附着 = 0，退出不动它）
     UINT port = 0;           // home\port 读到的实际端口（0 = 未就绪/未拉起）
     int state = ST_STOPPED;
+    HANDLE job = nullptr;    // 本实例的进程树容器（cmd→host→插件整棵树）：
+                             // 自愈判停/删除只收本实例的树（全局 job 会误杀
+                             // 兄弟实例）；KILL_ON_JOB_CLOSE ⇒ 退出关句柄即终止
+    unsigned long long started = 0;   // 进入 STARTING 的时刻（worker 的启动超时判据）
 };
 std::vector<Inst> g_insts;   // 增删改只在 UI 线程；worker 只读快照（经 g_cs）
 CRITICAL_SECTION g_cs;       // UI 线程增删与 worker 快照读的互斥（递归；worker 的
@@ -197,6 +200,9 @@ void ManifestLoad(std::wstring& last_active) {
 }
 void ManifestSave() {
     std::wstring out;
+    // 首行 ACTIVE = 页面当前实例（ManifestLoad 启动恢复"上次活跃"的数据源）——
+    // 不写则 last_active 恒空，重启恒恢复第一条（功能静默死亡）
+    if (!g_page_key.empty()) out += L"ACTIVE\t" + g_page_key + L"\r\n";
     for (const auto& i : g_insts) out += i.key + L"\t" + i.ws + L"\r\n";
     WriteSmallFile(g_data + L"\\shell-manifest.txt", out);
 }
@@ -246,22 +252,32 @@ constexpr UINT UWM_SELF_STOP  = WM_APP + 2;   // wp=pid
 void WorkerLoop(HWND hwnd) {
     std::map<UINT, int> health_miss;   // port → 连续失败拍数（按端口独立计，成功清零）
     while (g_run.load()) {
-        std::vector<std::pair<DWORD, std::wstring>> starting;   // {pid, home}
+        struct Starting { DWORD pid; std::wstring home; unsigned long long since; };
+        std::vector<Starting> starting;
         std::vector<std::pair<DWORD, UINT>> running;            // {pid, port}
         {
             EnterCriticalSection(&g_cs);
             for (const auto& it : g_insts) {
                 if (it.state == ST_STARTING && it.pid != 0)
-                    starting.emplace_back(it.pid, it.home);
+                    starting.push_back({it.pid, it.home, it.started});
                 else if (it.state == ST_RUNNING && it.port != 0)
                     running.emplace_back(it.pid, it.port);
             }
             LeaveCriticalSection(&g_cs);
         }
         std::vector<UINT> probed;
-        for (const auto& [pid, home] : starting) {
-            const UINT p = ReadPortFile(home);
-            if (p != 0) PostMessageW(hwnd, UWM_PORT_READY, (WPARAM)pid, (LPARAM)p);
+        const unsigned long long now_tick = GetTickCount64();
+        for (const auto& st : starting) {
+            const UINT p = ReadPortFile(st.home);
+            if (p != 0) {
+                PostMessageW(hwnd, UWM_PORT_READY, (WPARAM)st.pid, (LPARAM)p);
+                continue;
+            }
+            // 启动即死的宿主（cmd 秒退/崩溃）永远等不到 port 文件——超时判停，
+            // 否则实例永久卡 STARTING（ActivateKey 只受理 STOPPED/ERROR，点击
+            // 无反应也无提示，唯一出路是重启壳）
+            if (now_tick - st.since > 30000)
+                PostMessageW(hwnd, UWM_SELF_STOP, (WPARAM)st.pid, 0);
         }
         for (const auto& [pid, port] : running) {
             probed.push_back(port);
@@ -417,8 +433,22 @@ void SpawnInstance(size_t idx) {
         return;
     }
     CloseHandle(pi.hThread);
-    if (g_job != nullptr) AssignProcessToJobObject(g_job, pi.hProcess);   // 退出随壳收走
+    // 每实例 Job（进程树容器）：cmd→host→插件的整棵树。KILL_ON_JOB_CLOSE ⇒
+    // 句柄关闭即整树终止（自愈判停/删除实例的树级兜底、退出时逐实例收尾）。
+    // 赋 job 失败收走空 job 落 null——留在成功形态会让树杀静默退化（同 runner 纪律）
+    it.job = CreateJobObjectW(nullptr, nullptr);
+    if (it.job != nullptr) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jli{};
+        jli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(it.job, JobObjectExtendedLimitInformation, &jli,
+                                sizeof jli);
+        if (!AssignProcessToJobObject(it.job, pi.hProcess)) {
+            CloseHandle(it.job);
+            it.job = nullptr;
+        }
+    }
     it.pid = pi.dwProcessId;
+    it.started = GetTickCount64();
     CloseHandle(pi.hProcess);
     LogLine(L"spawned key=" + it.key + L" pid=" + std::to_wstring(it.pid));
     LeaveCriticalSection(&g_cs);
@@ -495,6 +525,7 @@ void OnPortReady(DWORD pid, UINT port) {
         g_pending_key.clear();
         g_page_port = (int)port;
         g_page_key = key;
+        ManifestSave();   // ACTIVE 行随页面实例走（自动恢复上次活跃的数据源）
         NavigatePage(port);
         g_navigated = 1;
     }
@@ -539,6 +570,15 @@ struct PageMessageHandler
     }
 };
 
+// 本服务源判定：仅 127.0.0.1 / localhost 的 http 导航放行（端口不限——多实例
+// 整页切换跨端口）。页面渲染 LLM 生成的 markdown 链接，无白名单 = 点击外链即把
+// 整个应用窗口导航到任意网页
+bool is_local_page_url(const std::wstring& u) {
+    return u.rfind(L"http://127.0.0.1", 0) == 0 ||
+           u.rfind(L"http://localhost", 0) == 0 ||
+           u == L"about:blank";
+}
+
 struct ControllerHandler
     : ComBase<ControllerHandler, ICoreWebView2CreateCoreWebView2ControllerCompletedHandler> {
     HRESULT STDMETHODCALLTYPE Invoke(HRESULT hr, ICoreWebView2Controller* ctrl) override {
@@ -553,6 +593,13 @@ struct ControllerHandler
             // 导航诊断（间歇白屏排查：确认 webview 内部导航是否真正完成）
             EventRegistrationToken t2{};
             g_web->add_NavigationCompleted(new NavLogHandler(), &t2);
+            // 本地导航边界（webview 安全设置的最小集）：外链取消并转系统浏览器，
+            // window.open / target=_blank 一律收编为外部打开——无域白名单的新窗
+            // 与同窗导航是同一个面
+            EventRegistrationToken t3{};
+            g_web->add_NavigationStarting(new NavStartHandler(), &t3);
+            EventRegistrationToken t4{};
+            g_web->add_NewWindowRequested(new NewWindowHandler(), &t4);
         }
         g_ctrl->put_Bounds(ViewRect());
         g_ctrl->put_IsVisible(TRUE);
@@ -564,6 +611,36 @@ struct ControllerHandler
         }
         return S_OK;
     }
+    struct NavStartHandler
+        : ComBase<NavStartHandler, ICoreWebView2NavigationStartingEventHandler> {
+        HRESULT STDMETHODCALLTYPE Invoke(
+            ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) override {
+            PWSTR uri = nullptr;
+            if (FAILED(args->get_Uri(&uri)) || uri == nullptr) return S_OK;
+            const std::wstring u = uri;
+            CoTaskMemFree(uri);
+            if (is_local_page_url(u)) return S_OK;
+            args->put_Cancel(TRUE);
+            LogLine(L"nav blocked -> external: " + u);
+            ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            return S_OK;
+        }
+    };
+    struct NewWindowHandler
+        : ComBase<NewWindowHandler, ICoreWebView2NewWindowRequestedEventHandler> {
+        HRESULT STDMETHODCALLTYPE Invoke(
+            ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) override {
+            PWSTR uri = nullptr;
+            if (SUCCEEDED(args->get_Uri(&uri)) && uri != nullptr) {
+                const std::wstring u = uri;
+                CoTaskMemFree(uri);
+                LogLine(L"new window -> external: " + u);
+                ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+            args->put_Handled(TRUE);
+            return S_OK;
+        }
+    };
     struct NavLogHandler
         : ComBase<NavLogHandler, ICoreWebView2NavigationCompletedEventHandler> {
         HRESULT STDMETHODCALLTYPE Invoke(
@@ -576,8 +653,10 @@ struct ControllerHandler
                 CoTaskMemFree(uri);
             }
             // 导航失败自愈：目标实例死亡（探测窗口内刚死）⇒ 页面停在错误页无法
-            // 操作——自动回退到上一个健康实例的页面，侧栏仍可继续切换
-            if (!ok && g_last_good_port != 0) NavigatePage(g_last_good_port);
+            // 操作——自动回退到上一个健康实例的页面，侧栏仍可继续切换。回退目标
+            // 即当前目标时终止：两个实例都死了，再次导航同一死端口是无穷失败循环
+            if (!ok && g_last_good_port != 0 && (UINT)g_page_port != g_last_good_port)
+                NavigatePage(g_last_good_port);
             else if (ok && g_page_port != 0) g_last_good_port = (UINT)g_page_port;
             return S_OK;
         }
@@ -643,8 +722,12 @@ void ActivateKey(const std::wstring& key) {
             DeleteFileW((home + L"\\port").c_str());
             state = ST_STOPPED;
         } else {
+            // 直航 = 用户明确选择本实例：清掉陈旧挂起（此前点了停止态 A、spawn
+            // 未就绪又改点健康的 B），否则 A 就绪时 OnPortReady 会把页面从 B 抢回 A
+            g_pending_key.clear();
             g_page_port = (int)port;
             g_page_key = key;
+            ManifestSave();   // ACTIVE 行随页面实例走（自动恢复上次活跃的数据源）
             NavigatePage(port);
             return;
         }
@@ -686,6 +769,7 @@ void NewSessionFlow(const std::wstring& ws) {
 void DeleteFlow(const std::wstring& key) {
     std::wstring home;
     UINT port = 0;
+    HANDLE job = nullptr;
     const bool was_page = g_page_key == key;
     {
         EnterCriticalSection(&g_cs);
@@ -696,11 +780,19 @@ void DeleteFlow(const std::wstring& key) {
         }
         port = it->port;
         home = it->home;
+        job = it->job;          // 树容器随删除收走（实例表即将erase，句柄必须带出）
+        it->job = nullptr;
         g_insts.erase(g_insts.begin() + (it - &g_insts[0]));
         ManifestSave();
         LeaveCriticalSection(&g_cs);
     }
     if (port != 0) ShutdownPort(port);   // 优雅停（HTTP）在锁外——秒级超时不能捂住 UI
+    if (job != nullptr) {
+        // 优雅停收不掉的挂死树：Job 整树终止后再删目录才不残留（Terminate 对
+        // 已死树无害）
+        TerminateJobObject(job, 1);
+        CloseHandle(job);
+    }
     RemoveDirRec(home);
     LogLine(L"deleted session key=" + key);
     if (was_page) {   // 删的是页面自源实例：切到任一存活实例，没有则现拉一个
@@ -762,6 +854,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             EnterCriticalSection(&g_cs);
             Inst* it = FindByPid((DWORD)wp);
             if (it != nullptr) {
+                // 自愈判停必须收进程：只置 STOPPED 删 port 文件，"暂时无响应"的
+                // 宿主可能复活 ⇒ 用户再点即同 home 拉第二个实例，双进程共写
+                // index/transcript（Job 树杀覆盖 cmd→host 整棵树）
+                if (it->job != nullptr) {
+                    TerminateJobObject(it->job, 1);
+                    CloseHandle(it->job);
+                    it->job = nullptr;
+                }
+                it->pid = 0;
                 it->state = ST_STOPPED;
                 it->port = 0;
                 DeleteFileW((it->home + L"\\port").c_str());   // 聚合端点随即显示"已停止"
@@ -869,10 +970,11 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int nCmdShow
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
-    // 退出收走本壳拉起的实例：先逐个优雅停（数据已落盘），Job Kill 兜底；
-    // 孤儿附着（pid=0）的不动它
-    for (auto& it : g_insts)
+    // 退出收走本壳拉起的实例：先逐个优雅停（数据已落盘），每实例 Job 句柄关闭
+    // 即整树终止（优雅停失败的挂死宿主的兜底）；孤儿附着（pid=0、无 job）的不动它
+    for (auto& it : g_insts) {
         if (it.pid != 0 && it.port != 0) ShutdownPort(it.port);
-    if (g_job != nullptr) CloseHandle(g_job);   // KILL_ON_JOB_CLOSE：残余树全部终止
+        if (it.job != nullptr) CloseHandle(it.job);   // KILL_ON_JOB_CLOSE：残余树终止
+    }
     return 0;
 }

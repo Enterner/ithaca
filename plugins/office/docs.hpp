@@ -33,8 +33,21 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
+// IFilter 接口与 STAT_CHUNK 取官方头——手抄 ABI 镜像必然漂移（踩过：STAT_CHUNK
+// 的 attribute 是 FULLPROPSPEC，x64 真实 64 字节，按 GUID 的 16 字节镜像只有 40
+// ⇒ 第三方过滤器按真实布局写满 64、缓冲 40，每次 GetChunk 栈越界写 24 字节；
+// 文本仍能抽出来是因为 flags 偏移 8 碰巧对齐，栈帧损坏被产物正确性掩盖）。
+// 旧镜像的 HRESULT 语义值同样是错的（0x8004177B 系；真值 0x80041700/0x00041709，
+// 见 filterr.h）——此前靠 hr<0 兜底碰巧跑通。
+#include <propidl.h>
+#include <filterr.h>
+#include <filter.h>
 
 namespace vcoffice::docs {
+
+// FILTER_S_LAST_CHUNK 在现行 SDK 头里更名 FILTER_S_LAST_VALUES（同值 0x0004170A）
+// ——语义仍按 IFilter 文档的 LAST_CHUNK 消费
+constexpr long kFilterSLastChunk = static_cast<long>(FILTER_S_LAST_VALUES);
 
 inline constexpr std::size_t kArchiveCap = 64ull * 1024 * 1024;
 inline constexpr std::size_t kTextCap = 512ull * 1024;
@@ -588,32 +601,8 @@ inline bool extract_ooxml(const unsigned char* p, size_t n, const std::string& k
 }
 
 // ---- IFilter（pdf/doc/ppt/xls 等注册格式）------------------------------------
-// filterr.h 的 HRESULT 语义值（新版 SDK 已裁掉 query 头，就地声明）：
-constexpr long kFilterEEndOfChunks = static_cast<long>(0x8004177B);
-constexpr long kFilterSLastChunk = static_cast<long>(0x0004177B);
-constexpr long kFilterSLastText = static_cast<long>(0x0004177C);
-
-// 最小 COM 面：只声明用到的 IFilter 方法与镜像 STAT_CHUNK（40 字节，字段偏移
-// 与 filterr.h 一致）。GetChunk 的 chunkType 判定只用 flags 字段。
-struct StatChunk {
-    unsigned long id_chunk;
-    unsigned long break_type;
-    unsigned long flags;      // 1 = CHUNK_TEXT
-    unsigned long locale;
-    unsigned char attribute[16];
-    unsigned long cwc_start_source;
-    unsigned long cwc_len_source;
-};
-
-struct Ifilter : IUnknown {
-    virtual long __stdcall Init(unsigned long flags, unsigned long mode,
-                                unsigned long* elt_type, unsigned long* out_flags) = 0;
-    virtual long __stdcall GetChunk(StatChunk* chunk) = 0;
-    virtual long __stdcall GetText(unsigned long* count, wchar_t* buf) = 0;
-    virtual long __stdcall GetValue(void** prop) = 0;
-    virtual long __stdcall BindRegion(void*) = 0;
-};
-
+// 接口与 STAT_CHUNK 均来自官方 <filter.h>（SDK um/ 下仍在）。语义值同头内
+// FILTER_E_END_OF_CHUNKS / FILTER_S_LAST_CHUNK / FILTER_S_LAST_TEXT，不再就地声明。
 inline bool extract_ifilter(const std::wstring& path, const std::string& ext, DocText& d) {
     // COM 现场初始化（宿主线程默认无 COM）；线程已在别的模式时沿用（RPC_E_CHANGED_MODE）
     const long hr_init = CoInitializeEx(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/);
@@ -642,18 +631,18 @@ inline bool extract_ifilter(const std::wstring& path, const std::string& ext, Do
                   " 的文本过滤器（需 Office / Adobe 等提供）——可转存为 docx 再读";
         return false;
     }
-    Ifilter* f = static_cast<Ifilter*>(raw);
-    unsigned long etype = 0, oflags = 0;
-    if (f->Init(0, 0 /*STGM_READ*/, &etype, &oflags) < 0) {
+    IFilter* f = static_cast<IFilter*>(raw);
+    unsigned long oflags = 0;
+    if (f->Init(0, 0, nullptr, &oflags) < 0) {
         d.error = ext.substr(1) + " 的文本过滤器初始化失败";
         f->Release();
         return false;
     }
     bool last_text = false, last_chunk = false;
     while (!last_chunk && !last_text) {
-        StatChunk ch{};
+        STAT_CHUNK ch{};
         const long hr = f->GetChunk(&ch);
-        if (hr < 0 || hr == kFilterEEndOfChunks) break;
+        if (hr < 0 || hr == FILTER_E_END_OF_CHUNKS) break;
         last_chunk = hr == kFilterSLastChunk;   // LAST_CHUNK 仍携带有效 chunk
         if (ch.flags & 1) {
             for (;;) {
@@ -663,7 +652,7 @@ inline bool extract_ifilter(const std::wstring& path, const std::string& ext, Do
                 if (tr >= 0 && got > 0 && d.text.size() <= kTextCap)
                     append_utf16(d.text, buf, got);
                 if (tr != 0) {   // 非 S_OK：LAST_TEXT（终块）或错误（本 chunk 无更多文本）
-                    last_text = tr == kFilterSLastText;
+                    last_text = tr == FILTER_S_LAST_TEXT;
                     break;
                 }
             }
