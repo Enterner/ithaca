@@ -58,6 +58,8 @@ struct ChildPipes {
     HANDLE stdout_read = nullptr;
     HANDLE stderr_read = nullptr;
     HANDLE job = nullptr;  // 进程树容器（KILL_ON_JOB_CLOSE）：句柄关闭即整树终止
+    HANDLE stdin_write = nullptr;  // stdin 管道写端（仅 stdin_pipe spawn 非空；与
+                                   // kit PipedHandles 五句柄对齐，交五收五）
 
     ChildPipes() = default;
     ChildPipes(const ChildPipes&) = delete;
@@ -67,6 +69,15 @@ struct ChildPipes {
         if (stdout_read != nullptr) CloseHandle(stdout_read);
         if (stderr_read != nullptr) CloseHandle(stderr_read);
         if (job != nullptr) CloseHandle(job);
+        if (stdin_write != nullptr) CloseHandle(stdin_write);
+    }
+    // 写端生命周期转移：bash -s 形态要「写完即关送 EOF」（bash 读到 EOF 才执行
+    // 脚本）——写端留在本类型要等 run 收口才析构，bash 永等输入；推迟写者先取走
+    // 自管，写后即关。
+    HANDLE take_stdin() {
+        HANDLE h = stdin_write;
+        stdin_write = nullptr;
+        return h;
     }
     // 及时整树终止：cmd /c 链的真命令是孙进程，只杀直接子会留孤儿持管道写端
     // ⇒ 输出永不 EOF、Job 句柄随条目滞留 ⇒ 孤儿长存 + 条目泄漏（与 mcp 同款
@@ -78,7 +89,7 @@ struct ChildPipes {
         }
         if (process != nullptr) TerminateProcess(process, 0xFFFFFFFFu);
     }
-    // 从 kit::PipedProcess 接管四句柄（bash 与 cmd 非沙箱两条 spawn 路的公共
+    // 从 kit::PipedProcess 接管全部句柄（bash 与 cmd 非沙箱两条 spawn 路的公共
     // 尾段）；本类型不可拷贝/移动，按引用落位
     static void adopt(nostos::kit::PipedProcess& p, ChildPipes& out) {
         const nostos::kit::PipedHandles h = p.release_handles();
@@ -86,6 +97,7 @@ struct ChildPipes {
         out.stdout_read = static_cast<HANDLE>(h.stdout_read);
         out.stderr_read = static_cast<HANDLE>(h.stderr_read);
         out.job = static_cast<HANDLE>(h.job);
+        out.stdin_write = static_cast<HANDLE>(h.stdin_write);
     }
 };
 

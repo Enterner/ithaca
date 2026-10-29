@@ -54,6 +54,21 @@ constexpr std::size_t kLineCap = 4 * 1024;       // 单行截断
 constexpr int kDefaultTimeoutMs = 600000;
 constexpr int kMaxTimeoutMs = 3600000;
 
+// cmd 兜底路线的子进程输出是 OEM 码页（控制台代码页，中文系统 936）——字节流直接
+// 按 UTF-8 净化会把中文劈成乱码；先按 OEM 解到 UTF-16 再转 UTF-8。按行调用安全：
+// OEM 双字节的尾字节不含 0x0A，换行不会劈开双字节字符（与 UTF-8 按字节切分行同一
+// 论证）。解不动（转换失败）退回原字节流——交给 utf8_sanitize 清洗，乱码好过丢行。
+inline std::string oem_to_utf8_(const std::string& raw) {
+    if (raw.empty()) return raw;
+    const int need = ::MultiByteToWideChar(CP_OEMCP, 0, raw.c_str(),
+                                           static_cast<int>(raw.size()), nullptr, 0);
+    if (need <= 0) return raw;
+    std::wstring wide(static_cast<std::size_t>(need), L'\0');
+    ::MultiByteToWideChar(CP_OEMCP, 0, raw.c_str(), static_cast<int>(raw.size()),
+                          wide.data(), need);
+    return nostos::kit::win::wide_to_utf8(wide.c_str());
+}
+
 // Git Bash 定位（非沙箱 shell 优先级最高）：env 显式指定 → PATH git 推导
 // （git.exe 在 cmd/ 子目录，bash 在 ../bin/）→ 常见安装路径。SearchPathW 直接找
 // bash.exe 会误中 System32 的 WSL 启动器——经 git 推导绕开。进程内检测一次缓存。
@@ -169,6 +184,7 @@ private:
     struct RunEntry {
         std::unique_ptr<vcrun::ChildPipes> child;
         int turn_id = 0;       // 发起会话槽（execute 传入）：run 事件的 slot 路由键
+        bool oem_output = false;  // cmd 包装路线输出为 OEM 码页（bash 路线 UTF-8 原生）
         std::thread rd_out;    // stdout 读取线程：只读 + 缓冲（不碰 poster）
         std::thread rd_err;    // stderr 读取线程：只读 + 缓冲（不碰 poster）
         std::thread poster;    // 唯一的投递线程：轮询缓冲 → poster 事件 + exit
@@ -293,7 +309,8 @@ private:
         // bash 路径的 stdin 写入推迟到读取线程就绪之后（见下方 WriteFile）：
         // 匿名管道缓冲有限，大脚本 + 早输出时 bash 忙于执行不读 stdin、本线程阻塞
         // 在写 stdin、子命令阻塞在写 stdout（读取线程未启动无人排水）⇒ 三方互等
-        // 600s 超时。写端句柄自行持有——ChildPipes 无 stdin 位，adopt 形态不含它
+        // 600s 超时。写端先从 ChildPipes 取走自管——bash -s 读到 EOF 才执行脚本，
+        // 写完必须即关送 EOF，不能等 run 收口的析构
         HANDLE bash_stdin = nullptr;
         nostos::kit::PipedProcess p;
         if (!bash.empty()) {
@@ -305,12 +322,8 @@ private:
                          o, err)) {
                 return json{{"ok", false}, {"error", err}};
             }
-            const nostos::kit::PipedHandles h = p.release_handles();
-            child->process = static_cast<HANDLE>(h.process);
-            child->stdout_read = static_cast<HANDLE>(h.stdout_read);
-            child->stderr_read = static_cast<HANDLE>(h.stderr_read);
-            child->job = static_cast<HANDLE>(h.job);
-            bash_stdin = static_cast<HANDLE>(h.stdin_write);
+            vcrun::ChildPipes::adopt(p, *child);
+            bash_stdin = child->take_stdin();
         } else {
             // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
             // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"
@@ -347,6 +360,7 @@ private:
             entry = &runs_[run_id];
             entry->child = std::move(child);
             entry->turn_id = turn_id;  // 事件路由键：run 事件按发起会话槽单播（slot 路由约定）
+            entry->oem_output = bash.empty();  // cmd 包装路线 = OEM 码页输出
         }
 
         const auto reader = [this, entry](HANDLE h, int stream) {
@@ -398,7 +412,7 @@ private:
             std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
         // 单行投递（主循环与收口终冲刷共用同一份净化/截断/超限纪律）
         const auto emit_line = [this, run_id, slot, entry](int stream, const std::string& raw) {
-            std::string line = vcws::utf8_sanitize(raw);
+            std::string line = vcws::utf8_sanitize(entry->oem_output ? oem_to_utf8_(raw) : raw);
             // 截断必须走码点边界——按字节切会劈开多字节字符，下游 json dump 抛
             // type_error.316（全仓纪律：截断一律 trim_utf8，勿再按字节切）
             if (line.size() > kLineCap) line = vcws::trim_utf8(line, kLineCap) + "…";

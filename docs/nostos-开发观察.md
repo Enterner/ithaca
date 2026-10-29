@@ -6,20 +6,6 @@
 
 ## 当前发现（批次：整体代码审核修复 · 2026-10-29）
 
-**kit::http 挂起连接的异常语义缺口（触发场景：给 webui defer_ 写中央 catch 时）**：
-`poster_submit` 吞掉闭包异常 + 挂起连接豁免 stall_timeout 的组合，让「defer 闭包
-抛一次异常 = 连接槽位永久泄漏」（max_clients 占满 = 整个服务停摆）成为结构性
-陷阱——本次在消费方 defer_ 模板里包了中央 catch 补 500 兜底，但这属于每个
-挂起-补响应消费方都必须自建的防御。kit 若在挂起-补响应原语上提供「闭包异常 ⇒
-自动补 500」的默认形态（或 poster_submit 支持 catch 钩子），该陷阱可结构性消除。
-
-**PipedProcess::release_handles 连 stdin_write 一起移交、ChildPipes 消费形态只收
-4 句柄（触发场景：修 runner 的 stdin 三方死锁——把 stdin 写入推迟到读取线程
-就绪之后——时）**：推迟写必须先 adopt 再写，但 release_handles 把 stdin_write
-一并交出而 adopt 不收它 ⇒ 写端要么泄漏要么丢失，只能绕开 adopt 手动逐句柄接管。
-方向：PipedHandles 的句柄分组消费（读面/树杀面/写面）或 ChildPipes 式消费方自带
-stdin 位，让「推迟写 stdin」成为 kit 支持的正常形态而非插件侧的句柄体操。
-
 **挂账（上批总线/投递语义方向，未落地维持观察；触发场景：修「工具调用记录恒
 落在思考块上方」撞上）**：
 
@@ -68,6 +54,7 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-29 | PipedProcess::release_handles 五句柄整体移交而消费方容器只收四句柄——stdin_pipe 的「推迟写后即关送 EOF」只能绕开 adopt 手动逐句柄接管；runner cmd 兜底路线中文输出乱码（OEM 码页字节流直按 UTF-8 净化，MXC 批次附带发现） | 已落地（内核 ebd583d：PipedHandles 补 take_stdin_write + 五句柄三面消费纪律；产品仓 ChildPipes 增 stdin 位、adopt 交五收五，bash 路径句柄体操收敛为 adopt + take_stdin——写端写后即关送 EOF 的语义不变；cmd 兜底输出按 CP_OEMCP 逐行解到 UTF-8 再净化，DBCS 尾字节不含 0x0A 故按行解码安全，bash 路线不 decode） |
 | 2026-10-29 | kit 缺「路径沙箱」件：jail 三道闸（词法校验 + GetFullPathNameW 规范化复核 + reparse 逐组件扫描）是「接受模型给定路径」插件的共性安全原语，唯一实现挂在 workspace 插件内部，office/runner 反向 `../workspace/jail.hpp` include（独立构建被绑架） | 已落地（内核 a36a0d8：kit/path_jail.hpp 单源——三道闸原样上收、非 Windows 显式拒绝桩；产品仓 workspace/office/runner + test_jail/test_edit 六处 include 跟迁、workspace/jail.hpp 删除，跨插件反向 include 中 jail 一路清零。text/read_paged/iface 的反向 include 非安全原语，不属内核职责，维持观察） |
 | 2026-10-29 | 「同服务多实现竞争 + 择一发布」样板第三份手写（llm_cloud/llm_mock/ctx_basic 逐字同构，热切语义与激活日志靠约定）；kit::win 缺可中断睡眠与环境块构建小件（prober/shell 分片睡眠两份手写；shell/runner 两份 env 块构建且策略已漂移——一份排序一份不排） | 已落地（内核 287c2cb：kit/active_gate.hpp 竞争发布门——env 门三态首发 + mine/other/keep 三值热切 + 幂等 + 激活/休眠日志统一落门内，插件只留表组装与载荷解读；kit::win 增 sleep_interruptible 与 build_env_block_w 单源，piped_process 内联实现退役。产品仓三 provider + prober/shell/runner 收编，约 90 行机械重复退役；mock 首发新增一行「已激活」、休眠文案统一（golden 按此重录）；ctx 首发发布失败从带病继续改为激活失败回滚） |
 | 2026-10-27 | workspace search 的 regex 走 std::regex（回溯实现无步数钩子），灾难性回溯构造模式会在 agent 线程长阻塞 | 已落地（内核 kit/regex.hpp 有界正则——Thompson NFA 线性模拟，ECMAScript 子集，无回溯 ⇒ 灾难性模式构造上不可能挂死，步数预算另封顶；反向引用/环视解析期点名拒绝。抛弃式探针对拍 std::regex 25 例全过 + 灾难性模式 0ms + 420KB 文件 105ms；产品 workspace search 切换，std::regex 退役） |
