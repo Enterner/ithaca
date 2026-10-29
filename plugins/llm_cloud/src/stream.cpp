@@ -186,10 +186,16 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
     active.store(req.h);
     struct RequestCloser {  // cancel 与线程收尾谁先到都只关一次
         std::atomic<HINTERNET>& slot;
+        HINTERNET& live;    // req.h 的别名：关闭后必须置空，否则 HandleRAII 析构对
+                            // 已关句柄二次 WinHttpCloseHandle（踩过：成功/失败/取消
+                            // 三条路径全中——句柄值被并发请求复用时误关兄弟请求）
         ~RequestCloser() {
-            if (HINTERNET h = slot.exchange(nullptr)) WinHttpCloseHandle(h);
+            if (HINTERNET h = slot.exchange(nullptr)) {
+                live = nullptr;
+                WinHttpCloseHandle(h);
+            }
         }
-    } closer{active};
+    } closer{active, req.h};
 
     if (!WinHttpSendRequest(req.h, headers.c_str(),
                             static_cast<DWORD>(headers.size()),
@@ -294,7 +300,7 @@ std::string CloudPlugin::read_all_(HINTERNET req, std::size_t cap) {
         if (!WinHttpReadData(req, chunk.data(), available, &got)) break;
         chunk.resize(got);
         out += chunk;
-        if (out.size() >= cap) return out.substr(0, cap);
+        if (out.size() >= cap) return vcws::trim_utf8(out, cap);   // 码点边界截断（防非法 UTF-8 下游 dump 抛）
     }
     return out;
 }

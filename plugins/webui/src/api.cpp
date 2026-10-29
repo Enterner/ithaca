@@ -553,8 +553,11 @@ http::Response WebuiPlugin::api_pick_folder_(const http::Request& req) {
         });
         return json_resp({{"ok", true}, {"path", std::string(v)}});
     }
-    return defer_(req, [this, initial = config_.value("workspace", "")](
-                           std::uint64_t conn) mutable {
+    return defer_(req, [this](std::uint64_t conn) mutable {
+        // workspace 初值在闭包内（宿主线程）读——defer_ 的 init-capture 在 select
+        // 线程求值，而 config_ 写侧在宿主线程，提前到捕获点即数据竞争（唯一违例，
+        // 其余端点数据面触碰全在闭包内）
+        std::string initial = config_.value("workspace", "");
         // 停机纪律同 api_provider_models_：快照 server_ 值捕获，零触碰插件状态
         std::shared_ptr<http::Server> srv = server_;
         std::thread([srv, initial = std::move(initial)] {

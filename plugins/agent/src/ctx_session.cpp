@@ -35,7 +35,14 @@ void AgentCtx::load_session_state_(const std::string& path) {
     std::ifstream in(session_path_, std::ios::binary);
     json doc = json::parse(in, nullptr, /*allow_exceptions=*/false);
     if (!doc.is_discarded() && doc.is_object()) {
-        turn_no_ = adopt_turn_floor(doc.value("turns", 0));
+        // turns/last_prompt_tokens 与 usage 同款类型守卫：磁盘文件类型漂移
+        //（手编/外部改写）时 value() 抛 302 ⇒ activate 期线程 terminate
+        if (const auto it = doc.find("turns");
+            it != doc.end() && it->is_number_integer()) {
+            const long long turns = it->get<long long>();
+            turn_no_ = adopt_turn_floor(turns > INT32_MAX ? INT32_MAX
+                                                          : static_cast<int>(turns));
+        }
         const json usage = doc.value("usage", json::object());
         // value() 对非对象（磁盘文件被外部改坏 usage: null 等）抛 302 ⇒ activate 期
         // 线程直接 terminate——类型守卫先于取值（与 stream.cpp 的 st.usage 同源纪律）
@@ -46,7 +53,9 @@ void AgentCtx::load_session_state_(const std::string& path) {
         usage_cache_ = usage.value("cache_tokens", 0LL);   // 缓存命中计量随会话恢复
         }
         // 判定信号随会话恢复：恢复后首轮压缩判定不再失明
-        last_prompt_tokens_ = doc.value("last_prompt_tokens", 0LL);
+        if (const auto it = doc.find("last_prompt_tokens");
+            it != doc.end() && it->is_number_integer())
+            last_prompt_tokens_ = it->get<long long>();
         if (doc.contains("messages") && doc["messages"].is_array())
             messages_ = doc["messages"];
         host_.log(2, "ithaca.agent: 会话已加载（turns=" + std::to_string(turn_no_) +
@@ -76,19 +85,34 @@ void AgentCtx::persist_session_() {
                     {"messages", messages_}};
         std::error_code ec;
         fs::create_directories(fs::path(session_path_).parent_path(), ec);
-        std::ofstream out(session_path_, std::ios::binary | std::ios::trunc);
+        // temp + rename 原子替换：trunc 直写中途崩溃 ⇒ state.json 截断，下次
+        // load 解析失败即整个会话历史静默归零（load 的"全新会话"兜底分不清
+        // 「没有历史」与「历史损坏」）
+        const fs::path sp(session_path_);
+        const fs::path tmp = sp.string() + ".tmp";
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {
             // 杀软/索引器/残留宿主造成的瞬时锁：等 300ms 重试一次
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            out.open(session_path_, std::ios::binary | std::ios::trunc);
+            out.open(tmp, std::ios::binary | std::ios::trunc);
         }
         if (!out) {
-            host_.log(3, "ithaca.agent: 会话落盘失败（无法打开 " + session_path_ + "；目录创建: " +
+            host_.log(3, "ithaca.agent: 会话落盘失败（无法打开 " + tmp.string() +
+                             "；目录创建: " +
                              (ec ? ec.message() : "ok") + "；系统: " +
                              std::generic_category().message(errno) + "）");
             return;
         }
         out << doc.dump();
+        out.flush();
+        out.close();
+        std::error_code rec;
+        fs::rename(tmp, sp, rec);
+        if (rec) {
+            host_.log(3, "ithaca.agent: 会话落盘替换失败（" + sp.string() +
+                             "）: " + rec.message());
+            fs::remove(tmp, rec);
+        }
     } catch (const std::exception& e) {
         host_.log(3, "ithaca.agent: 会话落盘异常: " + std::string(e.what()));
     }

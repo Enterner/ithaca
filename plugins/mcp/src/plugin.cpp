@@ -38,18 +38,29 @@ nostos_status McpPlugin::activate(const nostos::abi::Host& host) {
 
 void McpPlugin::reload_async_() {
     emit_status_();
+    // 串行化：在途 reload 存在时只记排队，由在途线程收尾补跑一轮——并发 detach
+    // 线程会把同名 server 拉起双份（A 握手期间 B clear + 重拉，A 的 push_back
+    // 落在 B 的 clear 之后 ⇒ sessions_ 两份同名会话，工具列表重复、白占一个进程）
+    if (reload_busy_.exchange(true)) {
+        reload_queued_.store(true);
+        return;
+    }
     std::thread([this] {
-        {
-            std::lock_guard lk(mu_);
-            for (auto& s : sessions_) s->shutdown();
-            sessions_.clear();
-        }   // 锁只包清理；拉起（含 ≤30s 握手）绝不持锁——否则 discover/list
-            // 与 execute 全部被堵死（踩过：自死锁，turn 卡在 user 记录）
-        // NOTE: detach 线程唯一的生命周期闸门——deactivate 后必须就此打住，
-        // 否则已清场的插件继续拉起 server 并回发状态（DLL 卸载即悬空执行）
-        if (stopping_.load()) return;
-        load_config_and_start_();
-        emit_status_();
+        do {
+            reload_queued_.store(false);
+            {
+                std::lock_guard lk(mu_);
+                for (auto& s : sessions_) s->shutdown();
+                sessions_.clear();
+            }   // 锁只包清理；拉起（含 ≤30s 握手）绝不持锁——否则 discover/list
+                // 与 execute 全部被堵死（踩过：自死锁，turn 卡在 user 记录）
+            // NOTE: detach 线程唯一的生命周期闸门——deactivate 后必须就此打住，
+            // 否则已清场的插件继续拉起 server 并回发状态（DLL 卸载即悬空执行）
+            if (stopping_.load()) break;
+            load_config_and_start_();
+            emit_status_();
+        } while (reload_queued_.exchange(false) && !stopping_.load());
+        reload_busy_.store(false);
     }).detach();
 }
 

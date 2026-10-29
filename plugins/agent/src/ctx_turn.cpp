@@ -510,6 +510,14 @@ void AgentCtx::append_results_and_continue_impl() {
     for (std::size_t ci = 0; ci < calls_.size(); ++ci) {
         const ToolCallCtx& ctx = calls_[ci];
         std::string content = ctx.result;
+        // 提案试算失败的提前回灌（dispatch_one_ 的 dry-fail 分支）发生在分发中途
+        // ——本循环遍历全部 calls_，未分发项的 result 为空串。OpenAI 协议要求
+        // assistant.tool_calls 的每个 id 都有配对 tool 消息，不能只回灌已分发项：
+        // 补点名"未执行"的错误结果，让模型知道后续调用没有发生（空串会被当成
+        // "执行了但无输出"误判）
+        if (!ctx.done && content.empty())
+            content = json{{"ok", false},
+                           {"error", "同批前序调用试算失败收口，本调用未执行"}}.dump();
         // 策略缝：表接管时收编（外置+最小记录一步）整个在策略内；无表走内置
         // 分档内联上限 + spool_raw + compact_result
         if (ctx_tbl_ != nullptr && ctx_tbl_->ingest_tool_result != nullptr) {

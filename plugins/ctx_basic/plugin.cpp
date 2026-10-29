@@ -184,7 +184,15 @@ private:
         const std::string reason = state.value("reason", "");
         const long long last = signals.value("last_prompt_tokens", 0LL);
         const long long window = signals.value("window", 0LL);
-        recompute_threshold_(window, signals.value("max_output", 0LL));
+        // 只在窗口/输出上限变化时重算（首次调用 last_* = -1 必算）——无条件重算
+        // 会把退避抬升的阈值立即压回 f(window)，"压缩后仍紧张 ⇒ 阈值上调"整条
+        // 机制失效且每 turn 重复失实通告（对齐 agent 内置的调用时机）
+        const long long max_output = signals.value("max_output", 0LL);
+        if (window != last_window_ || max_output != last_max_output_) {
+            last_window_ = window;
+            last_max_output_ = max_output;
+            recompute_threshold_(window, max_output);
+        }
         if (reason == "precheck") {
             const long long est = signals.contains("estimate_prompt_tokens") &&
                                           signals["estimate_prompt_tokens"].is_number_integer()
@@ -474,7 +482,12 @@ private:
     bool published_ = false;
 
     long long base_threshold_ = 32000;    // env 兜底基线（W 未知时的判定基线）
-    long long session_threshold_ = 32000; // 生效阈值（每次 plan 按信号重算）
+    long long session_threshold_ = 32000; // 生效阈值（窗口/输出上限变化时重算）
+    long long last_window_ = -1;          // 上次重算所用的窗口（变化检测——每次 plan
+                                          // 无条件重算会把 verify_backoff_ 的 ×1.25
+                                          // 抬升立即抹平，退避机制整条失效；对齐
+                                          // agent 内置只在元数据到位/切窗时重算）
+    long long last_max_output_ = -1;
     bool verify_pending_ = false;         // turn_end 折叠已应用 ⇒ 下 turn 退避校验
     std::string raw_dir_;                 // 外置归档目录（随会话文件走）
     std::string raw_prefix_;              // 归档名前缀 = 会话 stem（跨会话防撞）

@@ -290,8 +290,13 @@ private:
         // full-auto：AppContainer 沙箱（读宽写窄 + 断网）；其余模式由
         // agent 确认清单把关（建议/自动编辑模式逐条批准）
         bool degraded = false;
+        // bash 路径的 stdin 写入推迟到读取线程就绪之后（见下方 WriteFile）：
+        // 匿名管道缓冲有限，大脚本 + 早输出时 bash 忙于执行不读 stdin、本线程阻塞
+        // 在写 stdin、子命令阻塞在写 stdout（读取线程未启动无人排水）⇒ 三方互等
+        // 600s 超时。写端句柄自行持有——ChildPipes 无 stdin 位，adopt 形态不含它
+        HANDLE bash_stdin = nullptr;
+        nostos::kit::PipedProcess p;
         if (!bash.empty()) {
-            nostos::kit::PipedProcess p;
             nostos::kit::PipedSpawnOptions o;
             o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd_wide.c_str());
             o.stdin_pipe = true;
@@ -300,9 +305,12 @@ private:
                          o, err)) {
                 return json{{"ok", false}, {"error", err}};
             }
-            p.write_stdin(cmd.data(), cmd.size());
-            p.close_stdin();
-            vcrun::ChildPipes::adopt(p, *child);
+            const nostos::kit::PipedHandles h = p.release_handles();
+            child->process = static_cast<HANDLE>(h.process);
+            child->stdout_read = static_cast<HANDLE>(h.stdout_read);
+            child->stderr_read = static_cast<HANDLE>(h.stderr_read);
+            child->job = static_cast<HANDLE>(h.job);
+            bash_stdin = static_cast<HANDLE>(h.stdin_write);
         } else {
             // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
             // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"
@@ -365,6 +373,14 @@ private:
         if (!std::getenv("ITHACA_M5_NORD")) {  // 二分实验开关（保留诊断）
             entry->rd_out = std::thread(reader, entry->child->stdout_read, 0);
             entry->rd_err = std::thread(reader, entry->child->stderr_read, 1);
+        }
+        // stdin 写入在读取线程就绪之后（死锁推导见 spawn 处注释）：输出有人排水，
+        // bash 才能推进到读 stdin，同步写不构成三方互等
+        if (bash_stdin != nullptr) {
+            DWORD written = 0;
+            ::WriteFile(bash_stdin, cmd.data(), static_cast<DWORD>(cmd.size()),
+                        &written, nullptr);
+            ::CloseHandle(bash_stdin);
         }
         entry->poster =
             std::thread([this, run_id, entry, timeout_ms] { pump_and_finish_(run_id, entry, timeout_ms); });

@@ -60,8 +60,17 @@ std::string McpPlugin::execute(const std::string& name, const std::string& args_
                     call_timeout_ms_, resp)) {
         return json{{"ok", false}, {"error", "MCP 调用失败: " + s->diag}}.dump();
     }
-    if (!resp.contains("result") || !resp["result"].is_object())
+    if (!resp.contains("result") || !resp["result"].is_object()) {
+        // JSON-RPC error 对象透传（方法不存在/参数非法/权限拒绝…）：整体丢弃成
+        // 「缺少 result」模型无法自纠——错误消息点名给模型才走结构化回灌通路
+        if (resp.contains("error") && resp["error"].is_object()) {
+            const std::string em = resp["error"].value("message", "");
+            return json{{"ok", false},
+                        {"error", "MCP server 错误: " +
+                                      (em.empty() ? resp["error"].dump() : em)}}.dump();
+        }
         return json{{"ok", false}, {"error", "MCP 响应缺少 result"}}.dump();
+    }
     const json& r = resp["result"];
     std::string text;
     if (r.contains("content") && r["content"].is_array())

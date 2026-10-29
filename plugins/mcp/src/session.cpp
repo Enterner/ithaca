@@ -109,6 +109,20 @@ void McpSession::start_reader() {
         });
 #endif
         alive.store(false);
+        // 退出清算：在途请求的 promise 若无人完成，request() 会干等满超时且误诊
+        // 为「超时」（实际进程已死，agent turn 白卡两分钟）——reader 退出（EOF =
+        // 进程死亡/被 terminate_tree）统一 fail 全部 pending，错误经 JSON-RPC
+        // error 形态回灌，execute 侧透传给模型
+        std::map<long long, std::promise<json>> orphans;
+        {
+            std::lock_guard lk(mu);
+            orphans = std::move(pending);
+            pending.clear();
+        }
+        json died = {{"jsonrpc", "2.0"},
+                     {"error", {{"code", -32000},
+                                {"message", "MCP server 进程已退出（连接中断）"}}}};
+        for (auto& [id, pr] : orphans) pr.set_value(died);
     });
 }
 

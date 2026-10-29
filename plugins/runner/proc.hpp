@@ -152,10 +152,13 @@ inline bool sandbox_grant_dir(const std::wstring& dir, PSID sid, std::string& er
                               bool write = true) {
     PSECURITY_DESCRIPTOR sd = nullptr;
     PACL dacl = nullptr;
-    if (::GetNamedSecurityInfoW(dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                                nullptr, nullptr, &dacl, nullptr, &sd) != ERROR_SUCCESS ||
-        dacl == nullptr) {
-        err = "读取目录 DACL 失败: " + std::to_string(GetLastError());
+    // 返回值即错误码（这条 API 的失败原因不保证落在 GetLastError——成功路径可能
+    // 留下陈旧值，报错码失真）
+    const DWORD dacl_gle = ::GetNamedSecurityInfoW(
+        dir.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &dacl, nullptr, &sd);
+    if (dacl_gle != ERROR_SUCCESS || dacl == nullptr) {
+        err = "读取目录 DACL 失败: " + std::to_string(dacl_gle);
         if (sd != nullptr) ::LocalFree(sd);
         return false;
     }
@@ -548,7 +551,13 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
         jli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         ::SetInformationJobObject(out.job, JobObjectExtendedLimitInformation, &jli,
                                   sizeof jli);
-        ::AssignProcessToJobObject(out.job, pi.hProcess);
+        // 赋 job 失败必须收走空 job 并落 null：kill_tree 按 job != nullptr 走树杀
+        // ——留在成功形态会让超时终止静默退化为只杀直接子进程（孙进程孤儿）。
+        // 空 job 无进程可杀，KILL_ON_JOB_CLOSE 下关闭是安全的
+        if (!::AssignProcessToJobObject(out.job, pi.hProcess)) {
+            ::CloseHandle(out.job);
+            out.job = nullptr;
+        }
     }
     return true;
 }

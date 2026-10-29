@@ -170,10 +170,22 @@ void WebuiPlugin::load_index_() {
                  : json{{"active", session_}, {"sessions", json::array()}};
 }
 
-// 落盘注册表（宿主线程单线程，调用点自序）
+// 落盘注册表（宿主线程单线程，调用点自序）。temp + rename 原子替换：trunc 直写
+// 中途崩溃 ⇒ index.json 截断，load_index_ 解析失败即静默重置为空注册表（全部
+// 会话标题/工作区关联丢失、transcript 变孤儿）——MSVC 的 fs::rename 即
+// MoveFileEx(REPLACE_EXISTING)，同卷原子覆盖。
 void WebuiPlugin::save_index_() {
-    std::ofstream out(home_ / "index.json", std::ios::binary | std::ios::trunc);
-    if (out) out << index_.dump();
+    const fs::path f = home_ / "index.json";
+    const fs::path tmp = home_ / "index.json.tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return;   // 打不开多半是目录不可写：与旧直写同口径静默（读侧容错）
+        out << index_.dump();
+        out.flush();
+    }
+    std::error_code ec;
+    fs::rename(tmp, f, ec);
+    if (ec) fs::remove(tmp, ec);   // 换名失败（目标被占等）：清残件，保底旧文件完好
 }
 
 // 返回的指针指向 index_ 内部，调用方当轮使用即弃（单线程下无失效风险）
@@ -347,6 +359,13 @@ http::Response WebuiPlugin::api_session_delete_(const http::Request& req) {
         if (session_entry_(id) == nullptr)
             return server_->respond(conn, json_resp(
                 {{"ok", false}, {"error", "会话不存在"}}));
+        // 生成中禁删活跃会话：删后 records_ 清零、transcript 句柄换向，而 agent
+        // 的 turn 仍在跑——后续 llm_done/tool_result 经 record_ 落进切换后的
+        // 新会话（记录串会话 + id 从 0 重排撞前端去重）。非活跃会话不受限：
+        // agent 事件只落活跃会话
+        if (in_flight_ && id == session_)
+            return server_->respond(conn, json_resp(
+                {{"ok", false}, {"error", "当前会话生成中，请先停止再删除"}}));
         // 活跃会话也可删（用户定义）：删后自动切到最近更新的会话；全空则新建无工作区会话
         json arr = json::array();
         for (auto& s : index_["sessions"])

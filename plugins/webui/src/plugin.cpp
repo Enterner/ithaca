@@ -250,7 +250,42 @@ void WebuiPlugin::deactivate() noexcept {
 
 // ---- HTTP 路由（select 线程：必须快）----------------------------------------
 
+// ---- 本地请求边界（select 线程：只读请求字段，无共享态）----------------------
+// 服务绑 127.0.0.1 不防浏览器侧攻击面：任意网页都能发跨站简单 POST——改 config
+// 的 base_url 即可把 API Key 与代码上下文引向攻击者服务器、改 workspace 可把
+// jail 根指向任意目录，DNS rebinding 下连 GET 读 transcript 都成立。两道校验：
+//   Host：存在时主机段必须是回环名——rebinding 的 Host 头仍带攻击者域名 ⇒ 403；
+//   Origin：存在时必须是本服务源——跨站 POST 必带；缺省放行（curl / 壳内 GET /
+//           健康探测等非浏览器客户端不带 Origin，是合法形态）。
+static bool loopback_host(std::string_view hostport) {
+    std::string_view h = hostport;
+    if (!h.empty() && h.front() == '[') {   // IPv6 字面量 [::1]:port
+        const auto close = h.find(']');
+        if (close != std::string_view::npos) h = h.substr(0, close + 1);
+    } else {
+        const auto colon = h.rfind(':');
+        if (colon != std::string_view::npos) h = h.substr(0, colon);
+    }
+    return h == "127.0.0.1" || h == "localhost" || h == "[::1]" || h == "::1";
+}
+
 http::Response WebuiPlugin::handle(const http::Request& req) {
+    const std::string* host = nullptr;
+    const std::string* origin = nullptr;
+    for (const auto& h : req.headers) {
+        if (h.name == "host") host = &h.value;
+        else if (h.name == "origin") origin = &h.value;
+    }
+    if (host != nullptr && !loopback_host(*host))
+        return json_resp({{"ok", false}, {"error", "非回环 Host 拒绝"}}, 403);
+    if (origin != nullptr) {
+        const std::string port = std::to_string(server_ ? server_->port() : 0);
+        const bool same = *origin == "http://127.0.0.1:" + port ||
+                          *origin == "http://localhost:" + port ||
+                          *origin == "http://[::1]:" + port;
+        if (!same)
+            return json_resp({{"ok", false}, {"error", "跨站 Origin 拒绝"}}, 403);
+    }
     const std::string& m = req.method;
     // 剥掉 query（"?v=..." 形态的缓存穿透参数）——否则带参请求全部 404
     const std::string t = req.target.substr(0, req.target.find('?'));

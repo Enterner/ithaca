@@ -10,6 +10,8 @@
                                          // 与子进程输出逐行读是同一件事，无第二份实现
 #include <nostos/nlohmann/json.hpp>
 
+#include "../workspace/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现（错误体截断用）
+
 #include <string>
 
 namespace vcllm {
@@ -80,7 +82,9 @@ inline json usage_obj_of(const json& chunk) {
 }
 
 // 云端错误体 → 人类可读 message。{"error":{"message":...}} 优先（OpenAI/DeepSeek 形态）；
-// 解析不出 JSON ⇒ 原文前 300 字节（非 UTF-8 时由调用方兜底）。
+// 解析不出 JSON ⇒ 原文前 300 字节。截断必须走码点边界：非 200 错误体（网关 502 页等）
+// 常含中文，按字节切劈开多字节序列 ⇒ 非法 UTF-8 下游 json dump 抛 type_error.316
+//（全仓纪律：截断一律 trim_utf8）。
 inline std::string error_message_of(const std::string& body) {
     const json doc = json::parse(body, nullptr, /*allow_exceptions=*/false);
     if (!doc.is_discarded() && doc.is_object()) {
@@ -91,7 +95,7 @@ inline std::string error_message_of(const std::string& body) {
         }
         if (err != doc.end() && err->is_string()) return err->get<std::string>();
     }
-    return body.substr(0, body.size() < 300 ? body.size() : 300);
+    return vcws::trim_utf8(body, 300);
 }
 
 }  // namespace vcllm

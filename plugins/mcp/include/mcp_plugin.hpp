@@ -129,6 +129,10 @@ private:
     nostos::abi::Host host_{};
     nostos_poster poster_{};
     std::atomic<bool> stopping_{false};   // deactivate 置位：在飞的 reload 拉起/回发到此为止
+    std::atomic<bool> reload_busy_{false};   // reload 串行化：连续保存面板各自触发一次
+        // reload，并发 detach 线程会把同名 server 拉起双份（B 的 clear 落在 A 的
+        // push_back 之前 ⇒ sessions_ 两份同名会话）
+    std::atomic<bool> reload_queued_{false};  // 在途期间又触发的 reload：线程收尾补跑一轮
     vc_api::ToolTable table_{};
     std::string list_buf_, exec_buf_;   // 调用期有效（消费方同步拷贝）
     std::mutex mu_;                     // 保护 sessions_（activate/deactivate/reload 与 agent 线程交叠）

@@ -61,25 +61,50 @@ bool WebuiPlugin::persist_config_() {
     // 共享文件**（实例对差异项只读）——否则 A 实例切模型会把 B
     // 实例的重启默认值污染掉；差异项只落本实例覆盖层
     const fs::path f = config_path_();
-    std::ofstream out(f, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        // 写失败绝不能静默：否则 key 每次重启都丢，用户只看到"key=未设置"
-        host_.log(4, "ithaca.webui: 配置写入失败（" + f.string() +
-                         "）——数据目录不可写，用启动器 -DataHome 换位置");
+    // temp + rename 原子替换：trunc 直写中途崩溃 ⇒ 配置截断，load 失败静默丢
+    // providers/key（load_config_ 解析失败即 return）
+    const fs::path tmp = f.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            // 写失败绝不能静默：否则 key 每次重启都丢，用户只看到"key=未设置"
+            host_.log(4, "ithaca.webui: 配置写入失败（" + f.string() +
+                             "）——数据目录不可写，用启动器 -DataHome 换位置");
+            return false;
+        }
+        if (config_shared()) {
+            json shared = config_;
+            for (const char* k : kOverlayKeys)
+                shared.erase(k);
+            out << shared.dump();
+        } else {
+            out << config_.dump();
+        }
+        out.flush();
+    }
+    std::error_code ec;
+    fs::rename(tmp, f, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        host_.log(4, "ithaca.webui: 配置替换失败（" + f.string() + "）: " + ec.message());
         return false;
     }
     if (config_shared()) {
-        json shared = config_;
-        for (const char* k : kOverlayKeys)
-            shared.erase(k);
-        out << shared.dump();
         json local = json::object();
         for (const char* k : kOverlayKeys)
             if (config_.contains(k)) local[k] = config_[k];
-        std::ofstream lo(home_ / "config-local.json", std::ios::binary | std::ios::trunc);
-        if (lo) lo << local.dump();
-    } else {
-        out << config_.dump();
+        const fs::path lf = home_ / "config-local.json";
+        const fs::path ltmp = lf.string() + ".tmp";
+        {
+            std::ofstream lo(ltmp, std::ios::binary | std::ios::trunc);
+            if (lo) {
+                lo << local.dump();
+                lo.flush();
+            }
+        }
+        std::error_code lec;
+        fs::rename(ltmp, lf, lec);
+        if (lec) fs::remove(ltmp, lec);
     }
     return true;
 }
