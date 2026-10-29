@@ -129,7 +129,12 @@ export async function delSession(id) {
     return
   }
   await api('/api/session/delete', { id })
-  loadSessions()
+  await loadSessions()
+  // 删的是当前会话且后端进入无会话态：后端全空分支不广播 session 记录，
+  // 视图与游标必须本地重置——残留旧记录 + 旧 lastId 会把后续新会话从 0 发号
+  // 的记录全部挡掉（后端 records_ 已清零重排）。非空切换由 SSE 的 session
+  // 记录走标准重放路径，无需本地干预
+  if (!S.curSession) resetView()
 }
 
 /** 重命名会话（注册表 title 字段）。 */

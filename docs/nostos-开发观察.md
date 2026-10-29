@@ -4,7 +4,7 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：可替换架构（profile/office/vc.ctx）· 2026-10-29）
+## 当前发现（批次：整体代码审核修复 · 2026-10-29）
 
 **「同服务多实现竞争 + 择一发布」样板第三份手写（触发场景：写 ctx_basic 插件的
 选择开关时）**：env 门（`ITHACA_<域>_ACTIVE` 匹配 → publish / 不匹配 → 休眠）+
@@ -14,6 +14,30 @@
 "SDK 便利性"职责内的候选：一个「命名实现竞争发布」小件（声明服务 id 与实现名，
 内核托管 env 门语义与 set_active 订阅，插件只剩 publish 的表组装），可消掉每个
 provider 约 30 行机械重复并让热切语义单源。是否做由内核节奏定。
+
+**kit 缺「路径沙箱」件（触发场景：修 jail 的 junction 穿透时）**：jail 的三道闸
+（词法校验 + GetFullPathNameW 规范化 + reparse 逐组件扫描）是所有"接受模型给定
+路径"插件的共性安全原语，但当前唯一实现挂在 workspace 插件内部，office/webui
+反向 `../workspace/*.hpp` include（六个消费方绑死一个插件，独立构建被绑架）。
+本次修复把第三道闸补齐后才看清完整形态：逐组件 `GetFileAttributesW` 查
+`FILE_ATTRIBUTE_REPARSE_POINT`——词法规范化管不住 junction/symlink，真实解析
+（GetFinalPathNameByHandle）对不存在的末端（新建文件）又不成立，逐组件属性扫描
+是唯一两全且无需句柄的形态。收编 kit 的价值：安全边界单源（第二份实现必漂移，
+office 的 STAT_CHUNK 镜像事故是前车之鉴）+ 消掉跨插件反向 include。
+
+**kit::http 挂起连接的异常语义缺口（触发场景：给 webui defer_ 写中央 catch 时）**：
+`poster_submit` 吞掉闭包异常 + 挂起连接豁免 stall_timeout 的组合，让「defer 闭包
+抛一次异常 = 连接槽位永久泄漏」（max_clients 占满 = 整个服务停摆）成为结构性
+陷阱——本次在消费方 defer_ 模板里包了中央 catch 补 500 兜底，但这属于每个
+挂起-补响应消费方都必须自建的防御。kit 若在挂起-补响应原语上提供「闭包异常 ⇒
+自动补 500」的默认形态（或 poster_submit 支持 catch 钩子），该陷阱可结构性消除。
+
+**PipedProcess::release_handles 连 stdin_write 一起移交、ChildPipes 消费形态只收
+4 句柄（触发场景：修 runner 的 stdin 三方死锁——把 stdin 写入推迟到读取线程
+就绪之后——时）**：推迟写必须先 adopt 再写，但 release_handles 把 stdin_write
+一并交出而 adopt 不收它 ⇒ 写端要么泄漏要么丢失，只能绕开 adopt 手动逐句柄接管。
+方向：PipedHandles 的句柄分组消费（读面/树杀面/写面）或 ChildPipes 式消费方自带
+stdin 位，让「推迟写 stdin」成为 kit 支持的正常形态而非插件侧的句柄体操。
 
 **挂账（上批总线/投递语义方向，未落地维持观察；触发场景：修「工具调用记录恒
 落在思考块上方」撞上）**：

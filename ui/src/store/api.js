@@ -91,10 +91,16 @@ export function fmtK(n) {
 /**
  * fetch JSON 助手：带 body ⇒ POST JSON，无 body ⇒ GET。
  * NOTE: POST 端点必须显式传 {}——无 body 会发 GET（踩过：pickFolder 404 静默无效）。
+ * 非 JSON 响应（宿主 500 HTML / 代理错误页）不再抛 SyntaxError——调用点读到的
+ * 是 {ok:false, error}，失败路径可控；业务语义仍以返回体的 ok 字段为准。
  */
 export async function api(path, body) {
   const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined)
-  return r.json()
+  try {
+    return await r.json()
+  } catch (e) {
+    return { ok: false, error: 'HTTP ' + r.status + '（非 JSON 响应）' }
+  }
 }
 
 /** 配置读取（组件直需 config 时用；对齐与保存走 actions 层）。失败行为：{ok:false?}——

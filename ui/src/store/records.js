@@ -109,8 +109,22 @@ export function flushTurnEdits() {
 
 // ---- 记录状态机 --------------------------------------------------------------
 
+// SSE 与 HTTP 重放双通道的竞态防线（结构修复，非补丁）：补洞期间 SSE 到达的
+// 记录先停靠，快照渲染完再放行——直接渲染会被 max-id 去重吞掉（SSE 先推 id=8、
+// 快照里的 6/7 随后被 `<= lastId` 丢弃且 since 已推进 ⇒ 对话流永久缺行，只有切
+// 会话重放才能恢复）。补洞自身串行化：boot 重放与 onopen 补洞并发时按序执行，
+// 两个快照不再互相顶掉。
+let parkSse = false
+const parked = []
+let pollChain = Promise.resolve()
+
 /** SSE/重放的统一入口：所有宿主记录（含转态信号）都经此进状态机。 */
 export function render(rec) {
+  if (parkSse) { parked.push(rec); return }
+  renderNow(rec)
+}
+
+function renderNow(rec) {
   // NOTE: 轮次边界结算在 turn_id 变化时触发——无 assistant 收口的轮次（拒绝/
   // 报错轮）的编辑汇总也能随自己那轮落位，不堆到下一轮（踩过：曾全堆在底部）
   { const tid = rec.turn_id
@@ -343,7 +357,9 @@ export function render(rec) {
       push(rec); return
     }
     case 'error':
-      push(rec); flushTurnEdits(); return
+      // 流式中途报错也要收掉 live 块：只复位 inFlight 会留下半截流式正文与光标，
+      // 观感是「还在输出」（错误卡与残留正文并存，直到下一条 user 记录才清）
+      push(rec); S.live = null; flushTurnEdits(); return
   }
 }
 
@@ -379,19 +395,33 @@ setInterval(computeRate, 500)   // 静默期归零；后台标签页被节流也
 
 // ---- 数据通道 ----------------------------------------------------------------
 
-/** 重放/补洞：HTTP 拉取 after 起的记录并逐条渲染（SSE 只管实时）。 */
-export async function pollOnce() {
-  const t = await api('/api/transcript?after=' + S.since)
-  t.records.forEach(render)
-  S.since = t.next
-  flushTurnEdits()   // 重放结束 ⇒ 最后一轮的编辑汇总也落位（否则丢了）
-  // 重放后以后端原子真值对账：user 记录在重放里无条件置 inFlight=true，失败/
-  // 取消轮没有 assistant/error 收口时会把「进行中」复活（踩过: zombie——切回
-  // 失败会话按钮恒为停止态），以后端 in_flight 为准兜掉一切记录流缺口
+/** 重放/补洞：HTTP 拉取 after 起的记录并逐条渲染。串行化（并发调用排队），
+ *  执行期间停靠 SSE 记录、结束后放行（竞态推导见文件头 parkSse 注释）。 */
+export function pollOnce() {
+  const run = pollChain.then(pollOnceImpl)
+  pollChain = run.then(() => {}, () => {})
+  return run
+}
+
+async function pollOnceImpl() {
+  parkSse = true
   try {
-    const m = await api('/api/session')
-    S.inFlight = !!m.in_flight
-  } catch (e) { /* 对账端点失联：游标已推进，下次补洞继续 */ }
+    const t = await api('/api/transcript?after=' + S.since)
+    t.records.forEach(renderNow)
+    S.since = t.next
+    flushTurnEdits()   // 重放结束 ⇒ 最后一轮的编辑汇总也落位（否则丢了）
+    // 重放后以后端原子真值对账：user 记录在重放里无条件置 inFlight=true，失败/
+    // 取消轮没有 assistant/error 收口时会把「进行中」复活（踩过: zombie——切回
+    // 失败会话按钮恒为停止态），以后端 in_flight 为准兜掉一切记录流缺口
+    try {
+      const m = await api('/api/session')
+      S.inFlight = !!m.in_flight
+    } catch (e) { /* 对账端点失联：游标已推进，下次补洞继续 */ }
+  } finally {
+    parkSse = false
+    const drain = parked.splice(0)
+    drain.forEach(renderNow)
+  }
 }
 
 /** 发送即重置速率窗口（上轮残留不清会把旧速度带进新轮的开头）。 */

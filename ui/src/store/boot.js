@@ -28,7 +28,11 @@ function connect() {
     pollOnce().catch(() => {})   // 重连首件事：补上断口期间漏掉的记录
   }
   es.onerror = () => { S.conn = 'off'; setHolePoll(true) }
-  es.onmessage = (e) => { render(JSON.parse(e.data)) }
+  es.onmessage = (e) => {
+    // 非 JSON 帧就地丢弃（未来心跳帧/异常帧不得中断状态机——handler 内抛出
+    // 会终止本次派发且无任何日志路径）
+    try { render(JSON.parse(e.data)) } catch (err) { console.warn('sse 非法帧丢弃', err) }
+  }
 }
 
 /** 启动：轮询 health → 拉配置 → 连 SSE → 重放 → loadSessions；无会话则进草稿态。 */

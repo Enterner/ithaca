@@ -20,7 +20,10 @@ export async function send(text) {
     ? '\n\n（附件已上传至工作区，可用 read 读取：' + S.attachments.map(a => a.path).join('、') + '）'
     : ''
   S.inputText = ''
-  S.inFlight = true
+  // 本地命令（/undo /cancel /help）不是 turn：不置 inFlight——否则空闲会话输入
+  // /undo 后发送键恒为停止态（inFlight 无人复位：/undo 没有 error/assistant 收口
+  // 记录，undone 分支也不复位；/cancel 与 /help 各有出口，唯独它漏）
+  if (!(line.startsWith('/') && !S.draft)) S.inFlight = true
   if (S.draft) {   // 草稿态首条消息 = 创建会话（唯一出口；草稿期前端零创建请求）
     const ws = S.draft.workspace || ''
     if (S.shell) {
@@ -39,7 +42,18 @@ export async function send(text) {
       return
     }
     S.draft = null
-    const r = await api('/api/session/new', ws ? { workspace: ws, message: line + attNote, attachments: attPaths } : { message: line + attNote, attachments: attPaths })
+    let r
+    try {
+      r = await api('/api/session/new', ws ? { workspace: ws, message: line + attNote, attachments: attPaths } : { message: line + attNote, attachments: attPaths })
+    } catch (e) {
+      // 网络失败（宿主重启瞬间/断连）：回滚草稿与输入，等同创建失败——否则
+      // 未捕获 rejection + inFlight 永不复位
+      S.draft = { workspace: ws }
+      S.inputText = line
+      S.inFlight = false
+      pushLocal('创建会话失败：网络错误（文字已放回输入框）')
+      return
+    }
     if (!r.ok) {   // 创建失败（如目录不可建）：回到草稿态，消息留在输入框
       S.draft = { workspace: ws }
       S.inputText = line
@@ -59,8 +73,16 @@ export async function send(text) {
       return
     }
   }
-  await api('/api/input', { line: line + attNote, attachments: attPaths })
-  S.attachments = []
+  try {
+    await api('/api/input', { line: line + attNote, attachments: attPaths })
+    S.attachments = []
+  } catch (e) {
+    // 发送失败回滚现场：输入框先清后发，网络失败时文字必须放回、inFlight 必须
+    // 复位（turn 未发出去，永远等不到收口记录——发送键卡死为停止态）
+    S.inputText = line
+    S.inFlight = false
+    pushLocal('发送失败：网络错误（文字已放回输入框）')
+  }
 }
 
 /** 裁决提案：0 批准所选 / 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；成功即收起决策坞。 */

@@ -235,6 +235,8 @@ async function onStop() {
   await decide(4)
 }
 function onKey(e) {
+  // IME 组合期 Enter（候选词上屏）不得当作发送/停止——中文输入的高频路径
+  if (e.isComposing || e.keyCode === 229) return
   if (e.key !== 'Enter' || e.shiftKey || S.pending) return
   if (!S.inputText.trim()) return
   // 生成中 Enter = 停止（发送键此时画的是停止方框——Enter 跟随视觉而非反着来；
@@ -261,6 +263,8 @@ async function deny() {
 }
 function onWinKey(e) {
   if (!S.pending) return
+  // IME 组合期 Enter：上屏候选词，不做任何裁决（半截拼音会被当拒绝反馈发出）
+  if (e.isComposing || e.keyCode === 229) return
   if (e.key === 'Enter' && !e.shiftKey) {
     // 框里有文字 = 拒绝并反馈（deny 把输入带回去）；空框 = 批准所选——
     // 「想输入反馈却按成批准」的反直觉在这里分叉

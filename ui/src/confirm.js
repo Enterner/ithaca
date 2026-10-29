@@ -47,6 +47,9 @@ export function promptDialog({ title, initial = '', placeholder = '', positive =
           // h() 的原生输入：v-model 不可用，onInput 手动回写
           onInput: (e) => { value = e.target.value },
           onKeydown: (e) => {
+            // IME 组合期 Enter（候选词上屏）不得当作确认——中文会话名会以
+            // 未上屏的拼音提交
+            if (e.isComposing || e.keyCode === 229) return
             if (e.key === 'Enter') { e.preventDefault(); settle(value.trim()) }
           },
           style: 'width:100%;box-sizing:border-box;background:var(--ink);border:1px solid var(--line);' +
