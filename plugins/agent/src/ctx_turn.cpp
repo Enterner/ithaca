@@ -1,13 +1,10 @@
 // turn 状态机（plugin/agent 的核心切片）。
 // begin_turn 开轮 → dispatch_loop 分发工具（确认类挂起提案/异步登记归流/同步直执）
 // → append_results_and_continue 按序回灌并进下一轮 → finish_turn 收口（迟滞执行
-// 上下文压缩）。失败/取消的统一收口 fail_turn/cleanup_turn_ 也在本文件。
+// 上下文压缩，执行体在 src/ctx_compress.cpp）。失败/取消的统一收口
+// fail_turn/cleanup_turn_ 也在本文件。
 
 #include "agent_plugin.hpp"
-
-#include <fstream>    // std::ofstream：raw 外置归档
-
-
 
 namespace vc_agent {
 
@@ -121,12 +118,10 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
     // 固定在 system 之后——turn 内 append-only（缓存前缀纪律）。子代理是单任务
     // 短命上下文，任务卡与 user 消息逐字重复，纯耗 token
     if (!subagent_) rebuild_mission_();
-    // 开轮即落盘（含本条 user 消息与任务卡）：持久化点原本只在 turn 收口/压缩
-    // ——进程在 turn 中途死掉（崩溃/强杀/断电）时本条请求连同任务卡从历史蒸发，
-    // 重放与恢复都不留痕，用户看到的是请求无声消失（踩过：子代理在途挂死 →
-    // 重启 → 任务卡锚点整段跳过该请求，「继续」被接进上一个任务的语境）。
-    // 恢复后未应答的 user 消息是合法序列，下轮正常续接。子代理不持久化
-    // （session_path_ 为空，persist_session_ 自行早退）。
+    // 开轮即落盘（含本条 user 消息与任务卡）：持久化点若只在 turn 收口/压缩，
+    // 进程在 turn 中途死掉时本条请求从历史蒸发，重放与恢复都不留痕（踩过：
+    // 子代理在途挂死 → 重启 → 「继续」被接进上一个任务的语境）。恢复后未应答
+    // 的 user 消息是合法序列，下轮正常续接。子代理不持久化（session_path_ 为空）
     persist_session_();
     send_chat();
 }
@@ -179,11 +174,10 @@ void AgentCtx::send_chat_impl() {
     body_buf_ = body.dump();
     if (llm_ == nullptr || llm_->chat_ex == nullptr)
         return fail_turn("LLM 不可用");
-    // 发送前预检：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建
-    // 请求体再发——单 turn 几十轮工具往返在轮间主动瘦身（每轮 send_chat 都检），
-    // 省一次 provider 400 往返；LLM 摘要仍只在 turn 边界。粗估宁高勿低：误折
-    // 代价 = 上下文略瘦，可接受；折叠后旧信号置零待下次回报。子代理不压缩——
-    // 折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
+    // 发送前预检：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建请求体再发——单
+    // turn 几十轮工具往返在轮间主动瘦身，省一次 provider 400 往返；LLM 摘要仍只
+    // 在 turn 边界。粗估宁高勿低：误折代价 = 上下文略瘦，可接受。子代理不压缩
+    // ——折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义。
     // 策略缝：表接管时门槛判定在策略内（signals 带请求体粗估），计划经
     // acquire_plan_；无表走内置阈值门槛 + plan_compress。预检恒机械（不能等 LLM）。
     if (!subagent_) {
@@ -224,22 +218,15 @@ void AgentCtx::dispatch_loop() {
         try {
             suspend = dispatch_one_(ctx);
         } catch (const std::exception& e) {
-            // 单条分发异常兜底：异常若穿出本循环，本 ctx 状态机会停在抛点
-            // ⇒ send_chat 永不执行 ⇒ turn 悬停无终态（内核 ABI 边界只负责
-            // 隔离订阅者与落日志，救不了本状态机）。转成错误结果回灌，LLM
-            // 据此自修或换路。
-            ctx.result = json{{"ok", false},
-                              {"error", std::string("工具执行异常: ") + e.what()}}
-                             .dump();
-            ctx.done = true;
-            emit_tool_result(ctx.full_name, false, ctx.result);
-            ++dispatched_;
+            // 单条分发异常兜底：异常穿出循环会让状态机停在抛点 ⇒ send_chat 永不
+            // 执行 ⇒ turn 悬停无终态（内核 ABI 边界救不了本状态机）。转错误结果
+            // 回灌，LLM 据此自修或换路
+            ctx.result = err_result(std::string("工具执行异常: ") + e.what());
+            settle_(ctx, false);
             excepted = true;
         } catch (...) {
-            ctx.result = json{{"ok", false}, {"error", "工具执行异常（未知类型）"}}.dump();
-            ctx.done = true;
-            emit_tool_result(ctx.full_name, false, ctx.result);
-            ++dispatched_;
+            ctx.result = err_result("工具执行异常（未知类型）");
+            settle_(ctx, false);
             excepted = true;
         }
         if (excepted)
@@ -257,18 +244,12 @@ void AgentCtx::dispatch_loop() {
 }
 
 // dispatch 推迟一拍（on_done 专用）：tool_call/tool_result 在 dispatch_one_ 内
-// 同步 emit，而 llm_done 的订阅者不止本插件——webui 靠它落 assistant 收口记录
-// （思考块的数据源）。事件回调按订阅序同步派发，agent 先于 webui 装载时工具
-// 事件就落在收口记录之前，UI/重放里工具卡恒跑到思考块上方。推迟一拍把「产生
-// 工具事件」挪到 llm_done 对全部订阅者派发完成之后（poster 闭包在下一拍排水），
-// 事件序与因果序不再依赖插件装载顺序（主会话与子代理同规）。安全性：
-//   - 主 ctx 与插件同生命周期，poster 闭包在会话作废时由宿主逐条 dispose
-//     （执行路径碰不到已析构对象）；
-//   - 子代理走 owner 绑定形态：子 ctx 随 turn 销毁（children_ 唯一指针），
-//     cleanup_turn_ 销毁前先作废 owner——未执行的闭包连任务一起回收，不可能
-//     落到已析构对象上（旧宿主无 owner 槽位 ⇒ BAD_STATE 回退同步分发）；
-//   - turn 身份（turn_no_）防旧闭包误入新 turn；
-//   - poster 不可用（宿主 ABI 过旧）或投递失败 ⇒ 回退同步分发，只损失顺序。
+// 同步 emit，而 llm_done 的订阅者不止本插件（webui 靠它落 assistant 收口记录）
+// ——agent 先于 webui 装载时工具事件就落在收口记录之前。推迟一拍把「产生工具
+// 事件」挪到 llm_done 对全部订阅者派发完成之后，事件序与因果序不再依赖插件装载
+// 顺序（主会话与子代理同规）。安全性：主 ctx 与插件同生命周期（闭包由宿主
+// dispose）；子代理走 owner 绑定——cleanup_turn_ 销毁前作废 owner，未执行闭包
+// 连任务回收；turn_no_ 防旧闭包误入新 turn；poster 不可用 ⇒ 回退同步分发。
 void AgentCtx::dispatch_after_done_() {
     if (poster_.post == nullptr) return dispatch_loop();
     const int turn = turn_no_;
@@ -288,28 +269,21 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
     // 内置工具：context.recall（外置存储回查）——不经工具表，直接处理
     if (ctx.full_name == vcagent::kRecallTool) {
         ctx.result = exec_recall(ctx.args);
-        ctx.done = true;
-        emit_tool_result(ctx.full_name, true, ctx.result);
-        ++dispatched_;
+        settle_(ctx, true);
         return false;
     }
     // 内置工具：task（子代理派发）——不经工具表。spawn 失败 = 护栏/参数拒绝
     // （result 已写好，就地 emit 回灌）；成功 = 在途登记（begin_turn 同步失败
     // 的路径已在回调帧内收口，结果同帧写回）
     if (ctx.full_name == vcagent::kTaskTool) {
-        if (!spawn_child_(dispatched_, ctx)) {
-            ctx.done = true;
-            emit_tool_result(ctx.full_name, false, ctx.result);
-        }
+        if (!spawn_child_(dispatched_, ctx)) settle_(ctx, false);
         ++dispatched_;
         return false;
     }
     const Bound* b = find_bound(ctx.full_name);
     if (b == nullptr) {
-        ctx.result = json{{"ok", false}, {"error", "未知工具: " + ctx.full_name}}.dump();
-        ctx.done = true;
-        emit_tool_result(ctx.full_name, false, ctx.result);
-        ++dispatched_;
+        ctx.result = err_result("未知工具: " + ctx.full_name);
+        settle_(ctx, false);
         return false;
     }
     if (vcagent::needs_confirm(ctx.full_name, confirm_) && !auto_all_) {
@@ -360,9 +334,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
         return true;  // ← 死锁纪律：绝不同步等待；挂起即返，循环尾不得再跑
     }
     ctx.result = exec(*b, ctx.tool, ctx.args);
-    ctx.done = true;
-    emit_tool_result(ctx.full_name, tool_ok(ctx.result), ctx.result);
-    ++dispatched_;
+    settle_(ctx, tool_ok(ctx.result));
     // 异步长任务（runner.run）：登记 run_id——结果等 vc.run.exit 归流，
     // 本条消息的其余工具照常分发（runner 侧并发、run_id 归流）。
     if (const int rid = parse_run_id(ctx.result); rid > 0) {
@@ -373,134 +345,15 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
     return false;
 }
 
-// task 工具：校验参数与护栏 → 起子 ctx（免批/静默/受限工具面）事件驱动跑循环
-// → 登记在途。返回 false = 拒绝（result 已写好，调用方 emit 后继续分发）。
-// 在途登记先于 begin_turn：begin_turn 同步失败（无工具表/LLM 不可用）会在本帧
-// 内经 on_finished_ 回调走 on_child_finished_ 收口，登记晚了就丢挂起。
-bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
-    const std::string desc = call.args.value("description", "");
-    const std::string prompt = call.args.value("prompt", "");
-    const std::string type_name = call.args.value("subagent_type", "general");
-    if (prompt.empty() || desc.empty()) {
-        call.result =
-            json{{"ok", false}, {"error", "task 缺少必填参数（description / prompt）"}}.dump();
-        return false;
-    }
-    if (children_.size() >= kMaxChildren) {
-        call.result = json{{"ok", false},
-                           {"error", "并发子代理已达上限（" + std::to_string(kMaxChildren) +
-                                         "），等在途任务完成后再派发"}}.dump();
-        return false;
-    }
-    const AgentType* type = nullptr;
-    for (const auto& t : types_)
-        if (t.name == type_name) {
-            type = &t;
-            break;
-        }
-    if (type == nullptr) {
-        std::string known;
-        for (const auto& t : types_) {
-            if (!known.empty()) known += " / ";
-            known += t.name;
-        }
-        call.result = json{{"ok", false},
-                           {"error", "未知子代理类型: " + type_name + "（可用: " + known + "）"}}
-                          .dump();
-        return false;
-    }
-    // 工具面：类型白名单（工具集名）过滤父清单；空 = 继承父全量
-    std::vector<std::string> svcs;
-    if (type->tools.empty()) {
-        svcs = tool_svcs_;
-    } else {
-        for (const auto& want : type->tools)
-            for (const auto& s : tool_svcs_)
-                if (vcagent::toolset_of_svc(s) == want) {
-                    svcs.push_back(s);
-                    break;
-                }
-        if (svcs.empty()) {
-            call.result = json{{"ok", false},
-                               {"error", "类型 " + type_name +
-                                             " 的工具白名单未命中任何可用工具集"}}.dump();
-            return false;
-        }
-    }
-    auto child = std::make_unique<AgentCtx>();
-    child->host_ = host_;
-    child->subagent_ = true;       // 免批 + 静默 + 不压缩不持久化 + 请求体带标志
-    child->depth_ = depth_ + 1;
-    child->system_prompt_ = type->prompt;
-    child->tool_svcs_ = std::move(svcs);
-    child->auto_all_ = true;       // 子代理免批：授权由主会话批准链路负责（task 卡用户可见）
-    child->confirm_.clear();
-    child->raw_dir_ = raw_dir_;      // 共享外置目录（R3：归档名带会话 stem 前缀）
-    child->raw_prefix_ = raw_prefix_; // 前缀随目录走——子代理归档与父会话同命名空间
-    AgentCtx* raw = child.get();
-    child->on_finished_ = [this, index, raw](bool ok, const std::string& report, int turns) {
-        on_child_finished_(index, raw, ok, report, turns);
-    };
-    children_.push_back(std::move(child));
-    child_pends_.insert(index);
-    raw->begin_turn(prompt, "");
-    if (child_pends_.count(index) != 0)
-        notice("子代理已派出 [" + type->name + "] " + desc);
-    // 工作记录视图（落 transcript 不进上下文）：spawn 卡 + 主会话挂起条的数据源。
-    // turn_id 带子的（与子 ctx 后续所有记录同号）——UI 按 turn_id 分组，带父号
-    // 会让 spawn 卡掉进别的组、右栏点开是空（踩过：重启撞号后新 spawn 被旧
-    // 完成卡标记为「已结束」）
-    emit_subagent_(raw->turn_no_, 0, type->name.c_str(),
-                   desc.empty() ? prompt : desc + "——" + trim(prompt, 120));
-    host_.log(2, "ithaca.agent: 子代理 #" + std::to_string(raw->turn_no_) + " 已派出（" +
-                     type->name + "）: " + desc);
-    return true;
+// 单条调用统一收尾：结果卡 emit + 分发游标推进（调用点先写好 ctx.result）
+void AgentCtx::settle_(ToolCallCtx& ctx, bool ok) {
+    ctx.done = true;
+    emit_tool_result(ctx.full_name, ok, ctx.result);
+    ++dispatched_;
 }
 
-// 子代理完成回调（宿主线程；可能在子事件处理栈内同步执行）。收口门槛与
-// try_finish_tools 同一门：全部 call 完成 + 无在途子 + 无在途 run。
-void AgentCtx::on_child_finished_(std::size_t index, AgentCtx* child, bool ok,
-                                  const std::string& report, int turns) {
-    child_pends_.erase(index);
-    // 父已收口（取消/失败级联）：子现场已清，迟到回调只摘挂起不写回
-    if (state_ != State::TurnActive) return;
-    try {
-        // 子用量并入会话累计（计量口径同 on_done 的 usage 累计）
-        usage_prompt_ += child->usage_prompt_;
-        usage_completion_ += child->usage_completion_;
-        usage_total_ += child->usage_total_;
-        usage_cache_ += child->usage_cache_;
-        ToolCallCtx& c = calls_[index];
-        c.result = ok ? json{{"ok", true},
-                             {"report", report},
-                             {"turns", turns},
-                             {"total_tokens", child->usage_total_}}
-                            .dump()
-                      : json{{"ok", false}, {"error", report}}.dump();
-        c.done = true;
-        emit_tool_result(c.full_name, ok, c.result);
-        notice(ok ? "子代理完成（" + std::to_string(turns) + " 轮 · " +
-                         std::to_string(child->usage_total_) + " tokens）"
-                  : "子代理失败: " + trim(report, 120));
-    } catch (...) {
-        // 本回调运行在子代理的调用栈上：禁止 fail_turn/cleanup_turn_——那会析构
-        // 栈上仍在执行的子 ctx（UB）。异常降级为本条 task 的错误结果走常规续段；
-        // 续段原语（append/try_finish）自身已兜底终态
-        host_.log(3, "ithaca.agent: 子代理完成回调异常，已降级为该任务的错误结果");
-        if (index < calls_.size() && !calls_[index].done) {
-            calls_[index].result =
-                json{{"ok", false}, {"error", "子代理完成回调内部异常"}}.dump();
-            calls_[index].done = true;
-            emit_tool_result(calls_[index].full_name, false, calls_[index].result);
-        }
-    }
-    // 其余子代理仍在途：等最后一个完成统一收口
-    if (!child_pends_.empty()) return;
-    // 同消息尚有未分发项：分发循环尾部收口（结果已写回，循环会跳过完成项）
-    if (dispatched_ != calls_.size()) return;
-    if (runs_.empty()) return append_results_and_continue();
-    if (all_runs_exited_()) try_finish_tools();
-}
+// task 工具的派发与收口（spawn_child_/on_child_finished_）在 src/ctx_child.cpp；
+// 类型注册表在 src/agent_types.cpp。
 
 void AgentCtx::append_results_and_continue() {
     try {
@@ -519,12 +372,10 @@ void AgentCtx::append_results_and_continue_impl() {
         std::string content = ctx.result;
         // 提案试算失败的提前回灌（dispatch_one_ 的 dry-fail 分支）发生在分发中途
         // ——本循环遍历全部 calls_，未分发项的 result 为空串。OpenAI 协议要求
-        // assistant.tool_calls 的每个 id 都有配对 tool 消息，不能只回灌已分发项：
-        // 补点名"未执行"的错误结果，让模型知道后续调用没有发生（空串会被当成
-        // "执行了但无输出"误判）
+        // assistant.tool_calls 的每个 id 都有配对 tool 消息：补点名"未执行"的
+        // 错误结果（空串会被当成"执行了但无输出"误判）
         if (!ctx.done && content.empty())
-            content = json{{"ok", false},
-                           {"error", "同批前序调用试算失败收口，本调用未执行"}}.dump();
+            content = err_result("同批前序调用试算失败收口，本调用未执行");
         // 策略缝：表接管时收编（外置+最小记录一步）整个在策略内；无表走内置
         // 管线（单源 = vcagent::ingest_tool_result，ctx_basic 策略镜像共用）
         if (ctx_tbl_ != nullptr && ctx_tbl_->ingest_tool_result != nullptr) {
@@ -543,53 +394,7 @@ void AgentCtx::append_results_and_continue_impl() {
     send_chat();
 }
 
-// 原始工具结果外置：raw/<turn>_<seq>_<tool>.json；失败 ⇒ 空 ref（调用方内联截断）
-std::string AgentCtx::spool_raw(const std::string& tool, const std::string& result) {
-    if (raw_dir_.empty()) return {};
-    // 序号进程级递增：主/子代理各有 turn_no_（都从 1 起）共享同一 raw/，实例内
-    // 计数会撞名互相覆盖——全局计数 + 会话 stem 前缀双重隔离
-    static std::atomic<unsigned long long> g_raw_seq{0};
-    try {
-        const std::string name = raw_prefix_ + "t" + std::to_string(turn_no_) + "_" +
-                                 std::to_string(++g_raw_seq) + "_" +
-                                 tool_last(tool) + ".json";
-        std::ofstream f(fs::path(raw_dir_) / name, std::ios::binary | std::ios::trunc);
-        if (!f) return {};
-        f << result;
-        return name;
-    } catch (const std::exception&) {
-        return {};
-    }
-}
-
-// context.recall：ref 校验（裸文件名）→ 读归档 → provenance 包装；分页：
-// offset/limit 字节窗口（limit 缺省 2048、上限 4096 = 单条内联护栏），回包带
-// total/next_offset/has_more——大归档分段读，不再"永远只看头 2KB"。
-// 管线单源 = vcagent 的 recall_* 纯函数（ctx_basic 策略镜像共用，产出逐字节一致）。
-std::string AgentCtx::exec_recall(const json& args) {
-    // 策略缝：表接管时回查执行体在策略内（外置目录/分页/聚合过滤口径随策略）；
-    // 无表走内置（raw_dir_ 字节窗口分页）。
-    if (ctx_tbl_ != nullptr && ctx_tbl_->recall != nullptr) {
-        const std::string a = args.dump();
-        const char* out = nullptr;
-        if (ctx_tbl_->recall(ctx_tbl_->self, a.c_str(), &out) == NOSTOS_OK && out != nullptr)
-            return std::string(out);
-        return json{{"ok", false}, {"error", "context.recall（策略插件）执行失败"}}.dump();
-    }
-    const std::string ref = args.value("ref", "");
-    std::string content, err;
-    if (!vcagent::recall_fetch(ref, raw_dir_, content, err))
-        return json{{"ok", false}, {"error", err}}.dump();
-    const long long total = static_cast<long long>(content.size());
-    const std::string filter = vcws::ascii_lower(args.value("filter", ""));
-    // 结构化回查：归档是工具结果的 JSON dump——entries 形态（list 归档）支持
-    // filter 与 summary 聚合，单页返回不切字节；其余形态回退字节窗口分页
-    if (std::string summ = vcagent::recall_entries_summary(
-            content, ref, args.value("summary", false), filter);
-        !summ.empty())
-        return vcagent::recall_result(ref, summ, total, 0, false, 0);
-    return vcagent::recall_paged(content, args, ref, total);
-}
+// raw/ 外置存储与 context.recall 回查在 src/ctx_compress.cpp。
 
 void AgentCtx::try_finish_tools() {
     try {
@@ -669,177 +474,7 @@ void AgentCtx::finish_turn() {
     flush_queued_inputs_();
 }
 
-// ---- 上下文压缩阶段二 --------------
-
-void AgentCtx::set_context_window_(long long w) {
-    ctx_window_ = w;
-    recompute_threshold_();   // 模型/供应商切换重置退避（窗口变了旧基数失效）
-}
-
-// 生效阈值：W 与 max_output 已知 ⇒ W − max_output（输出预留——给
-// 长 diff/长测试输出留位，避免贴着 0.9W 的请求被大响应顶爆）；仅 W 已知 ⇒
-// 0.9×W（历史语义）；都未知 ⇒ 兜底阈值。下限 W/4：max_output 元数据异常巨大时
-// 仍保住 25% 的 prompt 空间。公式单源 = vcagent::effective_threshold。
-void AgentCtx::recompute_threshold_() {
-    session_threshold_ =
-        vcagent::effective_threshold(ctx_window_, ctx_max_output_, compress_threshold_);
-}
-
-// 压缩判定共用入口：finish_turn 与 cleanup_turn_ 都走这里（失败/取消收口不漏
-// 判定——否则反复取消/失败的长会话上下文只增不减）。计划不可折叠 ⇒ false，
-// 调用方走原收口；若下一请求仍超窗，由 on_llm_error 的超窗自救接手。
-bool AgentCtx::maybe_compress_() {
-    if (subagent_) return false;  // 子代理总闸：单任务短命上下文，压缩语义（回 Idle/
-                                  // 摘要异步收口/退避校验）全部不适用
-    // 策略缝：表接管时判定门槛与计划都在策略内（turn_end 信号透传）；agent 只
-    // 决定是否 LLM 精修（summary_enabled_ + 插件给不给 summary_prompt 槽）。
-    if (ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr) {
-        const vcagent::CompressPlan plan = acquire_plan_("turn_end");
-        if (!plan.valid) return false;
-        if (summary_enabled_ && ctx_tbl_->summary_prompt != nullptr) {
-            pending_plan_ = plan;
-            request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
-            return true;
-        }
-        pending_plan_ = plan;
-        apply_digest_(plan.digest, false);  // apply_digest_ 内收口（回 Idle + flush 排队）
-        return true;
-    }
-    const bool hard = vcagent::hard_window(last_prompt_tokens_, ctx_window_);
-    if (!hard && !vcagent::should_compress(last_prompt_tokens_, session_threshold_))
-        return false;
-    const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
-    if (!plan.valid) return false;
-    if (!hard && summary_enabled_) {
-        pending_plan_ = plan;
-        request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
-        return true;
-    }
-    // NOTE: 机械路径也必须先冻结计划——replace_with_digest_ 的 cut 区间/折叠统计
-    // 读 pending_plan_（不设则全零：digest 插到 0 号位、原文一条不裁——踩过：
-    // 手动压缩曾因此只插不剪，历史原样残留）
-    pending_plan_ = plan;
-    apply_digest_(plan.digest, false);  // apply_digest_ 内收口（回 Idle + flush 排队）
-    return true;
-}
-
-// 摘要请求：无 tools 的单轮 chat_ex；素材 = 机械 digest 渲染（request 逐字 +
-// calls 最小记录 + 全部 ref）——与兜底产物同源，摘要失败可直接落它。
-void AgentCtx::request_digest_() {
-    llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
-    if (llm_ == nullptr || llm_->chat_ex == nullptr)
-        return apply_digest_(pending_plan_.digest, false);
-    compress_seq_ = next_chat_seq();
-    compress_inflight_ = true;
-    // 摘要素材与指令：表接管时由策略给（summary_prompt 槽），内置 = kSummarySystem
-    // + 机械 digest 正文。发送权留 agent（request_id 出自 agent 发号器——两套
-    // 发号器必然数值重叠，插件自发会被 agent 当成自己的应答收进历史）。
-    std::string system = std::string(vcagent::kSummarySystem);
-    std::string material = pending_plan_.digest.value("content", "");
-    if (ctx_tbl_ != nullptr && ctx_tbl_->summary_prompt != nullptr)
-        strategy_summary_brief_(system, material);
-    json body = {{"messages", json::array({
-                                  json{{"role", "system"}, {"content", system}},
-                                  json{{"role", "user"}, {"content", material}}})}};
-    body_buf_ = body.dump();   // 调用点均在无在途请求时（turn 收口后/请求已失败或
-                               // 取消）——复用缓冲安全
-    if (llm_->chat_ex(llm_->self, compress_seq_, body_buf_.c_str()) != NOSTOS_OK)
-        apply_digest_(pending_plan_.digest, false);   // 未受理 ⇒ 机械兜底
-}
-
-void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
-    json a = json::parse(e.assistant_json != nullptr ? e.assistant_json : "{}", nullptr,
-                         /*allow_exceptions=*/false);
-    std::string s = a.is_object() && a.contains("content") && a["content"].is_string()
-                        ? a["content"].get<std::string>() : std::string();
-    if (s.empty()) return apply_digest_(pending_plan_.digest, false);
-    // 策略缝：表接管时摘要后处理（裁切/provenance/外置索引重建）在策略内；
-    // 槽失败机械 digest 兜底（压缩永不卡死）。
-    if (ctx_tbl_ != nullptr && ctx_tbl_->apply_summary != nullptr) {
-        json out_digest;
-        if (strategy_apply_summary_(s, out_digest))
-            return apply_digest_(out_digest, true);
-        return apply_digest_(pending_plan_.digest, false);
-    }
-    // 定稿组装（provenance 头 + 截断 + 索引重建）单源 = vcagent::summary_digest
-    //（ctx_basic 策略镜像共用，产出逐字节一致）
-    apply_digest_(vcagent::summary_digest(std::move(s), !raw_dir_.empty(),
-                                          pending_plan_.refs),
-                  true);
-}
-
-void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
-    apply_digest_(pending_plan_.digest, false);   // 摘要失败 ⇒ 机械兜底（计划里已备好）
-}
-
-// 折叠应用核心：区间替换 + 旧 digest 并入 + 持久化 + 通告。先插 digest 再跳过
-// 的顺序纪律见阶段一（踩过：跳过分支先 continue 会漏掉插入，digest 整条丢失）。
-void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
-    // 折叠前原文归档：cut 区间的完整消息（user/assistant 全文）写入
-    // raw/——agent 视图丢掉的每一行都可 recall 回查；归档 ref 附进 digest 正文，
-    // 模型在压缩后仍保有"被折叠历史"的入口
-    json cut = json::array();
-    for (std::size_t k = pending_plan_.cut_begin;
-         k < pending_plan_.cut_end && k < messages_.size(); ++k)
-        cut.push_back(messages_[k]);
-    const std::string archive_ref = spool_raw("digest", cut.dump());
-    json digest = digest_msg;
-    if (!archive_ref.empty())
-        digest["content"] = digest_msg.value("content", "") + "【折叠原文】" +
-                            archive_ref + "（context_recall 可回查）\n";
-    // 锚点保真在线观测：折叠区逐字锚点在折叠产物中的覆盖率——
-    // 32KB 降级会丢最旧段的调用链锚点，比率落 host log 供评测采集
-    if (pending_plan_.anchors_total > 0)
-        host_.log(2, "ithaca.agent: 折叠锚点保真 " +
-                         std::to_string(pending_plan_.anchors_total -
-                                        pending_plan_.anchors_dropped) +
-                         "/" + std::to_string(pending_plan_.anchors_total));
-    const std::size_t before = messages_.size();
-    json nm = json::array();
-    bool digest_placed = false;
-    for (std::size_t k = 0; k < messages_.size(); ++k) {
-        // 先插 digest（到末段起点处——紧贴 mission 之后），再做跳过判断：
-        // 跳过分支先 continue 会漏掉插入（踩过：digest 整条丢失）
-        if (!digest_placed && k == pending_plan_.cut_begin) {
-            nm.push_back(digest);
-            digest_placed = true;
-        }
-        if (k >= pending_plan_.cut_begin && k < pending_plan_.cut_end) continue;
-        if (k < pending_plan_.cut_begin && k > 0 && vcagent::is_digest(messages_[k]))
-            continue;  // 旧 digest 已并入新 digest
-        nm.push_back(messages_[k]);
-    }
-    if (!digest_placed) nm.push_back(digest);
-    messages_ = nm;
-    notice(std::string("上下文已压缩（") + via + "折叠：" +
-           std::to_string(pending_plan_.segments_folded) + " 段历史，消息 " +
-           std::to_string(before) + " → " + std::to_string(messages_.size()) +
-           (raw_dir_.empty() ? "；本会话未启用外置归档" : "；原始结果在 raw/ 可 recall") +
-           "）");
-    persist_session_();
-}
-
-// 折叠应用共用出口（LLM 摘要 / 机械 digest）：核心替换 + 置退避校验 + 回 Idle
-// + flush 排队输入。
-void AgentCtx::apply_digest_(const json& digest_msg, bool via_llm) {
-    replace_with_digest_(digest_msg, via_llm ? "LLM 自总结" : "机械");
-    compress_inflight_ = false;
-    compress_seq_ = -1;
-    pending_plan_ = {};
-    compress_verify_ = true;   // 下一 turn done 时校验是否压到位（没压下 ⇒ 阈值退避）
-    state_ = State::Idle;
-    flush_queued_inputs_();
-}
-
-// 超窗就地自救：provider 报上下文超长 ⇒ 按冻结计划机械折叠后
-// 重发当前请求。与 apply_digest_ 的分野：turn 仍在途——保持 state_/排队不动、
-// 不置 compress_verify_（退避校验是 turn 边界折叠的语义）；重发次数由调用方
-// （on_llm_error）以 kMaxOverwindowResend 封顶。
-void AgentCtx::forced_fold_resend_() {
-    replace_with_digest_(pending_plan_.digest, "超窗强制");
-    pending_plan_ = {};
-    send_chat();
-}
+// ---- 上下文压缩（阈值/判定/摘要/折叠）在 src/ctx_compress.cpp ------
 
 // agent 内部失败的统一收口（没有工具表 / LLM 不可用 / LLM 未受理等）：发
 // llm_error——webui 由此清 in_flight + 落错误卡，transcript 有终态记录（重放
@@ -896,8 +531,7 @@ void AgentCtx::cleanup_turn_() {
     // 是本 turn 的派生，父已终态则子无意义。子自己派的后台进程不追杀（runner
     // 自有超时），log 留痕。置 inflight_=-1 防 provider 迟到的取消回包误入路由。
     // NOTE: 每个被杀子代理补发 phase-5 终态卡——回调已被禁用（父现场正被清），
-    // 不补发则 transcript 永无该子代理的终态记录，spawn 卡在重放与实时里永远
-    // 「进行中」（踩过：取消后卡片挂进行中，刷新也复活不了）
+    // 不补发则该子代理在 transcript 里永远「进行中」（踩过）
     if (!children_.empty()) {
         llm_ = host_.service<vc_api::LlmTable>(vc_api::llm);
         int killed = 0;

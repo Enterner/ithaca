@@ -17,6 +17,8 @@
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
 
+#include "vcplugin/tool_table.hpp"  // vcplugin：工具表出参契约/发布三连（四插件单源）
+
 #include "diff.hpp"
 #include "edit.hpp"
 #include "fs.hpp"
@@ -103,18 +105,14 @@ public:
             env != nullptr && *env != '\0' ? env : "."));
         store_ = std::make_unique<vcws::DiskStore>();
 
-        nostos::abi::init_table(table_);
-        table_.self = this;
-        table_.list = &WorkspacePlugin::list_thunk;
-        table_.execute = &WorkspacePlugin::execute_thunk;
-        if (host.publish(vcws::kToolSvc, &table_) != NOSTOS_OK) {
-            host.log(4, "ithaca.workspace: 发布 vc.tool.workspace 失败（同名服务已存在？）");
+        if (vcplugin::publish_tool_table(host, table_, this, vcws::kToolSvc,
+                                         vcws::kToolSvcName, &WorkspacePlugin::list_thunk,
+                                         &WorkspacePlugin::execute_thunk,
+                                         "ithaca.workspace") != NOSTOS_OK)
             return NOSTOS_ERR_FAILED;
-        }
 
         // 热接入提示（发现的主通道是 agent 的配置清单；这是给面板/日志看的）
-        const vc_api::ToolRegister note{vcws::kToolSvcName};
-        host_.emit(vc_api::tool_register, &note);
+        vcplugin::notify_tool_register(host_, vcws::kToolSvcName);
         host.log(2, "ithaca.workspace: 就绪，jail 根 = " +
                         nostos::kit::win::wide_to_utf8(jail_->root().c_str()));
 
@@ -247,19 +245,16 @@ private:
             if (t == "search") return finish(search_tool(args), out);
             if (t == "apply") return finish(apply_tool(args, turn_id), out);
             if (t == "undo_turn") return finish(undo_tool(args), out);
-            return finish(json{{"ok", false}, {"error", "未知工具: \"" + t + "\""}}, out);
+            return finish(fail("未知工具: \"" + t + "\""), out);
         } catch (const std::exception& e) {
-            return finish(json{{"ok", false}, {"error", std::string("内部错误: ") + e.what()}},
-                          out);
+            return finish(fail(std::string("内部错误: ") + e.what()), out);
         }
     }
 
     // 约定：NOSTOS_OK 只代表"调用成功"；工具级失败（文件不存在、命中不为 1、越界被拒…）
     // 以 ok:false + error 的 JSON 返回——这是给模型的正常回灌通路，不是基础设施错误。
     nostos_status finish(json result, const char** out) {
-        out_buf_ = result.dump();
-        *out = out_buf_.c_str();
-        return NOSTOS_OK;
+        return vcplugin::finish_result(out_buf_, result, out);
     }
 
     // ---- 工具实现 ---------------------------------------------------------------
@@ -269,36 +264,29 @@ private:
         std::string norm, err;
         if (!resolve_arg(args.value("path", ""), full, norm, err)) return fail(err);
         // 文档抽取面归 office 插件（ithaca.tool.office 的 read 工具）：本工具守卫
-        // 只拦不抽。显式点名比退化兜底可靠——docx/pptx 是 zip 必含 NUL 会被下方
-        // 二进制检查拦住，但纯 ASCII PDF 能通过 UTF-8 校验，会被当正文吐给模型。
-        // NOTE: 扩展名清单是共享件（read_paged.hpp），与 office/webui 同源不漂移。
+        // 只拦不抽。显式点名比退化兜底可靠——纯 ASCII PDF 能通过 UTF-8 校验，会被
+        // 当正文吐给模型。扩展名清单是共享件（read_paged.hpp），三处同源不漂移
         const std::string ext_lower = vcws::ascii_lower(fs::path(norm).extension().string());
         if (vcws::is_document_ext(ext_lower))
-            return json{{"ok", false},
-                        {"error", "文档（docx/pptx/xlsx/pdf/doc/ppt/xls）读取请用 "
-                                  "office.read 工具（office 插件未装载时不可用）: " + norm}};
-        // 大小预检先于整读：DiskStore::read 全量 slurp（流缓冲 + str() 拷贝 = 峰值
-        // 2 倍体积），NUL/UTF-8 校验都在读完之后——2GB 数据文件一次 read 即 4GB
-        // 内存峰值。查询失败放行：不存在（撤销后读取是常规路径，错误必须点名
-        // "文件不存在"）与权限失败都由读侧的打开失败如实上报；残余缺口只有
-        // "查询失败但打开成功"的窄竞态
+            return fail("文档（docx/pptx/xlsx/pdf/doc/ppt/xls）读取请用 office.read 工具"
+                        "（office 插件未装载时不可用）: " + norm);
+        // 大小预检先于整读：DiskStore::read 全量 slurp（峰值 2 倍体积），2GB 数据
+        // 文件一次 read 即 4GB 内存峰值。查询失败放行：不存在与权限失败都由读侧
+        // 的打开失败如实上报（错误口径单一）；残余缺口只有"查询失败但打开成功"
         std::error_code sz_ec;
         const auto sz = fs::file_size(full, sz_ec);
         if (!sz_ec && sz > vcws::kReadSlurpCap)
-            return json{{"ok", false},
-                        {"error", "文件过大（" + std::to_string(sz / (1024 * 1024)) +
-                                      "MB > " + std::to_string(vcws::kReadSlurpCap / (1024 * 1024)) +
-                                      "MB 上限）: " + norm +
-                                      "（数据类大文件用 runner 调脚本按需切片）"}};
+            return fail("文件过大（" + std::to_string(sz / (1024 * 1024)) +
+                        "MB > " + std::to_string(vcws::kReadSlurpCap / (1024 * 1024)) +
+                        "MB 上限）: " + norm + "（数据类大文件用 runner 调脚本按需切片）");
         std::string content;
         if (!store_->read(full, content))
-            return json{{"ok", false}, {"error", "文件不存在或不可读: " + norm}};
+            return fail("文件不存在或不可读: " + norm);
         if (content.find('\0') != std::string::npos)
-            return json{{"ok", false},
-                        {"error", "疑似二进制文件（含 NUL），拒绝文本读取: " + norm +
-                                      "（其余容器格式可用 runner 调 Python 等脚本解析）"}};
+            return fail("疑似二进制文件（含 NUL），拒绝文本读取: " + norm +
+                        "（其余容器格式可用 runner 调 Python 等脚本解析）");
         if (!vcws::utf8_valid(content))
-            return json{{"ok", false}, {"error", "不是有效的 UTF-8 文本: " + norm}};
+            return fail("不是有效的 UTF-8 文本: " + norm);
         return vcws::read_paged(std::move(content), norm, args, false, "");
     }
 
@@ -313,7 +301,7 @@ private:
         }
         std::error_code ec;
         if (!fs::exists(full, ec) || !fs::is_directory(full, ec))
-            return json{{"ok", false}, {"error", "目录不存在: " + (norm.empty() ? "." : norm)}};
+            return fail("目录不存在: " + (norm.empty() ? "." : norm));
         const int depth = std::min(args.value("depth", 3), kListDepthCap);
         pattern_ = vcws::ascii_lower(args.value("pattern", ""));
         aggregate_ = args.value("mode", "aggregate") != "flat";   // 默认聚合（显式 flat 才平铺）
@@ -520,52 +508,48 @@ private:
         const bool dry = args.value("dry_run", false);
         const vcws::ApplyResult r = vcws::apply_ops(*jail_, *store_, ops, dry);
 
+        // 单遍组装回执与 applied 事件载荷（顺序同源）：files = 工具回执条目；
+        // paths/files_meta/diff_text = 事件载荷（具名缓冲——emit 同步派发，语句级
+        // 临时一悬垂就是 UAF）；snaps = 撤销快照
         json files = json::array();
+        json paths = json::array();
+        json files_meta = json::array();
+        std::string diff_text;
+        std::vector<vcws::FileSnap> snaps;
+        snaps.reserve(r.edits.size());
         for (const auto& e : r.edits) {
+            // diff 双通道：dry_run 是决策依据，落盘回执是操作自述（高分辨率）——
+            // 两条路都回传 hunk，模型无需回读或 dry_run 二趟即可核对落点与内容
+            //（"模型已知自己写了什么"不足以省略回执：find 落点、复合编辑的逐 op
+            // 叠加结果都可能与意图有偏差）；8KB 护栏防单文件体积失控
             json f{{"path", e.path},
                    {"is_new", e.is_new},
-                   {"edits", e.ops_count}};
-            // diff 双通道：dry_run 是决策依据，落盘回执是操作自述（高分辨率）——
-            // 两条路都回传 hunk，模型无需回读或 dry_run 二趟即可核对落点与内容。
-            // "模型已知自己写了什么"不足以省略回执：find 落点、复合编辑的逐 op
-            // 叠加结果都可能与意图有偏差。8KB 护栏防单文件体积失控；diff 同时经
-            // applied 事件展示给用户
-            std::string diff = clip_diff(e.diff);
-            f["diff"] = diff;
-            // 落盘量级（+A −B）——[tool] 卡与模型的锚点。直读 apply 的结构化统计，
+                   {"edits", e.ops_count},
+                   {"diff", clip_diff(e.diff)}};
+            // 落盘量级（+A −B）——[tool] 卡与模型的锚点：直读 apply 的结构化统计，
             // 不从 diff 尾行反解（files_meta 同源，一个口径）
-            if (!dry) f["delta"] = "+" + std::to_string(e.add) + " −" + std::to_string(e.rem);
+            if (!dry)
+                f["delta"] = "+" + std::to_string(e.add) + " −" + std::to_string(e.rem);
             files.push_back(std::move(f));
+            paths.push_back(e.path);   // UTF-8 相对路径；push e.full（wstring）会变码元数组
+            files_meta.push_back(json{{"path", e.path},
+                                      {"add", e.add},
+                                      {"rem", e.rem},
+                                      {"is_new", e.is_new}});
+            diff_text += "── " + e.path;
+            if (e.ops_count > 1) diff_text += "（" + std::to_string(e.ops_count) + " 处编辑）";
+            diff_text += "\n" + clip_diff(e.diff);
+            snaps.push_back(vcws::FileSnap{e.path, e.full, e.before, e.after, e.is_new});
         }
         json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
-        j["files"] = files;
+        j["files"] = std::move(files);
         if (r.ok && !dry)
             j["note"] = "已落盘；diff 正文随结果回传，applied 事件同步展示给用户";
         if (!r.errors.empty()) j["errors"] = fail_json_errors(r.errors);
         if (r.ok && !dry) {
-            std::vector<vcws::FileSnap> snaps;
-            snaps.reserve(r.edits.size());
-            for (const auto& e : r.edits)
-                snaps.push_back(vcws::FileSnap{e.path, e.full, e.before, e.after, e.is_new});
             snaps_.add(turn_id, std::move(snaps));
             j["snapshot_depth"] = snaps_.depth();
-            // vc.edit.applied：真实落盘后广播（修改即事实，diff 是报告）。
-            // diff_text 拼装含 "── path（N 处编辑）" 文件头 + hunk 集；载荷必须用**具名
-            // 缓冲**——emit 同步派发，paths.dump() 这类语句级临时一悬垂就是 UAF
-            json paths = json::array();
-            json files_meta = json::array();   // 每文件结构化统计（随事件下发，前端免反解展示文本）
-            std::string diff_text;
-            for (const auto& e : r.edits) {
-                paths.push_back(e.path);  // UTF-8 相对路径；push e.full（wstring）会变码元数组
-                files_meta.push_back(json{{"path", e.path},
-                                          {"add", e.add},
-                                          {"rem", e.rem},
-                                          {"is_new", e.is_new}});
-                std::string d = clip_diff(e.diff);
-                diff_text += "── " + e.path;
-                if (e.ops_count > 1) diff_text += "（" + std::to_string(e.ops_count) + " 处编辑）";
-                diff_text += "\n" + d;
-            }
+            // vc.edit.applied：真实落盘后广播（修改即事实，diff 是报告）
             const std::string paths_json = paths.dump();
             const std::string files_json = files_meta.dump();
             const vc_api::EditApplied ap{turn_id, paths_json.c_str(), diff_text.c_str(),
@@ -580,8 +564,7 @@ private:
         const vcws::TurnGroup* group =
             has_turn ? snaps_.find(args.value("turn_id", 0)) : snaps_.peek_latest();
         if (group == nullptr)
-            return json{{"ok", false},
-                        {"error", "没有可撤销的 turn（栈深 " + std::to_string(snaps_.depth()) + "）"}};
+            return fail("没有可撤销的 turn（栈深 " + std::to_string(snaps_.depth()) + "）");
         const int turn_id = group->turn_id;  // 先拷贝：pop 之后 group 指针失效（ASan 捕获过）
 
         // 两段式：先全组只读裁决——任一冲突（外部改过 / 被删）⇒ 整组零改动并点名。
@@ -598,7 +581,6 @@ private:
                         {"error", "撤销被拒：turn #" + std::to_string(turn_id) +
                                       " 存在外部改动（陈旧检测）"},
                         {"conflicts", conflicts}};
-
         // 写回：单个失败不再弃恢复——继续恢复其余文件并保留组（重试只处理
         // 未恢复项）。旧写法一失败即 return：组不弹出且重试裁决恒不符，该 turn
         // 的撤销能力整组报废
@@ -647,22 +629,18 @@ private:
 
     static json fail(const std::string& error) { return json{{"ok", false}, {"error", error}}; }
 
-    static json fail_json(const std::string& error, const std::vector<vcws::OpError>& errors) {
-        json j{{"ok", false}, {"error", error}};
-        json arr = json::array();
-        for (const auto& e : errors)
-            arr.push_back(json{{"index", e.index},
-                               {"path", e.path},
-                               {"message", e.message}});
-        j["errors"] = arr;
-        return j;
-    }
-
+    // OpError 数组 → JSON（结构化错误随 ok:false 回灌：失败点名不淹没后续路径）
     static json fail_json_errors(const std::vector<vcws::OpError>& errors) {
         json arr = json::array();
         for (const auto& e : errors)
             arr.push_back(json{{"index", e.index}, {"path", e.path}, {"message", e.message}});
         return arr;
+    }
+
+    static json fail_json(const std::string& error, const std::vector<vcws::OpError>& errors) {
+        json j{{"ok", false}, {"error", error}};
+        j["errors"] = fail_json_errors(errors);
+        return j;
     }
 
     // ---- 状态 ---------------------------------------------------------------------

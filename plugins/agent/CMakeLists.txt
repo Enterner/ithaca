@@ -19,9 +19,11 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(agent_plugin
-    src/plugin.cpp      # 薄壳（订阅分发 + 子代理事件扇出）+ manifest + NOSTOS_PLUGIN 入口
+    src/plugin.cpp      # 薄壳（订阅分发）+ manifest + NOSTOS_PLUGIN 入口
     src/ctx_events.cpp  # 事件处理器（输入/done/错误/裁决）
-    src/ctx_turn.cpp    # turn 状态机（分发/收口/上下文压缩执行/子代理 spawn 与回灌）
+    src/ctx_turn.cpp    # turn 状态机（分发/收口/异常兜底）
+    src/ctx_compress.cpp # 上下文压缩与外置存储（raw 归档与 recall/阈值/判定/折叠/摘要）
+    src/ctx_child.cpp   # 子代理派发与收口（task 工具运行时）
     src/ctx_session.cpp # 会话持久化 + mission 任务目标卡
     src/ctx_tools.cpp   # 工具桥 + 调用/结果人话摘要
     src/ctx_strategy.cpp # vc.ctx.v1 策略缝（表解析 + plan/ingest/recall/摘要槽包装）

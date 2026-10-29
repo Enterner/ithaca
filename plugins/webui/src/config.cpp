@@ -1,12 +1,15 @@
 // 配置（plugin/webui 的供应商两层配置切片）。
 // 共享文件存凭据（providers/Key），实例差异项（当前供应商/模型/权限模式）落
-// 本实例覆盖层；load/merge/persist 与 /api/config 读写端点同在本文件。
+// 本实例覆盖层；load/merge/persist 与 /api/config 读写端点、供应商模型清单
+// 拉取（设置面的自动填充动作）同在本文件。
 
 #include "webui_plugin.hpp"
 
 #include "vc_events.hpp"  // vc_api::normalize_permission_mode：权限模式归一（读/写路径）
 
 #include "vcws/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
+
+#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件 + ERROR_WINHTTP_*（模型清单拉取）
 
 #include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
 
@@ -156,175 +159,176 @@ json WebuiPlugin::config_public_() {
             {"plugins", config_.value("plugins", json::object())}};   // 各插件 schema 值域
 }
 
+// 供应商数组校验与清洗（api_config_save_ 第一段提纯）：名称非空/≤64/去重（大小
+// 写不敏感）、type 只许 cloud（mock 内置不接受外部写入）、模型 id 同规 + context
+// ≥1024、至多 32 供应商 × 32 模型；api_key 留空 = 按名保留旧值（key 不出前端，
+// 前端回传必为空）；sub_model 引用存在性后置校验（目标供应商须在本次清单内且
+// 模型启用——悬空引用运行期静默回落主模型，保存时拦截让用户当场看到）。
+// 失败返回 false 且 err 点名。
+static bool validate_providers(const json& in, const json& existing, json& cleaned,
+                               std::string& err) {
+    const auto old_key_of = [&existing](const std::string& name) -> std::string {
+        for (const auto& p : existing)
+            if (p.is_object() && p.value("name", "") == name)
+                return p.value("api_key", "");
+        return "";
+    };
+    std::vector<std::string> seen;
+    for (const auto& p : in) {
+        if (!p.is_object() || cleaned.size() >= 32) {
+            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            return false;
+        }
+        const std::string name = p.contains("name") && p["name"].is_string()
+                                     ? p["name"].get<std::string>() : "";
+        const std::string type = p.contains("type") && p["type"].is_string()
+                                     ? p["type"].get<std::string>() : "cloud";
+        if (name.empty() || name.size() > 64 || type != "cloud") {
+            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            return false;
+        }
+        const std::string low = vcws::ascii_lower(name);
+        if (std::find(seen.begin(), seen.end(), low) != seen.end()) {
+            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            return false;
+        }
+        seen.push_back(low);
+        json e = {{"name", name}, {"type", type}};
+        if (p.contains("builtin") && p["builtin"].is_boolean())
+            e["builtin"] = p["builtin"];
+        e["base_url"] = p.contains("base_url") && p["base_url"].is_string()
+                            ? p["base_url"].get<std::string>() : "";
+        std::string key = p.contains("api_key") && p["api_key"].is_string()
+                              ? p["api_key"].get<std::string>() : "";
+        if (key.empty()) key = old_key_of(name);   // 留空 = 按名保留旧 key
+        e["api_key"] = key;
+        e["enabled"] = p.value("enabled", false);
+        json models = json::array();
+        std::vector<std::string> mseen;
+        if (p.contains("models") && p["models"].is_array())
+            for (const auto& m : p["models"]) {
+                if (!m.is_object() || models.size() >= 32) {
+                    err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+                    return false;
+                }
+                const std::string mid = m.contains("id") && m["id"].is_string()
+                                            ? m["id"].get<std::string>() : "";
+                const int ctx = m.contains("context") && m["context"].is_number_integer()
+                                    ? m["context"].get<int>() : 0;
+                const std::string mlow = vcws::ascii_lower(mid);
+                if (mid.empty() || mid.size() > 64 || ctx < 1024 ||
+                    std::find(mseen.begin(), mseen.end(), mlow) != mseen.end()) {
+                    err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+                    return false;
+                }
+                mseen.push_back(mlow);
+                // 子 agent 模型（可选）：结构化引用 {"provider","model"}——结构化
+                // 而非 "供应商/模型" 拼串，供应商名可含 "/" 不歧义。缺省 = 自己。
+                json mm = json{{"id", mid}, {"context", ctx},
+                               {"enabled", m.value("enabled", true)}};
+                if (m.contains("sub_model") && m["sub_model"].is_object()) {
+                    const std::string sp = m["sub_model"].value("provider", "");
+                    const std::string sm = m["sub_model"].value("model", "");
+                    if (!sp.empty() && !sm.empty())
+                        mm["sub_model"] = json{{"provider", sp}, {"model", sm}};
+                }
+                models.push_back(std::move(mm));
+            }
+        e["models"] = models;
+        cleaned.push_back(e);
+    }
+    for (const auto& p : cleaned)
+        for (const auto& m : p.value("models", json::array())) {
+            if (!m.is_object() || !m.contains("sub_model")) continue;
+            const json& sm = m["sub_model"];
+            bool ok = false;
+            for (const auto& q : cleaned) {
+                if (!q.is_object() || q.value("name", "") != sm.value("provider", ""))
+                    continue;
+                for (const auto& qm : q.value("models", json::array()))
+                    if (qm.is_object() && qm.value("id", "") == sm.value("model", "")) {
+                        ok = qm.value("enabled", true);
+                        break;
+                    }
+                break;
+            }
+            if (!ok) {
+                err = "子 agent 模型引用无效：" + sm.value("provider", "") + " / " +
+                      sm.value("model", "") + "（供应商不存在或模型未启用）";
+                return false;
+            }
+        }
+    return true;
+}
+
+// 清洗结果落位（api_config_save_ 第二段提纯）：current_provider 收敛——前端指定
+// 或保留，必须命中清单**且供应商启用（带启用模型）**，停用的供应商继续当当前项
+// 会让输入栏仍走它的凭据、停用语义失真（踩过）；不命中 ⇒ 回落第一个可用的。
+// provider/model 同步为当前供应商（重启 env 兼容 + 旧面板读法），当前模型不在
+// 启用列表 ⇒ 切到第一个启用模型。返回当前供应商的 api_key（cloud 无 key 拦截用）。
+static std::string settle_current_provider(json& config, const json& cleaned,
+                                           const json& in) {
+    const auto usable = [](const json& p) {
+        if (!p.is_object() || !p.value("enabled", false)) return false;
+        for (const auto& m : p.value("models", json::array()))
+            if (m.is_object() && m.value("enabled", false)) return true;
+        return false;
+    };
+    std::string cur = config.value("current_provider", "");
+    if (in.contains("current_provider") && in["current_provider"].is_string())
+        cur = in["current_provider"].get<std::string>();
+    bool cur_ok = false;
+    for (const auto& p : cleaned)
+        if (p.value("name", "") == cur) { cur_ok = usable(p); break; }
+    if (!cur_ok)
+        for (const auto& p : cleaned)
+            if (usable(p)) { cur = p.value("name", ""); cur_ok = true; break; }
+    if (!cur_ok && !cleaned.empty()) cur = cleaned.front().value("name", "");
+    config["current_provider"] = cur;
+    std::string cur_key;
+    for (const auto& p : cleaned) {
+        if (p.value("name", "") != cur) continue;
+        config["provider"] = p.value("type", "cloud");
+        cur_key = p.value("api_key", "");
+        bool m_ok = false;
+        for (const auto& m : p.value("models", json::array()))
+            if (m.value("enabled", false) &&
+                m.value("id", "") == config.value("model", "")) { m_ok = true; break; }
+        if (!m_ok)
+            for (const auto& m : p.value("models", json::array()))
+                if (m.value("enabled", false)) { config["model"] = m["id"]; break; }
+        break;
+    }
+    return cur_key;
+}
+
 /// POST /api/config → 供应商两层配置校验 + 落盘 + 当前供应商热切。key 只写
-/// 不读（响应经 has_key 掩码；请求留空 = 按名保留旧值）。select 线程只解析，
-/// 校验/合并/落盘/热切全在宿主线程闭包后补发响应（校验失败同样走补发 200/400）。
+/// 不读（响应经 has_key 掩码）。select 线程只解析，校验/合并/落盘/热切全在
+/// 宿主线程闭包后补发响应（校验失败同样走补发 200/400）。mock = 测试模式：
+/// 供应商/模型修改忽略（mcp/权限模式等其余字段照常保存）。
 http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
     json in = parse_body_(req.body);
     return defer_(req, [this, in = std::move(in)](std::uint64_t conn) {
-    // 供应商两层配置：{"providers":[{name,type,base_url,api_key,enabled,
-    // models:[{id,context,enabled}...]}], "current_provider":"名称"}——
-    // 校验：供应商名非空/≤64/去重（大小写不敏感）、type 只许 mock|cloud、
-    // 模型 id 同规 + context ≥1024、至多 32 供应商 × 32 模型。
-    // api_key 留空/缺失 = 按名保留旧值（key 不出前端，前端回传必为空）。
-    // mock = 测试模式：供应商内置合成、不持久化——面板的供应商/模型修改忽略
-    // （mcp/权限模式等其余字段照常保存）；cloud 模式替换式合并（只动 cloud 项，
-    // 保留其他类型项——磁盘数据跨模式保全）
     if (in.contains("providers") && in["providers"].is_array() && llm_mode_ != "mock") {
-        const json existing = config_.value("providers", json::array());
-        const auto old_key_of = [&existing](const std::string& name) -> std::string {
-            for (const auto& p : existing)
-                if (p.is_object() && p.value("name", "") == name)
-                    return p.value("api_key", "");
-            return "";
-        };
         json cleaned = json::array();
-        std::vector<std::string> seen;
-        bool bad = false;
-        for (const auto& p : in["providers"]) {
-            if (!p.is_object() || cleaned.size() >= 32) { bad = true; break; }
-            const std::string name = p.contains("name") && p["name"].is_string()
-                                         ? p["name"].get<std::string>() : "";
-            const std::string type = p.contains("type") && p["type"].is_string()
-                                         ? p["type"].get<std::string>() : "cloud";
-            if (name.empty() || name.size() > 64 || type != "cloud") {
-                bad = true; break;   // 面板单侧显示（产品拍板）：mock 内置不接受外部写入
-            }
-            const std::string low = vcws::ascii_lower(name);
-            if (std::find(seen.begin(), seen.end(), low) != seen.end()) { bad = true; break; }
-            seen.push_back(low);
-            json e = {{"name", name}, {"type", type}};
-            if (p.contains("builtin") && p["builtin"].is_boolean())
-                e["builtin"] = p["builtin"];
-            if (type == "cloud") {
-                e["base_url"] = p.contains("base_url") && p["base_url"].is_string()
-                                    ? p["base_url"].get<std::string>() : "";
-                std::string key = p.contains("api_key") && p["api_key"].is_string()
-                                      ? p["api_key"].get<std::string>() : "";
-                if (key.empty()) key = old_key_of(name);   // 留空 = 按名保留旧 key
-                e["api_key"] = key;
-            }
-            e["enabled"] = p.value("enabled", false);
-            json models = json::array();
-            std::vector<std::string> mseen;
-            if (p.contains("models") && p["models"].is_array())
-                for (const auto& m : p["models"]) {
-                    if (!m.is_object() || models.size() >= 32) { bad = true; break; }
-                    const std::string mid = m.contains("id") && m["id"].is_string()
-                                                ? m["id"].get<std::string>() : "";
-                    const int ctx = m.contains("context") && m["context"].is_number_integer()
-                                        ? m["context"].get<int>() : 0;
-                    const std::string mlow = vcws::ascii_lower(mid);
-                    if (mid.empty() || mid.size() > 64 || ctx < 1024 ||
-                        std::find(mseen.begin(), mseen.end(), mlow) != mseen.end()) {
-                        bad = true; break;
-                    }
-                    mseen.push_back(mlow);
-                    // 子 agent 模型（可选）：结构化引用 {"provider","model"}——结构化
-                    // 而非 "供应商/模型" 拼串，供应商名可含 "/" 不歧义。缺省 = 自己
-                    // （默认形态）；存在性校验在 cleaned 集齐后统一做（允许引用清单
-                    // 中靠后的供应商）。
-                    json mm = json{{"id", mid}, {"context", ctx},
-                                   {"enabled", m.value("enabled", true)}};
-                    if (m.contains("sub_model") && m["sub_model"].is_object()) {
-                        const std::string sp = m["sub_model"].value("provider", "");
-                        const std::string sm = m["sub_model"].value("model", "");
-                        if (!sp.empty() && !sm.empty())
-                            mm["sub_model"] = json{{"provider", sp}, {"model", sm}};
-                    }
-                    models.push_back(std::move(mm));
-                }
-            if (bad) break;
-            e["models"] = models;
-            cleaned.push_back(e);
-        }
-        if (bad)
-            return server_->respond(conn, json_resp(
-                {{"ok", false},
-                 {"error", "供应商配置非法（名称/模型 ID 重复或为空、"
-                           "上下文 ≥1024、超 32 个等）"}}));
-        // 子模型引用存在性后置校验：目标供应商必须在本次保存清单内且模型在其
-        // 启用列表——悬空引用运行期会静默回落主模型，保存时拦截让用户当场看到
-        for (const auto& p : cleaned)
-            for (const auto& m : p.value("models", json::array())) {
-                if (!m.is_object() || !m.contains("sub_model")) continue;
-                const json& sm = m["sub_model"];
-                bool ok = false;
-                for (const auto& q : cleaned) {
-                    if (!q.is_object() || q.value("name", "") != sm.value("provider", ""))
-                        continue;
-                    for (const auto& qm : q.value("models", json::array()))
-                        if (qm.is_object() && qm.value("id", "") == sm.value("model", "")) {
-                            ok = qm.value("enabled", true);
-                            break;
-                        }
-                    break;
-                }
-                if (!ok)
-                    return server_->respond(
-                        conn, json_resp(
-                                  {{"ok", false},
-                                   {"error", "子 agent 模型引用无效：" +
-                                                 sm.value("provider", "") + " / " +
-                                                 sm.value("model", "") +
-                                                 "（供应商不存在或模型未启用）"}}));
-            }
-        // current_provider：前端指定或保留；必须命中列表**且供应商启用（带启用
-        // 模型）**——停用的供应商继续当当前项，输入栏/对话仍走它的凭据，停用
-        // 语义失真（踩过：停用当前供应商保存后，右下角选择器还挂着它的模型）。
-        // 不命中 ⇒ 回落第一个可用的；全都不可用才保留原名（前端显示「未选择
-        // 模型」，发送报缺 key 类错误，由用户去设置面启用）。
-        std::string cur = config_.value("current_provider", "");
-        if (in.contains("current_provider") && in["current_provider"].is_string())
-            cur = in["current_provider"].get<std::string>();
-        const auto usable = [](const json& p) {
-            if (!p.is_object() || !p.value("enabled", false)) return false;
-            for (const auto& m : p.value("models", json::array()))
-                if (m.is_object() && m.value("enabled", false)) return true;
-            return false;
-        };
-        bool cur_ok = false;
-        for (const auto& p : cleaned)
-            if (p.value("name", "") == cur) { cur_ok = usable(p); break; }
-        if (!cur_ok)
-            for (const auto& p : cleaned)
-                if (usable(p)) { cur = p.value("name", ""); cur_ok = true; break; }
-        if (!cur_ok && !cleaned.empty()) cur = cleaned.front().value("name", "");
-        {
-            json merged = json::array();
-            for (const auto& p : config_.value("providers", json::array()))
-                if (p.is_object() && p.value("type", "cloud") != "cloud")
-                    merged.push_back(p);   // 非 cloud 类型项保全（磁盘跨模式数据不丢）
-            // NOTE: 不可 move——合并块之后的 provider/model 同步循环还要遍历
-            // cleaned，move 会把元素搬成 null 令该循环静默失效 + 响应路径抛
-            // type_error（500，踩过）
-            for (const auto& c : cleaned) merged.push_back(c);
-            config_["providers"] = std::move(merged);
-        }
-        config_["current_provider"] = cur;
-        // config.provider/model 同步为当前供应商（重启 env 兼容 + 旧面板读法）
-        std::string cur_key, cur_burl;
-        for (const auto& p : cleaned) {
-            if (p.value("name", "") != cur) continue;
-            config_["provider"] = p.value("type", "cloud");
-            cur_key = p.value("api_key", "");
-            cur_burl = p.value("base_url", "");
-            // 当前模型不在该供应商启用列表 ⇒ 切到第一个启用模型
-            bool m_ok = false;
-            for (const auto& m : p.value("models", json::array()))
-                if (m.value("enabled", false) &&
-                    m.value("id", "") == config_.value("model", "")) { m_ok = true; break; }
-            if (!m_ok)
-                for (const auto& m : p.value("models", json::array()))
-                    if (m.value("enabled", false)) { config_["model"] = m["id"]; break; }
-            break;
-        }
+        std::string err;
+        if (!validate_providers(in["providers"],
+                                config_.value("providers", json::array()), cleaned, err))
+            return respond_err_(conn, err);
+        // 替换式合并：cloud 项换成清洗结果，非 cloud 类型项保全（磁盘跨模式数据
+        // 不丢）。NOTE: cleaned 只按引用遍历不可 move——落位前 settle 还要遍历它
+        json merged = json::array();
+        for (const auto& p : config_.value("providers", json::array()))
+            if (p.is_object() && p.value("type", "cloud") != "cloud")
+                merged.push_back(p);
+        for (const auto& c : cleaned) merged.push_back(c);
+        config_["providers"] = std::move(merged);
+        const std::string cur_key = settle_current_provider(config_, cleaned, in);
         // cloud 无 key ⇒ 必然 FAILED(5)，提前拦截并点名
         if (config_.value("provider", "mock") == "cloud" && cur_key.empty())
-            return server_->respond(conn, json_resp(
-                {{"ok", false},
-                 {"error", "当前供应商（" + cur + "）未填写 API Key——"
-                           "请在供应商详情中输入后重试"}}));
+            return respond_err_(conn, "当前供应商（" +
+                                          config_.value("current_provider", "") +
+                                          "）未填写 API Key——请在供应商详情中输入后重试");
     }
     if (in.contains("key") && in["key"].is_string() && !in["key"].get<std::string>().empty())
         config_["api_key"] = in["key"];
@@ -336,27 +340,21 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
         config_["mcp"] = in["mcp"];
         mcp_changed = true;
     }
-    // 插件 UI 贡献的值域：plugins.<名> 整节透传（各插件 schema 的表单
-    // 值，插件启动/reload 时读取）。
+    // 插件 UI 贡献的值域：plugins.<名> 整节透传（各插件 schema 的表单值）
     bool plugins_changed = false;
     if (in.contains("plugins") && in["plugins"].is_object()) {
         config_["plugins"] = in["plugins"];
         plugins_changed = true;
     }
-    // NOTE: mcp/plugins 任一变化即发 McpReload——mcp 插件收到后重读 config
-    //（超时类值随 reload 生效）。踩过：只置 mcp_changed 不发射，设置面板保存
-    // server 清单后热重载从未生效（死机制）。
-    // 踩过②：发射必须排在 persist_config_() 之后——mcp 插件 reload 读的是磁盘
-    // 文件，poster 排水抢在落盘前会让它读到旧清单、原样重启旧 server 组。
+    // NOTE: mcp/plugins 任一变化即发 McpReload——发射必须排在 persist_config_()
+    // 之后：mcp 插件 reload 读磁盘文件，poster 排水抢在落盘前会读到旧清单
+    //（踩过：只置位不发射热重载从未生效；抢跑则原样重启旧 server 组）。
     if (mcp_changed || plugins_changed) {
         mcp_reload_pending_ = true;
     }
-    if (!persist_config_()) {
-        const std::string cfg_path = config_path_().string();
-        return server_->respond(conn, json_resp({{"ok", false},
-                          {"error", "数据目录不可写：" + cfg_path +
-                                        " —— 重启宿主时加 -DataHome 参数换个位置"}}));
-    }
+    if (!persist_config_())
+        return respond_err_(conn, "数据目录不可写：" + config_path_().string() +
+                                      " —— 重启宿主时加 -DataHome 参数换个位置");
     if (mcp_reload_pending_) {
         mcp_reload_pending_ = false;
         nostos::kit::poster_submit(poster_, [this] {
@@ -364,10 +362,8 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
             host_.emit(vc_api::mcp_reload, &r);   // poster 排水后宿主线程发射
         });
     }
-    // 当前使用供应商热切：广播 vc.llm.set_active（provider 名=type、key、
-    // base_url——尾部追加）——即时生效，无需重启。
-    // NOTE: mock 模式恒发 mock（同 activate 对齐——config 的 provider 可能是
-    // 另一模式遗留值，跨模式热切会把本模式插件休眠掉）
+    // 当前使用供应商热切：广播 vc.llm.set_active——即时生效，无需重启。
+    // NOTE: mock 模式恒发 mock（同 activate 对齐——跨模式热切会把本模式插件休眠掉）
     post_llm_set_active_();
     host_.log(2, "ithaca.webui: 配置已保存（供应商「" + config_.value("current_provider", "") +
                      "」已热切）");
@@ -387,11 +383,9 @@ json WebuiPlugin::api_ui_registry_() {
     return {{"ok", true}, {"plugins", std::move(arr)}};
 }
 
-// 组装并投递 vc.llm.set_active（阶段二追加 context_window：当前供应商、当前启用
-// 模型的 context——agent 据此做 0.9×W 动态压缩阈值；mock/未知 = 0，agent 回退
-// 兜底阈值）。activate 对齐、配置保存热切、模型热切补发共用本出口（单点维护）。
-// NOTE: mock 模式不发（无凭据/窗口，阶段一起的行为）——跨模式热切会把本模式
-// 插件休眠掉（踩过）。
+// 组装并投递 vc.llm.set_active（context_window = 当前启用模型的窗口——agent
+// 动态压缩阈值的源头；mock 模式不发——跨模式热切会把本模式插件休眠掉，踩过）。
+// activate 对齐、配置保存热切、模型热切补发共用本出口（单点维护）。
 void WebuiPlugin::post_llm_set_active_() {
     if (llm_mode_ == "mock") return;
     const std::string provider = config_.value("provider", "cloud");
@@ -439,6 +433,95 @@ void WebuiPlugin::post_llm_set_active_() {
             sub_base.empty() ? nullptr : sub_base.c_str()};
         host_.emit(vc_api::llm_set_active, &e);
         // 工作区归会话管：配置保存不热切工作区
+    });
+}
+
+// ---- 供应商模型清单拉取（OpenAI 兼容 GET /models）---------------------------
+
+// WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
+// 两插件无公共 TU）。错误码显式传入：调用点已离开失败现场，GetLastError 不可再读。
+static std::string winhttp_error_text_(unsigned long gle) {
+    switch (gle) {
+        case ERROR_WINHTTP_TIMEOUT: return "超时";
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
+        case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
+        case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
+        default: return "WinHTTP 错误 " + std::to_string(gle);
+    }
+}
+
+/// POST /api/provider/models {name, base_url, api_key?} → 请求平台的 OpenAI 兼容
+/// GET /models，模型 ID 清单经 SSE provider_models 事件回设置面（自动填充模型
+/// 表）。key 定位在宿主线程闭包（留空 = 按名取已存——前端掩码拿不到明文），
+/// 网络在 detach 线程（外网往返不能占宿主排水）；瞬态事件不落 transcript。
+http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
+    json in = parse_body_(req.body);
+    const std::string name = in.value("name", "");
+    std::string base = in.value("base_url", "");
+    std::string key = in.value("api_key", "");
+    if (base.empty()) return json_resp({{"ok", false}, {"error", "Base URL 为空"}});
+    return defer_(req, [this, name, base = std::move(base),
+                        key = std::move(key)](std::uint64_t conn) mutable {
+        if (key.empty())
+            for (const auto& p : config_.value("providers", json::array()))
+                if (p.is_object() && p.value("name", "") == name) {
+                    key = p.value("api_key", "");
+                    break;
+                }
+        if (key.empty())
+            return server_->respond(conn, json_resp(
+                {{"ok", false},
+                 {"error", "API Key 为空——先粘贴 key，或该供应商已保存过 key"}}));
+        // 停机纪律（见 webui_plugin.hpp 文件头）：detach 线对插件零触碰——spawn
+        // 前在宿主线程快照 server_ 值捕获，广播直调快照；deactivate 的 reset 不
+        // 与本线程竞态（快照保活，stop 后 broadcast 为安全 no-op）
+        std::shared_ptr<http::Server> srv = server_;
+        std::thread([srv, base = std::move(base), key = std::move(key)] {
+        // base 尾斜杠归一后拼 /models；llm_cloud 同款四段解析口径
+        std::string url = base;
+        while (!url.empty() && url.back() == '/') url.pop_back();
+        url += "/models";
+        const std::wstring wurl = win::utf8_to_wide(url);
+        const std::wstring wkey = win::utf8_to_wide(key);
+        json result = {{"ok", false}, {"error", std::string("请求未发起")}};
+        const win::HttpReply reply = win::http_fetch(wurl, {
+            .headers = {L"Authorization: Bearer " + wkey},
+            // 短超时：清单拉取是设置面动作，用户在等，失败要快回
+            .timeouts = {5000, 5000, 10000, 30000},
+        });
+        if (!reply.sent || reply.status == 0) {
+            result["error"] = winhttp_error_text_(reply.gle);
+        } else {
+            const json doc = json::parse(reply.body, nullptr,
+                                         /*allow_exceptions=*/false);
+            if (reply.status == 200 && doc.is_object() && doc.contains("data") &&
+                doc["data"].is_array()) {
+                json ids = json::array();
+                for (const auto& m : doc["data"])
+                    if (m.is_object() && m.contains("id") && m["id"].is_string())
+                        ids.push_back(m["id"].get<std::string>());
+                result = {{"ok", true}, {"models", std::move(ids)}};
+            } else {
+                // 错误消息人话化：平台 OpenAI 形态 error.message 优先，
+                // 原文兜底（截 200 字节防超长错误体刷屏）
+                std::string msg;
+                if (doc.is_object()) {
+                    if (doc.contains("error") && doc["error"].is_object())
+                        msg = doc["error"].value("message", "");
+                    else if (doc.contains("message") && doc["message"].is_string())
+                        msg = doc["message"].get<std::string>();
+                }
+                if (msg.empty()) msg = vcws::trim_utf8(reply.body, 200);   // 按字节切会劈开 UTF-8 ⇒ dump 抛 316
+                result = {{"ok", false},
+                          {"error", "HTTP " + std::to_string(reply.status) +
+                                        (msg.empty() ? "" : "：" + msg)}};
+            }
+        }
+        json evt = {{"type", "provider_models"}};
+        evt.merge_patch(result);
+        if (srv) srv->broadcast(evt.dump());   // kit 层线程安全；已停实例 = no-op
+    }).detach();
+        server_->respond(conn, json_resp({{"ok", true}, {"pending", true}}));
     });
 }
 

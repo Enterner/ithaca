@@ -1,6 +1,6 @@
 // plugin/ctx_basic —— 上下文管理策略插件（机械策略，发布 vc.ctx.v1）。
 //
-// 策略逻辑 = plugins/agent/context.hpp 纯函数层的组合（include 复用实现，
+// 策略逻辑 = shared/vcagent/context.hpp 纯函数层的组合（include 复用实现，
 // 不复制算法）：plan_compress 折叠计划 / ingest_tool_result 回灌管线 /
 // recall_fetch·recall_entries_summary·recall_paged 回查 / compact_result 最小
 // 充分记录 / effective_threshold·hard_window·backoff_threshold 阈值件 /

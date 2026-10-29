@@ -35,7 +35,7 @@ bool AgentCtx::discover_tools() {
     // 内置工具：context.recall（外置存储回查；仅 raw 外置可用时暴露——策略表
     // 接管时按其 capabilities 自述开合，外置目录/回查口径随策略）
     if (!raw_dir_.empty() || ctx_cap_recall_)
-            tools_.push_back(json{
+        tools_.push_back(json{
         {"type", "function"},
         {"function",
          {{"name", vcagent::kRecallTool},
@@ -100,7 +100,7 @@ std::string AgentCtx::exec(const Bound& b, const std::string& tool, const json& 
         b.table->execute(b.table->self, tool.c_str(), args_buf_.c_str(), turn_no_, &out) !=
             NOSTOS_OK ||
         out == nullptr)
-        return json{{"ok", false}, {"error", "execute 基础设施失败"}}.dump();
+        return err_result("execute 基础设施失败");
     return out;  // 调用期有效：调用方立即拷贝（进 messages_ / 事件）
 }
 
@@ -125,9 +125,8 @@ void AgentCtx::emit_subagent_(int turn_id, int phase, const char* tool,
 }
 
 void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
-    // 调用参数摘要人话化：op 清单/读哪个文件/列哪个目录/搜什么词，而非原始
-    // JSON（原始形态对人不可读，大 content 还会截断出半截转义——webui 的
-    // ● 行共用此摘要）。解析不出 ⇒ 空，回退原 JSON 截断（前向兼容未知工具）
+    // 参数摘要人话化（op 清单/读哪个文件/搜什么词，原始 JSON 对人不可读）；
+    // 解析不出 ⇒ 空，回退原 JSON 截断（前向兼容未知工具）
     nostos::kit::Scratch scratch;
     std::string brief = summarize_call(tool_last(name), args);
     if (brief.empty()) brief = trim(args.dump(), 200);
@@ -135,12 +134,10 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
         emit_subagent_(turn_no_, 2, name.c_str(), brief);
         return;
     }
-    // task 调用卡不落对话流：spawn 卡与其同信息（描述/类型全含），一次派发
-    // 只显示一张卡（对齐成熟 CLI 的单 Task 块形态）
+    // task 调用卡不落对话流：spawn 卡与其同信息，一次派发只显示一张卡
     if (tool_last(name) == "task") return;
-    // 调用参数原始形态（UI 展开详情的数据源，ToolCall 尾部追加字段）：compact
-    // dump + 8KB 护栏截断（按码点切，防劈开 UTF-8）。展开是低频动作，详情超长
-    // 只会拖累落盘与重放；截断尾巴带标记，前端解析不了 JSON 就按原文显示
+    // 参数原始形态（UI 展开详情的数据源，ToolCall 尾部追加字段）：compact dump +
+    // 8KB 护栏，按码点切防劈开 UTF-8；截断尾巴带标记，前端解析不了按原文显示
     std::string args_json = args.dump();
     if (args_json.size() > 8192)
         args_json = vcws::trim_utf8(args_json, 8192) + "\n…（参数过长，已截断）";
@@ -155,16 +152,13 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
                        std::string(ok ? "" : "✗ ") + summarize_result(tool_last(name), brief));
         return;
     }
-    // task 完成结果卡不落对话流：报告经上下文回灌给模型，收口状态由收口卡
-    // （phase 4/5）承载——只保留拒绝/失败结果卡（那是 spawn 被护栏拒掉时的
-    // 唯一可见反馈）
+    // task 完成结果卡不落对话流：报告经上下文回灌，收口状态由收口卡（phase 4/5）
+    // 承载——只保留拒绝/失败结果卡（spawn 被护栏拒掉时的唯一可见反馈）
     if (tool_last(name) == "task" && ok) return;
-    // 结果摘要人话化：apply → 「路径（新文件/N 处编辑）+A −B」；run → 「exit N｜首行」；
-    // 失败 → 首条错误点名。解析不出就回退原 JSON 截断（前向兼容）
+    // 结果摘要人话化；后台受理 ack 的归属信号随事件下发（ToolResult 尾部追加
+    // run_id 字段）——消费方按字段建「调用行 ↔ run」映射，不从 brief 文案反解。
+    // 仅 ack 形态（run_id>0 且无 exit_code）填充
     nostos::kit::Scratch scratch;
-    // 后台受理 ack 的归属信号随事件下发（ToolResult 尾部追加 run_id 字段）——
-    // 消费方按字段建「调用行 ↔ run」映射，不从 brief 文案反解。仅 ack 形态
-    // （run_id>0 且无 exit_code）填充——前台执行一次性完成，无归属意义
     long long ack_run = 0;
     {
         const json r = json::parse(brief, nullptr, /*allow_exceptions=*/false);

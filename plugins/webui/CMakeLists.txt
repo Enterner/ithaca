@@ -20,13 +20,15 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(webui_plugin
     src/plugin.cpp      # 生命周期 + HTTP 路由 + 通用工具 + NOSTOS_PLUGIN 入口
-    src/picker.cpp      # 原生选目录对话框
+    src/picker.cpp      # 原生选目录对话框 + /api/pick-folder
     src/events.cpp      # 事件总线订阅
-    src/sessions.cpp    # 会话注册表/transcript + /api/session*
-    src/config.cpp      # 供应商两层配置 + /api/config
+    src/sessions.cpp    # 会话注册表/transcript + /api/session* + 上下文构成
+    src/config.cpp      # 供应商两层配置 + /api/config + 模型清单拉取
     src/fs_watcher.cpp  # 文件树真监听
     src/prober.cpp      # 兄弟实例健康探测 + /api/shell/sessions
-    src/api.cpp         # 输入/裁决/模型/选目录/文件树/MCP 端点
+    src/api.cpp         # 对话动作端点（输入/裁决/权限模式/模型热切/会话命令）
+    src/attachments.cpp # 附件管线（上传落盘 + 多模态载荷 + base64 编解码）
+    src/api_fs.cpp      # 工作区代理端点（文件树/查看器/MCP 状态）
 )
 # 内部头（include/webui_plugin.hpp：类声明 + 翻译单元职责地图）
 target_include_directories(webui_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")

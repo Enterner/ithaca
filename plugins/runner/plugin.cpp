@@ -22,6 +22,8 @@
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
 
+#include "vcplugin/tool_table.hpp"  // vcplugin：工具表出参契约/发布三连（四插件单源）
+
 #include <nostos/kit/path_jail.hpp>   // cwd 容纳检查（安全原语在 kit 单源）
 #include "vcws/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
@@ -53,6 +55,11 @@ constexpr std::size_t kOutputCap = 256 * 1024;   // 每 run 输出字节上限�
 constexpr std::size_t kLineCap = 4 * 1024;       // 单行截断
 constexpr int kDefaultTimeoutMs = 600000;
 constexpr int kMaxTimeoutMs = 3600000;
+
+// 工具级失败的标准回灌形态（NOSTOS_OK + ok:false JSON——给模型的正常通路）
+json tool_error(std::string msg) {
+    return json{{"ok", false}, {"error", std::move(msg)}};
+}
 
 // cmd 兜底路线的子进程输出是 OEM 码页（控制台代码页，中文系统 936）——字节流直接
 // 按 UTF-8 净化会把中文劈成乱码；先按 OEM 解到 UTF-16 再转 UTF-8。按行调用安全：
@@ -112,10 +119,10 @@ public:
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
         // Windows 沙箱取舍（对齐成熟 CLI 的实际形态——Windows 上命令不经沙箱，
         // 安全边界 = 三档权限审批 + cwd jail + 输出/超时纪律）：AppContainer 两层
-        // 路径在本机 Insider 26200 实测残缺——v1 SECURITY_CAPABILITIES 拒发(87)，
-        // v2 低盒令牌下 cmd 的 dir 内建拒绝、MSYS 系工具（ls/grep/wc）初始化必挂
-        // (0xC0000142)，full-auto 的可用命令面反而残缺。默认非沙箱执行；
-        // ITHACA_RUN_SANDBOX=1 强制恢复沙箱路径（诊断/未来 Windows 沙箱可用时）
+        // 路径在本机 Insider 26200 实测残缺（v1 SECURITY_CAPABILITIES 拒发 87；
+        // v2 低盒令牌下 cmd 的 dir 内建拒绝、MSYS 工具初始化必挂 0xC0000142）
+        // ——可用命令面反而残缺。默认非沙箱执行；ITHACA_RUN_SANDBOX=1 强制恢复
+        // 沙箱路径（诊断/未来 Windows 沙箱可用时）
         const char* fs_env = std::getenv("ITHACA_RUN_SANDBOX");
         force_sandbox_ = fs_env != nullptr && std::string_view(fs_env) == "1";
         sandboxed_.store((mode_ == "full-auto") && force_sandbox_);
@@ -140,14 +147,11 @@ public:
             mode_ = next;
             sandboxed_.store((mode_ == "full-auto") && force_sandbox_);
         }));
-        nostos::abi::init_table(table_);
-        table_.self = this;
-        table_.list = &RunnerPlugin::list_thunk;
-        table_.execute = &RunnerPlugin::execute_thunk;
-        if (host.publish(vcrun::kToolSvc, &table_) != NOSTOS_OK) {
-            host.log(4, "ithaca.runner: 发布 vc.tool.runner 失败（同名服务已存在？）");
+        if (vcplugin::publish_tool_table(host, table_, this, vcrun::kToolSvc,
+                                         vcrun::kToolSvcName, &RunnerPlugin::list_thunk,
+                                         &RunnerPlugin::execute_thunk,
+                                         "ithaca.runner") != NOSTOS_OK)
             return NOSTOS_ERR_FAILED;
-        }
         // 领取 poster——runner 的异步事件全部经它回流（漏掉 ⇒ post 空指针调用）。
         if (host.acquire_poster(&poster_) != NOSTOS_OK) {
             host.log(4, "ithaca.runner: 领取 poster 失败（宿主 ABI 过旧或未实现）");
@@ -234,24 +238,22 @@ private:
         try {
             const std::string t = tool != nullptr ? tool : "";
             if (t == "run") return finish(run_tool(args, turn_id), out);
-            return finish(json{{"ok", false}, {"error", "未知工具: \"" + t + "\""}}, out);
+            return finish(tool_error("未知工具: \"" + t + "\""), out);
         } catch (const std::exception& e) {
-            return finish(json{{"ok", false}, {"error", std::string("内部错误: ") + e.what()}},
-                          out);
+            return finish(tool_error(std::string("内部错误: ") + e.what()), out);
         }
     }
 
     nostos_status finish(json result, const char** out) {
-        out_buf_ = result.dump();
-        *out = out_buf_.c_str();
-        return NOSTOS_OK;  // 工具级失败 = ok:false JSON，回灌模型
+        // 工具级失败 = ok:false JSON，回灌模型（出参契约单源 vcplugin::finish_result）
+        return vcplugin::finish_result(out_buf_, result, out);
     }
 
     // ---- run 工具 ------------------------------------------------------------------
 
     json run_tool(const json& args, int turn_id) {
         const std::string cmd = args.value("command_line", std::string{});
-        if (cmd.empty()) return json{{"ok", false}, {"error", "command_line 为空"}};
+        if (cmd.empty()) return tool_error("command_line 为空");
 
         // cwd：jail 内相对路径（空 = 根）
         const std::shared_ptr<nostos::kit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
@@ -259,14 +261,13 @@ private:
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
             // 纯点/斜杠路径（"."、" ./ "类）在 PathJail 折叠后为空，语义 = 根本身；
             // ".." 含转义企图，不在此列——必须走 resolve 被拒
-            bool dots_only = rel.find("..") == std::string::npos;
-            for (const char c : rel)
-                if (c != '.' && c != '/' && c != '\\') { dots_only = false; break; }
+            const bool dots_only = rel.find("..") == std::string::npos &&
+                                   rel.find_first_not_of("./\\") == std::string::npos;
             std::string err;
             std::wstring full;
             std::string norm;
             if (!dots_only && !jail->resolve(rel, full, norm, err))
-                return json{{"ok", false}, {"error", "cwd 被拒: " + err}};
+                return tool_error("cwd 被拒: " + err);
             if (!dots_only) cwd_wide = full;
         }
 
@@ -280,19 +281,16 @@ private:
         const int timeout_ms =
             std::min(std::max(args.value("timeout_ms", kDefaultTimeoutMs), 1000), kMaxTimeoutMs);
 
-        // shell 选择：非沙箱优先 Git Bash——bash 语义模型最熟（&& | > 重定向、
-        // 引号、$() 全部原生），且绕开 cmd 的怪癖（echo 尾随空格、&& 链中段
-        // 失败静默、OEM 码页输出）。脚本经 stdin 传递（bash -s + stdin_pipe 全
-        // 量写后送 EOF）——命令文本不经命令行解析，-c 的引号转义链在
-        // CreateProcess→bash 间断裂（探针实测 unexpected EOF）。沙箱仅 cmd
-        // 验证可用：msys 的 BaseNamedObjects 共享节在 AppContainer 下被拒
-        // （0xC0000022 探针实测；PS 的 .NET runtime 同死）——full-auto 保持
-        // cmd /d /s /c。/s 保留内层引号（python -c "…" 原样透传），/d 禁
-        // Autorun。NOTE: 沙箱低盒令牌下 cmd 的 dir 内建被拒（Insider 26200
-        // 实测；目录枚举走 workspace.list / python os.listdir 即可）。
+        // shell 选择：非沙箱优先 Git Bash——bash 语义最熟（&& | > 重定向、引号、
+        // $() 原生），且绕开 cmd 怪癖（echo 尾随空格、&& 链中段失败静默、OEM 码页）。
+        // 脚本经 stdin 传递（bash -s + stdin_pipe 全量写后送 EOF）——-c 的引号转义
+        // 链在 CreateProcess→bash 间断裂（探针实测）。沙箱仅 cmd 验证可用（msys 的
+        // BaseNamedObjects 共享节被 AppContainer 拒 0xC0000022，PS 的 .NET 同死）
+        // ——full-auto 保持 cmd /d /s /c；/s 保留内层引号，/d 禁 Autorun；低盒令牌
+        // 下 cmd 的 dir 内建被拒（26200 实测；目录枚举走 workspace.list / python）。
         // 包装在本层做，agent 侧摘要仍显示用户原始命令。
-        // ITHACA_RUNNER_SHELL=cmd 强制 cmd 路径——selftest/golden 的剧本命令
-        // 是 cmd 语义，回归的跨机器一致性要求 shell 确定（钉 cmd）
+        // ITHACA_RUNNER_SHELL=cmd 强制 cmd 路径——selftest/golden 剧本是 cmd 语义，
+        // 回归的跨机器一致性要求 shell 确定（钉 cmd）
         const bool cmd_forced = [] {
             const wchar_t* v = _wgetenv(L"ITHACA_RUNNER_SHELL");
             return v != nullptr && _wcsicmp(v, L"cmd") == 0;
@@ -307,10 +305,9 @@ private:
         // agent 确认清单把关（建议/自动编辑模式逐条批准）
         bool degraded = false;
         // bash 路径的 stdin 写入推迟到读取线程就绪之后（见下方 WriteFile）：
-        // 匿名管道缓冲有限，大脚本 + 早输出时 bash 忙于执行不读 stdin、本线程阻塞
-        // 在写 stdin、子命令阻塞在写 stdout（读取线程未启动无人排水）⇒ 三方互等
-        // 600s 超时。写端先从 ChildPipes 取走自管——bash -s 读到 EOF 才执行脚本，
-        // 写完必须即关送 EOF，不能等 run 收口的析构
+        // 匿名管道缓冲有限，大脚本 + 早输出时三方互等（bash 忙执行不读 stdin、
+        // 本线程阻塞在写、子命令阻塞在写 stdout 无人排水）⇒ 600s 超时。写端先
+        // 取走自管——bash -s 读到 EOF 才执行脚本，写完必须即关送 EOF
         HANDLE bash_stdin = nullptr;
         nostos::kit::PipedProcess p;
         if (!bash.empty()) {
@@ -320,25 +317,23 @@ private:
             if (!p.start(nostos::kit::win::wide_to_utf8(bash.c_str()) +
                              " --norc --noprofile -s",
                          o, err)) {
-                return json{{"ok", false}, {"error", err}};
+                return tool_error(err);
             }
             vcrun::ChildPipes::adopt(p, *child);
             bash_stdin = child->take_stdin();
         } else {
             // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
             // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"
-            // 的 && 被 python 当 argv 吞掉）——cmd 路径统一经 /d /s /c 包装。
-            // /s 保留内层引号，/d 禁 Autorun
+            // 的 && 被 python 当 argv 吞掉）——cmd 路径统一经 /d /s /c 包装
             const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
             if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child,
                               err, sandboxed_, &degraded)) {
                 // 逃生舱（Claude Code unsandboxed-retry 的降级版）：沙箱路径任何失败
-                // （profile/ACL/属性装配/创建）都不回死错误——结构化提示回灌给 agent
-                // 自我纠正（请示用户切模式/改用工作区内工具），与读错误自修纪律同构。
+                // 都不回死错误——结构化提示回灌给 agent 自我纠正，与读错误自修同构
                 if (sandboxed_)
                     err += "（沙箱路径失败。可向用户说明并建议切换 suggest/auto-edit 模式"
                            "重跑，或改用工作区内的工具/venv）";
-                return json{{"ok", false}, {"error", err}};
+                return tool_error(err);
             }
         }
         if (degraded && !degrade_warned_) {
@@ -431,6 +426,13 @@ private:
                 host_.emit_slot(vc_api::run_line, slot, &e);
             });
         };
+        // 退出码回灌（双流 EOF 与宽限期两条收口路共用）
+        const auto emit_exit = [this, run_id, slot](DWORD code) {
+            nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
+                const vc_api::RunExit e{run_id, code};
+                host_.emit_slot(vc_api::run_exit, slot, &e);
+            });
+        };
         bool killed = false;
         bool abandoned = false;   // 宽限期路径 detached 读取线程：条目保留不擦（UAF 防护）
         bool proc_gone_seen = false;
@@ -483,10 +485,7 @@ private:
                         host_.emit_slot(vc_api::run_line, slot, &e);
                     });
                 }
-                nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
-                    const vc_api::RunExit e{run_id, code};
-                    host_.emit_slot(vc_api::run_exit, slot, &e);
-                });
+                emit_exit(code);
                 break;
             }
             if (proc_gone_seen && !both_eof && take.empty() &&
@@ -501,10 +500,7 @@ private:
                 if (entry->rd_err.joinable()) entry->rd_err.detach();
                 DWORD code = 0xFFFFFFFFu;
                 GetExitCodeProcess(entry->child->process, &code);  // proc_gone_seen ⇒ 已退出
-                nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
-                    const vc_api::RunExit e{run_id, code};
-                    host_.emit_slot(vc_api::run_exit, slot, &e);
-                });
+                emit_exit(code);
                 break;
             }
             if (!killed && std::chrono::steady_clock::now() >= deadline) {

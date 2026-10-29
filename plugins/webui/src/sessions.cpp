@@ -1,6 +1,7 @@
 // 会话持久化与端点（plugin/webui 的会话切片）。
 // transcript.jsonl（事件流追加写，每条 flush——展示重放源）与 index.json
-// （注册表，工作区分组，轮次边界落盘）两层；/api/session* 端点族同在本文件。
+// （注册表，工作区分组，轮次边界落盘）两层；/api/session* 端点族与上下文构成
+// 分解（读活跃会话 state.json 的分析端点）同在本文件。
 
 #include "webui_plugin.hpp"
 
@@ -22,11 +23,9 @@ static std::string clip_title(std::string t) {
 // ---- 会话记录（落盘 + 广播；id = transcript 行号，页面据此续传）--------------
 
 // 只落盘。NOTE: 按**引用**收参——id 写回调用方的 rec，广播/延迟广播因此都带
-// id，前端按 id 去重；按值收参时广播无 id，SSE 与重放会重复渲染/重复计数。
-// 宿主线程专用（poster 闭包与事件回调同经宿主排水串行化，无并发）。
+// id，前端按 id 去重。宿主线程专用（poster 闭包与事件回调串行化，无并发）。
 void WebuiPlugin::persist_(json& rec) {
-    // records_/out_/index_ 的复合变更（读 id、追加、注册表更新、落盘）按序
-    // 原子完成——单线程下顺序即原子。
+    // records_/out_/index_ 的复合变更按序原子完成——单线程下顺序即原子。
     rec["id"] = records_.size();
     records_.push_back(rec);
     if (out_.is_open()) {
@@ -48,9 +47,9 @@ void WebuiPlugin::persist_(json& rec) {
             (*e)["tokens"] = (*e).value("tokens", 0LL) +
                              rec["usage"].value("total_tokens", 0LL);
         (*e)["updated"] = now_epoch_();
-        // NOTE: index.json 只在轮次边界落盘（user=开头 / assistant=收口）——
-        // 每条记录都全量重写注册表是纯浪费（几百条转录 = 几十次写盘），元数据
-        // 最多滞后半个 turn；改名/删除/新建/切换等路径直接调 save_index_ 不受此限
+        // NOTE: index.json 只在轮次边界落盘（user=开头 / assistant=收口）——每条
+        // 记录都全量重写注册表是纯浪费，元数据最多滞后半个 turn；改名/删除/新建/
+        // 切换等路径直接调 save_index_ 不受此限
         if (type == "user" || type == "assistant") save_index_();
     }
 }
@@ -86,9 +85,8 @@ void WebuiPlugin::open_transcript_() {
 
 // ---- 子代理明细存档（sessions/agents/<会话id>/agent_<turn>.jsonl）------------
 
-// 追加写 + SSE 广播（宿主线程串行化，事件回调专用）。每条 flush 与 transcript
-// 同纪律；行号 id 按 turn 单调递增，重启后按现存行数续接——前端据此合并
-// 「/api/agent-log 拉取的历史」与「实时增量」不重不漏。
+// 追加写 + SSE 广播（宿主线程串行化，事件回调专用）。行号 id 按 turn 单调递增，
+// 重启后按现存行数续接；每条 flush 与 transcript 同纪律。
 void WebuiPlugin::agent_log_append_(int turn_id, const json& rec) {
     json line;
     if (session_.empty()) return;
@@ -215,8 +213,7 @@ void WebuiPlugin::ensure_session_(const std::string& id, const std::string& work
 }
 
 // 启动兜底清扫：注册表只允许已初始化会话（turns ≥ 1 = transcript 至少 1 条
-// 用户记录）。turns==0 的条目（历史首装种子 / 组合端点中途崩溃的残留）移除，
-// 其空 transcript 一并清掉——注册表结构上不可能留未初始化条目。
+// 用户记录）；turns==0 条目连同空 transcript 一并移除。
 void WebuiPlugin::sweep_uninitialized_() {
     bool changed = false;
     json arr = json::array();
@@ -292,8 +289,7 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
                          ? in["attachments"] : json::array();
     return defer_(req, [this, msg, ws, att_paths = std::move(att_paths)](std::uint64_t conn) {
         if (in_flight_)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "turn 进行中，稍后再试"}}));
+            return respond_err_(conn, "turn 进行中，稍后再试");
         // 毫秒级 id——同秒内连点不撞车
         const std::string id = "s" + std::to_string(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -301,9 +297,7 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
         std::error_code ec;
         if (!ws.empty()) fs::create_directories(fs::path(ws), ec);
         if (!ws.empty() && ec)
-            return server_->respond(conn, json_resp(
-                {{"ok", false},
-                 {"error", "无法创建工作目录：" + ws + "（" + ec.message() + "）"}}));
+            return respond_err_(conn, "无法创建工作目录：" + ws + "（" + ec.message() + "）");
         ensure_session_(id, ws);   // 此刻注册（turns=0）；首条消息落盘即 turns=1，
                                    // 中途崩溃由启动清扫兜底
         switch_to_(id);
@@ -319,11 +313,9 @@ http::Response WebuiPlugin::api_session_open_(const http::Request& req) {
     const std::string id = in.value("id", "");
     return defer_(req, [this, id](std::uint64_t conn) {
         if (in_flight_)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "轮次进行中，稍后再试"}}));
+            return respond_err_(conn, "轮次进行中，稍后再试");
         if (session_entry_(id) == nullptr)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "会话不存在"}}));
+            return respond_err_(conn, "会话不存在");
         if (id == session_)
             return server_->respond(conn, json_resp({{"ok", true}, {"id", id}}));
         switch_to_(id);
@@ -341,8 +333,7 @@ http::Response WebuiPlugin::api_session_rename_(const http::Request& req) {
     return defer_(req, [this, id, title](std::uint64_t conn) {
         json* e = session_entry_(id);
         if (e == nullptr)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "会话不存在"}}));
+            return respond_err_(conn, "会话不存在");
         (*e)["title"] = title;
         (*e)["updated"] = now_epoch_();
         save_index_();
@@ -357,15 +348,12 @@ http::Response WebuiPlugin::api_session_delete_(const http::Request& req) {
     const std::string id = in.value("id", "");
     return defer_(req, [this, id](std::uint64_t conn) {
         if (session_entry_(id) == nullptr)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "会话不存在"}}));
+            return respond_err_(conn, "会话不存在");
         // 生成中禁删活跃会话：删后 records_ 清零、transcript 句柄换向，而 agent
-        // 的 turn 仍在跑——后续 llm_done/tool_result 经 record_ 落进切换后的
-        // 新会话（记录串会话 + id 从 0 重排撞前端去重）。非活跃会话不受限：
-        // agent 事件只落活跃会话
+        // 的 turn 仍在跑——后续事件经 record_ 落进切换后的新会话（串会话 + id
+        // 从 0 重排撞前端去重）。非活跃会话不受限：agent 事件只落活跃会话
         if (in_flight_ && id == session_)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "当前会话生成中，请先停止再删除"}}));
+            return respond_err_(conn, "当前会话生成中，请先停止再删除");
         // 活跃会话也可删（用户定义）：删后自动切到最近更新的会话；全空则新建无工作区会话
         json arr = json::array();
         for (auto& s : index_["sessions"])
@@ -414,11 +402,10 @@ json WebuiPlugin::session_meta_() {
             ++turns;
             if (title == "(新会话)") title = clip_title(r.value("text", ""));
         }
-        // 累计 token = assistant 记录自带 usage（恒真形态——events.cpp 组记录时
-        // 必带）。这是前端「累计 tokens」显示的服务端源，重放后依然成立。
+        // 累计 token = assistant 记录自带 usage（events.cpp 组记录时必带）。
         // NOTE: turns/tokens 在 persist_ 里还有一份同步累加（写 index_ 条目，
         // 侧栏持久值）——两处口径必须同升同降；本函数给活跃会话即时值
-        // （records_ 是事实源），index_ 在轮次边界才落盘。改任何一处先看另一处
+        // （records_ 是事实源），index_ 在轮次边界才落盘
         if (type == "assistant")
             tokens += r.value("usage", json::object()).value("total_tokens", 0LL);
     }
@@ -432,6 +419,92 @@ json WebuiPlugin::session_meta_() {
             {"in_flight", in_flight_},   // 后端真值：前端重放后对账防 zombie
             {"records", records_.size()},
             {"pending", pending_turn_ >= 0}};
+}
+
+// ---- 上下文构成分解（/api/context/breakdown；读 agent 写的 state.json）-------
+
+// UTF-8 字符数折算 token 的粗估：ASCII ≈ 4 字符/token，非 ASCII（CJK 为主）
+// ≈ 0.7 token/字。仅用于构成占比——卡片上明确标「分段估算」；总量以 LLM 返回
+// 的实测 last_prompt_tokens 为准（分段按占比等比修正，合计不失真）。
+static size_t utf8_tokens(const std::string& s) {
+    size_t ascii = 0, non = 0;
+    for (const unsigned char b : s) {
+        if ((b & 0xC0) == 0x80) continue;   // UTF-8 后续字节
+        if (b < 0x80) ++ascii; else ++non;
+    }
+    return ascii / 4 + static_cast<size_t>(non * 0.7);
+}
+
+/// GET /api/context/breakdown → 上下文构成分解（悬停指示器的数据源）。
+/// 读活跃会话 state.json（agent 写的 LLM 上下文），messages 按 role 分四桶：
+/// 系统提示(system) / 用户消息(user) / 模型回复(assistant 正文) /
+/// 工具调用(tool_calls 参数 + tool 结果——用户口径合并为一段)。
+/// 分段为估算，实测总量存在时（last_prompt_tokens>0）按各桶占比等比修正使
+/// 合计=实测；舍入漂移记入最大的工具桶。mtime 缓存：同一版本文件只解析一次。
+/// 数据源：路由 defer 包装（宿主线程闭包内调用）。
+json WebuiPlugin::api_context_breakdown_() {
+    if (session_.empty())
+        return {{"ok", false}, {"error", "无活跃会话"}};
+    const fs::path f = home_ / "sessions" / (session_ + ".state.json");
+    std::error_code ec;
+    if (!fs::exists(f, ec))
+        return {{"ok", false}, {"error", "会话文件不存在"}};
+    const auto mtime = fs::last_write_time(f, ec);
+    const std::string key = f.string() + "@" +
+        std::to_string(mtime.time_since_epoch().count());
+    if (bd_key_ == key && !bd_cache_.is_null()) return bd_cache_;
+    std::ifstream in(f, std::ios::binary);
+    const json st = json::parse(in, nullptr, /*allow_exceptions=*/false);
+    if (!st.is_object())
+        return {{"ok", false}, {"error", "会话文件解析失败"}};
+    const auto toklen = [](const json& c) -> size_t {
+        if (c.is_string()) return utf8_tokens(c.get<std::string>());
+        if (c.is_null()) return 0;
+        return utf8_tokens(c.dump());   // 结构化内容（分段文本等）整体折算
+    };
+    size_t sys = 0, user = 0, asst = 0, call = 0, tool = 0;
+    size_t n_sys = 0, n_user = 0, n_asst = 0, n_calls = 0, n_tool = 0;
+    if (st.contains("messages") && st["messages"].is_array())
+        for (const auto& m : st["messages"]) {
+            if (!m.is_object()) continue;
+            const std::string role = m.value("role", "");
+            if (role == "system") { sys += toklen(m.value("content", json())); ++n_sys; }
+            else if (role == "user") { user += toklen(m.value("content", json())); ++n_user; }
+            else if (role == "assistant") {
+                asst += toklen(m.contains("content") ? m["content"] : json());
+                ++n_asst;
+                if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
+                    call += utf8_tokens(m["tool_calls"].dump());
+                    n_calls += m["tool_calls"].size();
+                }
+            } else if (role == "tool") {
+                tool += toklen(m.value("content", json()));
+                ++n_tool;
+            }
+        }
+    const size_t sum = sys + user + asst + call + tool;
+    const long long measured_ll = st.value("last_prompt_tokens", 0LL);
+    const bool measured = measured_ll > 0 && sum > 0;
+    const auto scale = [&](size_t v) -> long long {
+        if (!measured) return static_cast<long long>(v);
+        return static_cast<long long>(
+            static_cast<double>(v) * static_cast<double>(measured_ll) / sum + 0.5);
+    };
+    long long s_sys = scale(sys), s_user = scale(user), s_asst = scale(asst), s_call = scale(call);
+    // 舍入漂移记入工具桶（四段里通常最大，漂移占比最小）
+    long long s_tool = measured ? measured_ll - (s_sys + s_user + s_asst + s_call)
+                                : static_cast<long long>(tool);
+    if (s_tool < 0) s_tool = 0;
+    const long long total = measured ? measured_ll : static_cast<long long>(sum);
+    // 输出四段（用户口径）：工具调用 = tool_calls 参数 + tool 结果合并
+    json out = {{"ok", true}, {"total", total}, {"measured", measured},
+                {"segs", json{{"sys", s_sys}, {"user", s_user},
+                              {"asst", s_asst}, {"tool", s_call + s_tool}}},
+                {"counts", json{{"sys", n_sys}, {"user", n_user}, {"asst", n_asst},
+                                {"calls", n_calls}, {"tools", n_tool}}}};
+    bd_key_ = key;
+    bd_cache_ = out;
+    return std::move(out);
 }
 
 }  // namespace vc_webui

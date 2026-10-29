@@ -52,29 +52,21 @@ nostos_status CloudPlugin::chat_ex_(int request_id, const char* body_json) {
 nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
                                   std::uint64_t slot) {
     // 凭据/端点/模型快照进 worker 闭包：provider 热切只影响后续请求。快照在锁内
-    // 一次取齐——并发在途与热切并存时，worker 手里的凭据/端点/模型是自洽的一份，
-    // 不存在跨线程读竞态。子会话请求（slot!=0）且子档案齐全 ⇒ 按子档案发起（跨
-    // provider 派遣的唯一通路）；档案缺失回落主档案——"子用主模型"是默认形态。
+    // 一次取齐——并发在途与热切并存时，worker 手里的凭据/端点/模型是自洽的一份。
+    // 子会话请求（slot!=0）且子档案齐全 ⇒ 按子档案发起（跨 provider 派遣的唯一
+    // 通路）；档案缺失回落主档案——"子用主模型"是默认形态。
     std::string model, key_utf8, base_utf8;
     std::wstring key_wide, base_wide;
     bool sub_used = false;
     {
         std::lock_guard<std::mutex> lock(model_mu_);
-        if (slot != 0 && !sub_model_.empty() && !sub_key_.empty() &&
-            !sub_base_utf8_.empty()) {
-            model = sub_model_;
-            key_utf8 = sub_key_;
-            key_wide = sub_key_wide_;
-            base_utf8 = sub_base_utf8_;
-            base_wide = sub_base_wide_;
-            sub_used = true;
-        } else {
-            model = model_;
-            key_utf8 = key_;
-            key_wide = key_wide_;
-            base_utf8 = base_utf8_;
-            base_wide = base_wide_;
-        }
+        sub_used = slot != 0 && !sub_model_.empty() && !sub_key_.empty() &&
+                   !sub_base_utf8_.empty();
+        model = sub_used ? sub_model_ : model_;
+        key_utf8 = sub_used ? sub_key_ : key_;
+        key_wide = sub_used ? sub_key_wide_ : key_wide_;
+        base_utf8 = sub_used ? sub_base_utf8_ : base_utf8_;
+        base_wide = sub_used ? sub_base_wide_ : base_wide_;
     }
     if (slot != 0 && !sub_used)
         host_.log(1, "ithaca.llm.cloud: 子会话请求无子档案，回落主模型 " + model);

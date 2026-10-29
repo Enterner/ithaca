@@ -50,8 +50,8 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
         assistant = json{{"role", "assistant"}, {"content", ""}};
     messages_.push_back(assistant);  // 完整消息（含 tool_calls）进历史
 
-    // token 计量与判定信号：usage 真实回报 ⇒ 累计（含缓存命中计量）+ 信号取真值；未回报 ⇒ 信号按请求体粗估兜底（宁高勿低）——
-    // 粗估不进用量累计。两种来源都写入 last_prompt_tokens_，压缩判定不再失明。
+    // token 计量与判定信号：usage 真实回报 ⇒ 累计（含缓存命中）+ 信号取真值；
+    // 未回报 ⇒ 信号按请求体粗估兜底（宁高勿低）。粗估不进用量累计。
     bool usage_real = false;
     if (e.usage != nullptr) {
         json u = json::parse(e.usage, nullptr, false);
@@ -67,11 +67,9 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
     if (!usage_real) last_prompt_tokens_ = estimate_prompt_tokens(body_buf_);
     last_usage_real_ = usage_real;   // 信号来源随值走（策略缝的退避只认真实回报）
     // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升；封顶
-    // 0.95×W——越过即由硬保护接管判定，阈值不再虚高（阈值一旦
-    // 越过 W，should_compress 永不命中，压缩停摆回到爆窗）。仅真实 usage 参与
-    // 比较——拿粗估信号退避 = 用垃圾调阈值。
-    // 策略缝：表接管时退避判定在策略内（plan 的 turn_end 信号带 usage 真实性），
-    // agent 不持有阈值状态——本块整体跳过。
+    // 0.95×W——越过即由硬保护接管（阈值越过 W 后 should_compress 永不命中，压缩
+    // 停摆回爆窗）。仅真实 usage 参与比较——拿粗估信号退避 = 用垃圾调阈值。
+    // 策略缝：表接管时退避判定在策略内，本块整体跳过。
     if (compress_verify_) {
         compress_verify_ = false;
         if (ctx_tbl_ == nullptr && usage_real && session_threshold_ > 0 &&
@@ -121,11 +119,10 @@ void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
         return on_compress_error_(e);
     if (e.request_id != inflight_) return;  // 迟到错误 / agent 自发收口（rid=0）：忽略
     if (state_ == State::Idle) return;
-    // 超窗自救：provider 报上下文超长 ⇒ 机械折叠后重发当前请求，
-    // 而非报废 turn。仅 TurnActive 且无异步任务在途（错误对应的正是刚发出的
-    // send_chat）；重发有 kMaxOverwindowResend 上界——折叠不够再超窗时最终仍走
-    // 报废路径，不会打转。TODO: provider 文案归一后收窄这里的匹配面。
-    // 子代理不参与：折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
+    // 超窗自救：provider 报上下文超长 ⇒ 机械折叠后重发当前请求，而非报废 turn。
+    // 仅 TurnActive 且无异步任务在途；重发受 kMaxOverwindowResend 上界——折叠不够
+    // 再超窗时最终仍走报废路径。TODO: provider 文案归一后收窄匹配面。
+    // 子代理不参与：折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义。
     // 策略缝：超窗分类是策略知识（各家 provider 文案不一）——表接管走
     // classify_error 槽，无表走内置保守子串匹配。
     bool overflow = false;
@@ -185,11 +182,11 @@ void AgentCtx::on_session_cmd_impl(const vc_api::SessionCmd& c) {
         notice("turn 进行中，无法压缩上下文");
         return;
     }
-    // 主动压缩 = turn 边界自动压缩的立即版（同一管线：同一 plan/摘要/兜底）。
-    // LLM 摘要期间与收口压缩一致地保持占用（state TurnActive）——摘要回包中途
-    // 若开新 turn，apply_digest_ 的区间替换会踩在半截对话上（踩过预防）。
-    // 策略缝：表接管时计划出自 plan 槽（reason=manual，门槛在策略内）；LLM 精修
-    // 还需策略给 summary_prompt 槽（内置路径恒有 kSummarySystem）。
+    // 主动压缩 = turn 边界自动压缩的立即版（同一管线）。LLM 摘要期间保持占用
+    // （state TurnActive）——摘要回包中途若开新 turn，apply_digest_ 的区间替换
+    // 会踩在半截对话上（踩过预防）。
+    // 策略缝：表接管时计划出自 plan 槽（reason=manual）；LLM 精修还需策略给
+    // summary_prompt 槽（内置路径恒有 kSummarySystem）。
     const vcagent::CompressPlan plan =
         ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
             ? acquire_plan_("manual")
@@ -226,8 +223,8 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
         // 取消 = 回到静默 Idle：排队输入**丢弃不续跑**。cleanup_turn_ 尾部的
         // flush 会拿队首原地开新 turn——若紧跟切会话（UI 的「切走即取消」：
         // decision 4 → session/load 两连发），load 撞上进行中的新 turn 被拒，
-        // 旧会话的收口记录还会串写进已切换的新会话 transcript（踩过）。排队
-        // 输入的 user 记录已落 transcript，重新发送即可续上
+        // 收口记录串写进新会话（踩过）。排队输入的 user 记录已落 transcript，
+        // 重新发送即可续上
         if (!queued_.empty()) {
             notice("已取消当前 turn，排队的 " + std::to_string(queued_.size()) +
                    " 条输入已丢弃（可重新发送）");
@@ -251,10 +248,8 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
         std::string deny = "用户拒绝该操作";
         if (d.msg != nullptr && *d.msg != '\0')
             deny += std::string("：") + d.msg;
-        ctx.result = json{{"ok", false}, {"error", deny}}.dump();
-        ctx.done = true;
-        ++dispatched_;
-        emit_tool_result(ctx.full_name, false, ctx.result);
+        ctx.result = err_result(deny);
+        settle_(ctx, false);
     } else {
         // 逐文件批准：paths_json 非空 ⇒ 只保留接受路径的 ops 落盘
         if (d.paths_json != nullptr && *d.paths_json != '\0') {
@@ -276,11 +271,8 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
             }
         }
         const Bound* b = find_bound(ctx.full_name);
-        ctx.result = b ? exec(*b, ctx.tool, ctx.args)
-                        : json{{"ok", false}, {"error", "工具表已消失"}}.dump();
-        ctx.done = true;
-        ++dispatched_;
-        emit_tool_result(ctx.full_name, tool_ok(ctx.result), ctx.result);
+        ctx.result = b ? exec(*b, ctx.tool, ctx.args) : err_result("工具表已消失");
+        settle_(ctx, tool_ok(ctx.result));
         if (const int rid = parse_run_id(ctx.result); rid > 0)
             register_run(rid, pending_.index);
     }

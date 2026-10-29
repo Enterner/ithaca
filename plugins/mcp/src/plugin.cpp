@@ -8,6 +8,8 @@
 
 #include "vc_events.hpp"  // vc_api::McpReload/McpStatus：热重载订阅 + 状态回发事件
 
+#include "vcplugin/tool_table.hpp"  // vcplugin：工具表出参契约/发布三连（四插件单源）
+
 #include <nostos/svc_id.hpp>  // nostos::svc_id_of：工具表服务名 → svc id
 
 #include <cstdlib>  // std::getenv：数据目录定位
@@ -18,14 +20,10 @@ namespace vc_mcp {
 
 nostos_status McpPlugin::activate(const nostos::abi::Host& host) {
     host_ = host;
-    nostos::abi::init_table(table_);
-    table_.self = this;
-    table_.list = &McpPlugin::list_thunk;
-    table_.execute = &McpPlugin::exec_thunk;
-    if (host_.publish(nostos::svc_id_of(kToolSvcName), &table_) != NOSTOS_OK) {
-        host_.log(4, "ithaca.mcp: 工具表发布失败");
+    if (vcplugin::publish_tool_table(host_, table_, this, nostos::svc_id_of(kToolSvcName),
+                                     kToolSvcName, &McpPlugin::list_thunk,
+                                     &McpPlugin::exec_thunk, "ithaca.mcp") != NOSTOS_OK)
         return NOSTOS_ERR_FAILED;
-    }
     if (host_.acquire_poster(&poster_) != NOSTOS_OK) {
         host_.log(4, "ithaca.mcp: poster 领取失败");
         return NOSTOS_ERR_FAILED;

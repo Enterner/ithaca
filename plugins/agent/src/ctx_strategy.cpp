@@ -47,9 +47,8 @@ static vcagent::CompressPlan plan_from_json(const json& j) {
 
 vcagent::CompressPlan AgentCtx::acquire_plan_(const char* reason, long long estimate) {
     if (ctx_tbl_ == nullptr || ctx_tbl_->plan == nullptr) return {};
-    // 信号透传（原始值，判定口径在策略内）：真实/粗估 prompt tokens、用量、
-    // 窗口与输出预留。NOTE: 信号取当前值快照——plan 同步返回，轮内状态在两次
-    // 调用之间变化由下一次调用携带。
+    // 信号透传（原始值，判定口径在策略内）。NOTE: 取当前值快照——plan 同步
+    // 返回，轮内状态在两次调用之间的变化由下一次调用携带。
     json signals{{"last_prompt_tokens", last_prompt_tokens_},
                  {"usage_real", last_usage_real_},
                  {"usage", json{{"prompt_tokens", usage_prompt_},
@@ -82,7 +81,7 @@ std::string AgentCtx::strategy_ingest_(const std::string& full_name,
     if (ctx_tbl_->ingest_tool_result(ctx_tbl_->self, s.c_str(), &out) == NOSTOS_OK &&
         out != nullptr)
         return std::string(out);   // 出参缓冲由实现方持有至下次同槽调用——立即拷贝
-    // 槽失败 = 基础设施级异常：原文内联兜底（宁可上下文胖一刻，不丢工具结果）
+    // 槽失败 = 基础设施级异常：原文内联兜底
     host_.log(3, "ithaca.agent: 策略插件 ingest_tool_result 失败，结果原文内联: " + full_name);
     return content;
 }

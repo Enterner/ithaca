@@ -60,13 +60,13 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     if (const char* v = std::getenv("ITHACA_AGENT_TOOLS"))
         ctx_.tool_svcs_ = vcagent::split_csv(v);
     if (ctx_.tool_svcs_.empty())
+        // runner 入默认清单；office/mcp 未装载时 discover_tools 跳过并通告
+        //（可选能力不阻激活）
         ctx_.tool_svcs_ = {"ithaca.tool.workspace", "ithaca.tool.office",
-                           "ithaca.tool.mcp",
-                           "ithaca.tool.runner"};  // runner 入默认清单；office/mcp
-        // 未装载时 discover_tools 跳过并通告（可选能力不阻激活）
-    // 权限模式：确认清单由模式映射（见 rebuild_confirm_）；
-    // ITHACA_PERMISSION_MODE 设默认，vc.permission.mode 事件热切。
-    // （旧 ITHACA_AGENT_CONFIRM_TOOLS 静态确认清单机制随白名单一并移除）
+                           "ithaca.tool.mcp", "ithaca.tool.runner"};
+    // 权限模式：确认清单由模式映射（见 rebuild_confirm_）；ITHACA_PERMISSION_MODE
+    // 设默认，vc.permission.mode 事件热切。（旧 ITHACA_AGENT_CONFIRM_TOOLS
+    // 静态确认清单机制随白名单一并移除）
     ctx_.mode_ = vc_api::normalize_permission_mode(
         std::getenv("ITHACA_PERMISSION_MODE") != nullptr
             ? std::getenv("ITHACA_PERMISSION_MODE") : "");
@@ -75,10 +75,9 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         const auto* e = static_cast<const vc_api::PermissionMode*>(p);
         const std::string next = vc_api::normalize_permission_mode(
             e->mode != nullptr ? e->mode : "");
-        // 启动对齐（webui activate 回放 config 值）：值未变化 ⇒ 静默——通告会
-        // 写进 transcript，宿主每次启动恒 +1 条 ⇒ e2e 重放计数恒定偏移（踩过）。
-        // 变化也不发通告：模式在 UI 选择器上即时可见，写 transcript 属刷屏噪音
-        // （踩过：反复切换时通告连发刷屏）。
+        // 启动对齐（webui activate 回放 config 值）值未变化 ⇒ 静默——通告写进
+        // transcript，宿主每次启动恒 +1 条；变化也不发：模式在 UI 选择器上即时
+        // 可见，写 transcript 属刷屏噪音（都踩过）
         if (next == ctx_.mode_) return;
         ctx_.mode_ = next;
         ctx_.rebuild_confirm_();

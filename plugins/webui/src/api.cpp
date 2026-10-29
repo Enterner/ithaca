@@ -1,22 +1,12 @@
-// HTTP API 端点（plugin/webui 的输入/裁决/模型/选目录/文件树切片）。
-// /api/input、/api/decision、/api/permission-mode、/api/model、/api/pick-folder、
-// /api/fs/list、/api/fs/read、/api/mcp/status。全部跑在 select 线程（必须快）：
-// 持久化/广播经 poster defer，不等待排水。
+// 对话动作端点（plugin/webui 的输入/裁决切片）。
+// /api/input、/api/decision、/api/permission-mode、/api/model、/api/session/cmd
+// ——全部经 defer_ 投宿主线程后向总线 emit 契约事件（文件树/附件等非动作端点
+// 各在其切片文件）。全部跑在 select 线程（必须快）：解析 + 投递 + 挂起，不等待
+// 排水。
 
 #include "webui_plugin.hpp"
 
 #include "vc_events.hpp"  // vc_api::TurnInput/TurnDecision/PermissionMode + normalize_permission_mode
-
-#include <objbase.h>  // CoInitializeEx/CoUninitialize：选目录线程的 COM 初始化
-
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件 + ERROR_WINHTTP_*（供应商模型清单拉取）
-
-#include <algorithm>  // std::clamp/std::find：depth 钳制、黑名单过滤
-
-#include "vcws/text.hpp"  // vcws::trim_utf8：错误体截断走码点边界（全仓纪律）
-#include "vcws/read_paged.hpp"  // vcws::is_document_ext：/api/fs/read 分流的扩展名清单（共享件）
-
-#include <cstdlib>  // std::atoi：query depth 解析
 
 namespace vc_webui {
 
@@ -49,11 +39,9 @@ void WebuiPlugin::start_turn_(const std::string& text, const std::string& attach
     });
 }
 
-/// POST /api/input {line} → 发送后续消息（挂起-补响应试点端点）。select 线程只
-/// 解析参数并经 poster 投递闭包即挂起返回——读会话态/落盘/广播/开 turn 全在宿主
-/// 线程闭包内完成，响应经 Server::respond 补发。收益：文件写与数据面触碰离开
-/// select 线程（handle 持连接表锁期间只剩快进快出），闭包与宿主线程事件回调
-/// 同线程串行化，跨线程竞态面收窄。
+/// POST /api/input {line} → 发送后续消息（挂起-补响应）：select 线程只解析并
+/// 投递，读会话态/落盘/广播/开 turn 全在宿主线程闭包内——数据面触碰离开
+/// select 线程，闭包与事件回调同线程串行化（机制详见 defer_）。
 http::Response WebuiPlugin::api_input_(const http::Request& req) {
     try {
         json in = parse_body_(req.body);
@@ -66,11 +54,7 @@ http::Response WebuiPlugin::api_input_(const http::Request& req) {
         return defer_(req, [this, line = std::move(line),
                             att_paths = std::move(att_paths)](std::uint64_t conn) {
             if (session_.empty()) {   // 无活跃会话：400 经补发通道回（挂起后唯一出口）
-                server_->respond(conn,
-                                 json_resp({{"ok", false},
-                                            {"error",
-                                             "无活跃会话——发送首条消息时自动创建"}},
-                                           400));
+                respond_err_(conn, "无活跃会话——发送首条消息时自动创建", 400);
                 return;
             }
             start_turn_(line, attachments_payload_(att_paths).dump());
@@ -82,9 +66,9 @@ http::Response WebuiPlugin::api_input_(const http::Request& req) {
 }
 
 /// POST /api/decision {decision 0-4, paths?, msg?} → 裁决提案：0 批准所选 /
-/// 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；任意裁决终结当前 pending。select 线程
-/// 只解析校验即挂起，pending 读取与复位在宿主线程闭包内完成——与 edit_proposed
-/// 回调同线程串行化，原「select 读复位 vs 宿主写」的竞态对已不存在。
+/// 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；任意裁决终结当前 pending。select 线程只
+/// 解析校验即挂起，pending 读取与复位在宿主线程闭包内——与 edit_proposed 回调
+/// 同线程串行化。
 http::Response WebuiPlugin::api_decision_(const http::Request& req) {
     json in = parse_body_(req.body);
     const int d = in.value("decision", -1);
@@ -148,8 +132,7 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
                 break;
             }
         if (!usable)
-            return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "供应商不存在或未启用"}}));
+            return respond_err_(conn, "供应商不存在或未启用");
         config_["current_provider"] = provider;
     }
     const auto* llm = llm_;   // activate 时已解析（宿主线程闭包内直用）
@@ -192,341 +175,6 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
     });
 }
 
-// ---- 供应商模型清单拉取（OpenAI 兼容 GET /models）---------------------------
-
-// WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
-// 两插件无公共 TU）。错误码显式传入：调用点已离开失败现场，GetLastError 不可再读。
-static std::string winhttp_error_text_(unsigned long gle) {
-    switch (gle) {
-        case ERROR_WINHTTP_TIMEOUT: return "超时";
-        case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
-        case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
-        case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
-        default: return "WinHTTP 错误 " + std::to_string(gle);
-    }
-}
-
-/// POST /api/provider/models {name, base_url, api_key?} → 请求平台的 OpenAI 兼容
-/// GET /models，把模型 ID 清单经 SSE provider_models 事件回设置面（自动填充模型
-/// 表）。select 线程只做参数解析；key 定位在宿主线程闭包（api_key 非空 = 刚粘贴
-/// 未保存；留空 = 按 name 取后端已存——前端掩码拿不到明文，明文只在 config_），
-/// 网络在 detach 线程：外网往返秒级，不能占住宿主排水（事件回调全在它上面排队）。
-/// 瞬态事件不落 transcript（folder_picked 同款）。
-http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
-    json in = parse_body_(req.body);
-    const std::string name = in.value("name", "");
-    std::string base = in.value("base_url", "");
-    std::string key = in.value("api_key", "");
-    if (base.empty()) return json_resp({{"ok", false}, {"error", "Base URL 为空"}});
-    return defer_(req, [this, name, base = std::move(base),
-                        key = std::move(key)](std::uint64_t conn) mutable {
-        if (key.empty())
-            for (const auto& p : config_.value("providers", json::array()))
-                if (p.is_object() && p.value("name", "") == name) {
-                    key = p.value("api_key", "");
-                    break;
-                }
-        if (key.empty())
-            return server_->respond(conn, json_resp(
-                {{"ok", false},
-                 {"error", "API Key 为空——先粘贴 key，或该供应商已保存过 key"}}));
-        // 停机纪律（见 webui_plugin.hpp 文件头）：detach 线对插件零触碰——spawn
-        // 前在宿主线程快照 server_ 值捕获，广播直调快照；deactivate 的 reset 不
-        // 与本线程竞态（快照保活，stop 后 broadcast 为安全 no-op）
-        std::shared_ptr<http::Server> srv = server_;
-        std::thread([srv, base = std::move(base), key = std::move(key)] {
-        // base 尾斜杠归一后拼 /models；llm_cloud 同款四段解析口径
-        std::string url = base;
-        while (!url.empty() && url.back() == '/') url.pop_back();
-        url += "/models";
-        const std::wstring wurl = win::utf8_to_wide(url);
-        const std::wstring wkey = win::utf8_to_wide(key);
-        json result = {{"ok", false}, {"error", std::string("请求未发起")}};
-        const win::HttpReply reply = win::http_fetch(wurl, {
-            .headers = {L"Authorization: Bearer " + wkey},
-            // 短超时：清单拉取是设置面动作，用户在等，失败要快回
-            .timeouts = {5000, 5000, 10000, 30000},
-        });
-        if (!reply.sent || reply.status == 0) {
-            result["error"] = winhttp_error_text_(reply.gle);
-        } else {
-            const json doc = json::parse(reply.body, nullptr,
-                                         /*allow_exceptions=*/false);
-            if (reply.status == 200 && doc.is_object() && doc.contains("data") &&
-                doc["data"].is_array()) {
-                json ids = json::array();
-                for (const auto& m : doc["data"])
-                    if (m.is_object() && m.contains("id") && m["id"].is_string())
-                        ids.push_back(m["id"].get<std::string>());
-                result = {{"ok", true}, {"models", std::move(ids)}};
-            } else {
-                // 错误消息人话化：平台 OpenAI 形态 error.message 优先，
-                // 原文兜底（截 200 字节防超长错误体刷屏）
-                std::string msg;
-                if (doc.is_object()) {
-                    if (doc.contains("error") && doc["error"].is_object())
-                        msg = doc["error"].value("message", "");
-                    else if (doc.contains("message") && doc["message"].is_string())
-                        msg = doc["message"].get<std::string>();
-                }
-                if (msg.empty()) msg = vcws::trim_utf8(reply.body, 200);   // 按字节切会劈开 UTF-8 ⇒ dump 抛 316
-                result = {{"ok", false},
-                          {"error", "HTTP " + std::to_string(reply.status) +
-                                        (msg.empty() ? "" : "：" + msg)}};
-            }
-        }
-        json evt = {{"type", "provider_models"}};
-        evt.merge_patch(result);
-        if (srv) srv->broadcast(evt.dump());   // kit 层线程安全；已停实例 = no-op
-    }).detach();
-        server_->respond(conn, json_resp({{"ok", true}, {"pending", true}}));
-    });
-}
-
-// UTF-8 字符数折算 token 的粗估：ASCII ≈ 4 字符/token，非 ASCII（CJK 为主）
-// ≈ 0.7 token/字。仅用于构成占比——卡片上明确标「分段估算」；总量以 LLM 返回
-// 的实测 last_prompt_tokens 为准（分段按占比等比修正，合计不失真）。
-static size_t utf8_tokens(const std::string& s) {
-    size_t ascii = 0, non = 0;
-    for (const unsigned char b : s) {
-        if ((b & 0xC0) == 0x80) continue;   // UTF-8 后续字节
-        if (b < 0x80) ++ascii; else ++non;
-    }
-    return ascii / 4 + static_cast<size_t>(non * 0.7);
-}
-
-/// GET /api/context/breakdown → 上下文构成分解（悬停指示器的数据源）。
-/// 读活跃会话 state.json（agent 写的 LLM 上下文），messages 按 role 分四桶：
-/// 系统提示(system) / 用户消息(user) / 模型回复(assistant 正文) /
-/// 工具调用(tool_calls 参数 + tool 结果——用户口径合并为一段)。
-/// 分段为估算，实测总量存在时（last_prompt_tokens>0）按各桶占比等比修正使
-/// 合计=实测；舍入漂移记入最大的工具桶。mtime 缓存：同一版本文件只解析一次。
-/// 数据源：路由 defer 包装（宿主线程闭包内调用）。
-json WebuiPlugin::api_context_breakdown_() {
-    if (session_.empty())
-        return {{"ok", false}, {"error", "无活跃会话"}};
-    const fs::path f = home_ / "sessions" / (session_ + ".state.json");
-    std::error_code ec;
-    if (!fs::exists(f, ec))
-        return {{"ok", false}, {"error", "会话文件不存在"}};
-    const auto mtime = fs::last_write_time(f, ec);
-    const std::string key = f.string() + "@" +
-        std::to_string(mtime.time_since_epoch().count());
-    if (bd_key_ == key && !bd_cache_.is_null()) return bd_cache_;
-    std::ifstream in(f, std::ios::binary);
-    const json st = json::parse(in, nullptr, /*allow_exceptions=*/false);
-    if (!st.is_object())
-        return {{"ok", false}, {"error", "会话文件解析失败"}};
-    const auto toklen = [](const json& c) -> size_t {
-        if (c.is_string()) return utf8_tokens(c.get<std::string>());
-        if (c.is_null()) return 0;
-        return utf8_tokens(c.dump());   // 结构化内容（分段文本等）整体折算
-    };
-    size_t sys = 0, user = 0, asst = 0, call = 0, tool = 0;
-    size_t n_sys = 0, n_user = 0, n_asst = 0, n_calls = 0, n_tool = 0;
-    if (st.contains("messages") && st["messages"].is_array())
-        for (const auto& m : st["messages"]) {
-            if (!m.is_object()) continue;
-            const std::string role = m.value("role", "");
-            if (role == "system") { sys += toklen(m.value("content", json())); ++n_sys; }
-            else if (role == "user") { user += toklen(m.value("content", json())); ++n_user; }
-            else if (role == "assistant") {
-                asst += toklen(m.contains("content") ? m["content"] : json());
-                ++n_asst;
-                if (m.contains("tool_calls") && m["tool_calls"].is_array()) {
-                    call += utf8_tokens(m["tool_calls"].dump());
-                    n_calls += m["tool_calls"].size();
-                }
-            } else if (role == "tool") {
-                tool += toklen(m.value("content", json()));
-                ++n_tool;
-            }
-        }
-    const size_t sum = sys + user + asst + call + tool;
-    const long long measured_ll = st.value("last_prompt_tokens", 0LL);
-    const bool measured = measured_ll > 0 && sum > 0;
-    const auto scale = [&](size_t v) -> long long {
-        if (!measured) return static_cast<long long>(v);
-        return static_cast<long long>(
-            static_cast<double>(v) * static_cast<double>(measured_ll) / sum + 0.5);
-    };
-    long long s_sys = scale(sys), s_user = scale(user), s_asst = scale(asst), s_call = scale(call);
-    // 舍入漂移记入工具桶（四段里通常最大，漂移占比最小）
-    long long s_tool = measured ? measured_ll - (s_sys + s_user + s_asst + s_call)
-                                : static_cast<long long>(tool);
-    if (s_tool < 0) s_tool = 0;
-    const long long total = measured ? measured_ll : static_cast<long long>(sum);
-    // 输出四段（用户口径）：工具调用 = tool_calls 参数 + tool 结果合并
-    json out = {{"ok", true}, {"total", total}, {"measured", measured},
-                {"segs", json{{"sys", s_sys}, {"user", s_user},
-                              {"asst", s_asst}, {"tool", s_call + s_tool}}},
-                {"counts", json{{"sys", n_sys}, {"user", n_user}, {"asst", n_asst},
-                                {"calls", n_calls}, {"tools", n_tool}}}};
-    bd_key_ = key;
-    bd_cache_ = out;
-    return std::move(out);
-}
-
-// ---- 附件上传与会话级命令 ----------------------------------------------------
-
-// base64 编码（标准字母表 + padding）：多模态附件把上传的图片字节内联为 data_url
-static std::string base64_encode(const std::string& in) {
-    static const char* kAlphabet =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve((in.size() + 2) / 3 * 4);
-    for (std::size_t i = 0; i < in.size(); i += 3) {
-        const unsigned n = static_cast<unsigned>(static_cast<unsigned char>(in[i])) << 16 |
-                           (i + 1 < in.size() ? static_cast<unsigned>(static_cast<unsigned char>(in[i + 1])) << 8 : 0u) |
-                           (i + 2 < in.size() ? static_cast<unsigned>(static_cast<unsigned char>(in[i + 2])) : 0u);
-        out += kAlphabet[(n >> 18) & 63];
-        out += kAlphabet[(n >> 12) & 63];
-        out += i + 1 < in.size() ? kAlphabet[(n >> 6) & 63] : '=';
-        out += i + 2 < in.size() ? kAlphabet[n & 63] : '=';
-    }
-    return out;
-}
-
-// 图片扩展名 → data_url 的 mime（非图片返回空：不走多模态，仅路径注记）
-static std::string image_mime_of(const std::string& ext_in) {
-    const std::string e = vcws::ascii_lower(ext_in);
-    if (e == ".png") return "image/png";
-    if (e == ".jpg" || e == ".jpeg") return "image/jpeg";
-    if (e == ".webp") return "image/webp";
-    if (e == ".gif") return "image/gif";
-    return {};
-}
-
-// base64 解码（标准字母表 + padding；含空白容忍——浏览器 FileReader 出的是干净
-// 串，这里按宽容口径处理）。失败返回 false。
-static bool base64_decode(const std::string& in, std::string& out) {
-    auto val = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;
-    };
-    out.clear();
-    out.reserve(in.size() / 4 * 3);
-    unsigned buf = 0;
-    int bits = 0;
-    for (const char c : in) {
-        if (c == '=') break;
-        const int v = val(c);
-        if (v < 0) {
-            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
-            return false;
-        }
-        buf = (buf << 6) | static_cast<unsigned>(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<char>((buf >> bits) & 0xFF));
-        }
-    }
-    return true;
-}
-
-/// POST /api/upload {name, data(base64)} → 附件落盘到工作区 .ithaca/uploads/，
-/// 返回 {ok, path}（jail 内相对路径——附件的后续消费走 read 工具）。
-/// 直接写盘不经 apply 提案：上传是用户自己的文件进场，不是对既有内容的修改。
-/// select 线程只解析，写盘在宿主线程闭包（webui 数据面纪律同其他端点）。
-http::Response WebuiPlugin::api_upload_(const http::Request& req) {
-    try {
-        json in = parse_body_(req.body);
-        std::string name = in.value("name", "");
-        const std::string data = in.value("data", "");
-        // 文件名净化：只取文件名组件（防路径穿越），去 Windows 非法字符与控制符
-        {
-            const std::size_t slash = name.find_last_of("/\\");
-            if (slash != std::string::npos) name = name.substr(slash + 1);
-            std::string clean;
-            for (const unsigned char c : name)
-                if (c >= 0x20 && c != '<' && c != '>' && c != ':' && c != '"' &&
-                    c != '|' && c != '?' && c != '*')
-                    clean.push_back(static_cast<char>(c));
-            while (!clean.empty() && (clean.back() == '.' || clean.back() == ' ')) clean.pop_back();
-            name = clean;
-        }
-        if (name.empty())
-            return json_resp({{"ok", false}, {"error", "附件名为空"}});
-        if (name.size() > 120)
-            return json_resp({{"ok", false}, {"error", "附件名过长（>120 字节）"}});
-        if (data.size() > 28 * 1024 * 1024)   // base64 形态的上限（解码 ≈21MB）
-            return json_resp({{"ok", false}, {"error", "附件过大（>20MB）"}});
-        return defer_(req, [this, name = std::move(name),
-                            data = std::move(data)](std::uint64_t conn) mutable {
-            if (host_workspace_.empty())
-                return server_->respond(conn, json_resp(
-                    {{"ok", false},
-                     {"error", "没有工作区——请先发送首条消息创建会话再上传附件"}}));
-            std::string bytes;
-            if (!base64_decode(data, bytes))
-                return server_->respond(conn, json_resp(
-                    {{"ok", false}, {"error", "附件数据不是有效的 base64"}}));
-            if (bytes.size() > 20ull * 1024 * 1024)
-                return server_->respond(conn, json_resp(
-                    {{"ok", false}, {"error", "附件过大（>20MB）"}}));
-            std::error_code ec;
-            const fs::path dir = fs::path(host_workspace_) / ".ithaca" / "uploads";
-            fs::create_directories(dir, ec);
-            // 撞名加序号（在扩展名前插 " (n)"——下载的文件名习惯，不破坏类型）
-            fs::path target = dir / name;
-            const std::wstring stem = fs::path(name).stem().wstring();
-            const std::wstring ext = fs::path(name).extension().wstring();
-            for (int n = 1; fs::exists(target, ec) && n < 1000; ++n)
-                target = dir / (stem + L" (" + std::to_wstring(n) + L")" + ext);
-            std::ofstream out(target, std::ios::binary);
-            if (!out)
-                return server_->respond(conn, json_resp(
-                    {{"ok", false}, {"error", "附件写盘失败：" + target.string()}}));
-            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-            out.close();
-            if (!out) return server_->respond(conn, json_resp(
-                {{"ok", false}, {"error", "附件写盘失败（写中途错误）：" + target.string()}}));
-            // 相对路径回前端（/ 分隔——模型与 read 工具同口径）
-            std::string rel = ".ithaca/uploads/" + target.filename().string();
-            server_->respond(conn, json_resp({{"ok", true}, {"path", rel}}));
-        });
-    } catch (const std::exception& e) {
-        return json_resp({{"ok", false}, {"error", e.what()}});
-    }
-}
-
-/// 附件相对路径数组 → 多模态载荷（TurnInput.attachments_json 的 JSON 数组）：
-/// path 必须落在 .ithaca/uploads/ 内（防穿越——上传端点的落点即白名单），图片读
-/// 字节内联为 data_url（mime 按扩展名），非图片/读取失败仅保留元数据供路径注记。
-/// 调用点在宿主线程闭包内（/api/input 的 defer），文件读不占 select 线程。
-json WebuiPlugin::attachments_payload_(const json& rel_paths) {
-    json out = json::array();
-    if (!rel_paths.is_array()) return out;
-    for (const auto& p : rel_paths) {
-        if (!p.is_string()) continue;
-        const std::string rel = p.get<std::string>();
-        json item = {{"path", rel},
-                     {"name", rel.substr(rel.find_last_of('/') + 1)},
-                     {"mime", ""},
-                     {"data_url", ""}};
-        if (rel.rfind(".ithaca/uploads/", 0) == 0 && rel.find("..") == std::string::npos) {
-            std::error_code ec;
-            const fs::path target = fs::path(host_workspace_) / fs::path(rel);
-            std::ifstream in(target, std::ios::binary);
-            if (in.good()) {
-                std::ostringstream buf;
-                buf << in.rdbuf();
-                const std::string mime = image_mime_of(target.extension().string());
-                item["mime"] = mime;
-                if (!mime.empty())
-                    item["data_url"] = "data:" + mime + ";base64," + base64_encode(buf.str());
-            }
-        }
-        out.push_back(std::move(item));
-    }
-    return out;
-}
-
 /// POST /api/session/cmd {cmd} → 会话级命令转发（契约尾部追加事件 vc.session.cmd；
 /// 当前 cmd=1 压缩上下文）。agent 侧按 Idle/主会话门卫受理，结果以 notice 回流。
 http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
@@ -537,157 +185,6 @@ http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
         host_.emit(vc_api::session_cmd, &e);
         server_->respond(conn, json_resp({{"ok", true}}));
     });
-}
-
-/// POST /api/pick-folder → 原生目录对话框（独立线程弹，防模态阻塞），结果经
-/// SSE folder_picked 事件返回。ITHACA_TEST_PICK_PATH 时跳过对话框直接返回
-/// （零共享态，同步直答）。
-http::Response WebuiPlugin::api_pick_folder_(const http::Request& req) {
-    // UI 自动化测试钩子：设置 ITHACA_TEST_PICK_PATH ⇒ 跳过原生对话框，沿同一
-    // folder_picked 事件路径返回（poster defer 广播）
-    if (const char* v = std::getenv("ITHACA_TEST_PICK_PATH"); v != nullptr && *v != '\0') {
-        nostos::kit::poster_submit(poster_, [this, p = std::string(v)] {
-            broadcast_({{"type", "folder_picked"}, {"path", p}});
-        });
-        return json_resp({{"ok", true}, {"path", std::string(v)}});
-    }
-    return defer_(req, [this](std::uint64_t conn) mutable {
-        // workspace 初值在闭包内（宿主线程）读——defer_ 的 init-capture 在 select
-        // 线程求值，而 config_ 写侧在宿主线程，提前到捕获点即数据竞争（唯一违例，
-        // 其余端点数据面触碰全在闭包内）
-        std::string initial = config_.value("workspace", "");
-        // 停机纪律同 api_provider_models_：快照 server_ 值捕获，零触碰插件状态
-        std::shared_ptr<http::Server> srv = server_;
-        std::thread([srv, initial = std::move(initial)] {
-        HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        const bool com = SUCCEEDED(hr);
-        const std::string picked =
-            com ? pick_folder_dialog("选择工作文件夹", initial)
-                : std::string();
-        if (com) CoUninitialize();
-        if (!picked.empty() && srv)
-            srv->broadcast(json{{"type", "folder_picked"}, {"path", picked}}.dump());
-    }).detach();
-        server_->respond(conn, json_resp({{"ok", true}}));
-    });
-}
-
-/// GET /api/fs/list?path=<相对路径,空=根>&depth=<1..6> → 文件树栏的目录列举。
-/// 代理 workspace 的 list 工具（jail 越界防护/上限/symlink 跳过全在提供方），
-/// 本端点只做：黑名单目录过滤（树视图不需要的噪音，agent 的 list 保持无偏）、
-/// query 的 %XX 解码。直调工具表——跨线程安全由 workspace 的全工具串行锁保证
-/// （调用在宿主线程闭包内）。
-// query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含加号）。
-// /api/fs/list 与 /api/fs/read 共用：同一解码规则写两份必然漂移。
-static std::string query_val(const std::string& target, const char* key) {
-    const std::size_t q = target.find(std::string(key) + "=");
-    if (q == std::string::npos) return "";
-    std::size_t e = target.find('&', q);
-    if (e == std::string::npos) e = target.size();
-    std::string raw = target.substr(q + std::string(key).length() + 1, e - q - std::string(key).length() - 1);
-    std::string out;
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        if (raw[i] == '%' && i + 2 < raw.size()) {
-            auto hex = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            const int hi = hex(raw[i + 1]), lo = hex(raw[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>(hi * 16 + lo));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(raw[i]);
-    }
-    return out;
-}
-
-http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
-    const std::string rel = query_val(req.target, "path");
-    const std::string depth_s = query_val(req.target, "depth");
-    const json args = json{{"path", rel},
-                           {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)},
-                           {"pattern", query_val(req.target, "pattern")},
-                           // 树视图要逐文件列名,而 list 工具的默认视图是 aggregate
-                           // (每目录一条汇总、文件只计数——模型侧骨架视图),对树
-                           // 不可用,故钉死 flat,不吃 query 透传。
-                           {"mode", "flat"},
-                           {"per_dir", std::atoi(query_val(req.target, "per_dir").c_str())}};
-    return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
-        json r = call_tool_json_(tools_, "list", args.dump());
-        // 黑名单：一级目录名精确匹配（树视图噪音；agent 的 list 工具不受影响）
-        static const char* kHide[] = {".git",           "node_modules", "build",
-                                      "dist",           ".ithaca-data", "__pycache__",
-                                      ".vscode",        ".zcode"};
-        if (r.value("ok", false) && r.contains("entries") && r["entries"].is_array()) {
-            json kept = json::array();
-            for (auto& e : r["entries"]) {
-                if (!e.is_object()) continue;
-                const std::string p = e.value("path", "");
-                const std::string seg = p.substr(0, p.find('/'));
-                if (std::find(std::begin(kHide), std::end(kHide), seg) == std::end(kHide))
-                    kept.push_back(std::move(e));
-            }
-            r["entries"] = std::move(kept);
-        }
-        server_->respond(conn, json_resp(std::move(r)));
-    });
-}
-
-/// GET /api/fs/read?path=<相对路径> → 右栏代码查看器的文件内容。
-/// 按扩展名分流：文档格式（docx/pptx/xlsx/pdf/doc/ppt/xls）路由到 office 表
-///（抽取面所在域，doc 徽标随出参 doc 字段继续工作）；office 未装载回退
-/// workspace——文档被其守卫点名指向 office.read。其余代理 workspace 的 read
-/// 并原样透传：jail 越界防护、NUL 拒二进制、UTF-8 校验、256KB 封顶（truncated
-/// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（见上）。
-http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
-    const std::string rel = query_val(req.target, "path");
-    const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
-    // 扩展名清单是共享件（workspace/read_paged.hpp），与 office/workspace 同源
-    const bool doc = vcws::is_document_ext(ext_lower);
-    const json args = json{{"path", rel}};
-    return defer_(req, [this, args = std::move(args), doc](std::uint64_t conn) {
-        const vc_api::ToolTable* table =
-            doc && office_tools_ != nullptr ? office_tools_ : tools_;
-        server_->respond(conn, json_resp(call_tool_json_(table, "read", args.dump())));
-    });
-}
-
-// 工具表直调（/api/fs/* 代理共用）：判空 → execute → NOSTOS_OK 判定 →
-// JSON parse → 无效兜底。返回值恒为 object；调用须在宿主线程闭包内（table 的
-// 读写纪律见 webui_plugin.hpp）
-json WebuiPlugin::call_tool_json_(const vc_api::ToolTable* table, const char* tool,
-                                  const std::string& args_json) {
-    if (table == nullptr)
-        return {{"ok", false}, {"error", "工具表不在"}};
-    const char* out_json = nullptr;
-    // NOSTOS_OK + {ok:false} = 工具级失败，原样透传给前端
-    const nostos_status st = table->execute(table->self, tool, args_json.c_str(), 0, &out_json);
-    json r = st == NOSTOS_OK && out_json != nullptr
-                 ? json::parse(out_json, nullptr, false)
-                 : json{{"ok", false}, {"error", "工具表 execute 失败 (" +
-                                              std::to_string(static_cast<int>(st)) + ")"}};
-    if (r.is_discarded() || !r.is_object())
-        r = json{{"ok", false}, {"error", "工具表返回了无效 JSON"}};
-    return r;
-}
-/// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
-// 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。
-// 数据源：路由 defer 包装（宿主线程闭包内调用）。
-json WebuiPlugin::api_mcp_status_() {
-    json fallback = {{"ok", true}, {"servers", json::array()}};
-    std::error_code ec;
-    const fs::path f = home_ / "mcp-status.json";
-    if (!fs::exists(f, ec)) return fallback;
-    std::ifstream in(f, std::ios::binary);
-    const json st = json::parse(in, nullptr, /*allow_exceptions=*/false);
-    if (!st.is_object() || !st.contains("servers") || !st["servers"].is_array())
-        return fallback;
-    return st;
 }
 
 }  // namespace vc_webui

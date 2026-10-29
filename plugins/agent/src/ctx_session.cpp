@@ -6,27 +6,18 @@
 #include "agent_plugin.hpp"
 
 #include <algorithm>  // std::max：turns 记全局计数器高水位
-
-#include <cerrno>  // errno：落盘失败的系统层原因
-
-#include <chrono>  // std::chrono：落盘瞬时锁重试等待
-
-#include <fstream>  // std::ifstream/ofstream：state.json 读写
-
-#include <thread>  // std::this_thread：300ms 重试间隔
+#include <cerrno>     // errno：落盘失败的系统层原因
+#include <chrono>     // std::chrono：落盘瞬时锁重试等待
+#include <fstream>    // std::ifstream/ofstream：state.json 读写
+#include <thread>     // std::this_thread：300ms 重试间隔
 
 namespace vc_agent {
 
-// ---- 会话持久化与 mission 卡（src/ctx_session.cpp）--------------------------
-
-// M6 session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
-// 注意：撤销快照栈是内存态，恢复后撤销栈从零开始（文档明示）。
 // state 文件加载（activate 与会话切换共用；缺文件 = 全新会话）
 void AgentCtx::load_session_state_(const std::string& path) {
     session_path_ = path;
-    // raw 外置目录随会话走（与会话切换同源，不再依赖 activate 期 env）：多会话
-    // 共享宿主时归档名 t<turn>_<seq> 会跨会话撞车（互相覆盖/串档）——归档名加
-    // 会话 stem 前缀隔离（同一 parent/raw 内 ref 仍为裸文件名）
+    // raw 外置目录随会话走（与会话切换同源）：多会话共享宿主时归档名会跨会话
+    // 撞车——归档名加会话 stem 前缀隔离（同一 parent/raw 内 ref 仍为裸文件名）
     const fs::path sp(path);
     raw_dir_ = (sp.parent_path() / "raw").string();
     raw_prefix_ = sp.filename().string().substr(0, sp.filename().string().find('.')) + "_";
@@ -44,8 +35,6 @@ void AgentCtx::load_session_state_(const std::string& path) {
                                                           : static_cast<int>(turns));
         }
         const json usage = doc.value("usage", json::object());
-        // value() 对非对象（磁盘文件被外部改坏 usage: null 等）抛 302 ⇒ activate 期
-        // 线程直接 terminate——类型守卫先于取值（与 stream.cpp 的 st.usage 同源纪律）
         if (usage.is_object()) {
         usage_prompt_ = usage.value("prompt_tokens", 0LL);
         usage_completion_ = usage.value("completion_tokens", 0LL);
@@ -75,10 +64,9 @@ void AgentCtx::persist_session_() {
                       {"completion_tokens", usage_completion_},
                       {"total_tokens", usage_total_},
                       {"cache_tokens", usage_cache_}};
-        // turns = 全局 turn 计数器高水位（含本 turn 派出的子代理消耗的号段），
-        // 而非主会话轮号——恢复地板据此抬升；只记主轮号会让重启后的新子代理
-        // 复用历史 transcript 里子代理的 turn_id，UI 按 turn_id 分组即新旧混组
-        // （踩过：新 spawn 卡被上一个进程的完成卡标记为「已结束」）
+        // turns = 全局 turn 计数器高水位（含子代理消耗的号段），而非主会话轮号
+        // ——恢复地板据此抬升；只记主轮号会让重启后的新子代理复用历史 transcript
+        // 里的 turn_id，UI 分组新旧混组（踩过）
         json doc = {{"turns", std::max(turn_no_, turn_seq().load())},
                     {"usage", usage},
                     {"last_prompt_tokens", last_prompt_tokens_},
@@ -119,10 +107,9 @@ void AgentCtx::persist_session_() {
 }
 
 // mission 任务目标卡重建（turn 边界 = 重建点）：已存在则原位重写内容，否则
-// 插到 system 之后（下标 1）。turn 内不改动——固定前缀纪律。
-// 策略缝：表接管时卡内容由 mission 槽产出（null/失败 = 不动）；无表内置
-// collect_tasks + mission_message。原位替换依赖 is_mission 标记识别——产出须
-// 沿用内置标记形态（契约注明）。
+// 插到 system 之后（下标 1）。策略缝：表接管时卡内容由 mission 槽产出
+//（null/失败 = 本轮不动）；原位替换依赖 is_mission 标记识别——产出须沿用内置
+// 标记形态（契约注明）。
 void AgentCtx::rebuild_mission_() {
     json mission;
     if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {

@@ -3,13 +3,15 @@
 // 翻译单元职责地图（按功能切片，类声明为本文件）：
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
 //                         通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）+ NOSTOS_PLUGIN 入口
-//   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）
+//   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）+ /api/pick-folder
 //   src/events.cpp     —— 事件总线订阅（15 个事件回调 → 落盘 + SSE 广播）
-//   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* 端点族
-//   src/config.cpp     —— 供应商两层配置（共享 + 实例覆盖层）+ /api/config
+//   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* + 上下文构成端点
+//   src/config.cpp     —— 供应商两层配置（共享 + 实例覆盖层）+ /api/config + 模型清单拉取
 //   src/fs_watcher.cpp —— 文件树真监听（ReadDirectoryChangesW → fs_changed 广播）
 //   src/prober.cpp     —— 兄弟实例健康探测（聚合 alive 真值）+ /api/shell/sessions
-//   src/api.cpp        —— 输入/裁决/模型/选目录/文件树/MCP 状态/模型清单/上下文构成端点
+//   src/api.cpp        —— 对话动作端点（输入/裁决/权限模式/模型热切/会话命令）
+//   src/attachments.cpp —— 附件管线（上传落盘 + 多模态载荷 + base64 编解码）
+//   src/api_fs.cpp     —— 工作区代理端点（文件树/查看器/MCP 状态）
 //
 // 总职责：kit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
 // JSONL 持久化 + SSE 广播；输入/裁决经 poster 回总线。会话持久化的两层：
@@ -144,6 +146,11 @@ private:
         }
     }
 
+    // defer_ 闭包内的错误补发出口：ok:false + error（与 respond 直调同语义）
+    void respond_err_(std::uint64_t conn, const std::string& msg, int status = 200) {
+        server_->respond(conn, json_resp({{"ok", false}, {"error", msg}}, status));
+    }
+
     static std::string mime_of(const fs::path& p);
     http::Response file_(const std::string& rel);
     void broadcast_(json rec);
@@ -154,10 +161,8 @@ private:
     void record_(json rec);
     void load_transcript_();
     void open_transcript_();
-    // 子代理工作明细存档（ZCode 式独立存放，src/sessions.cpp）：sessions/agents/
-    // <会话id>/agent_<turn>.jsonl 追加写 + SSE 广播——明细不进主 transcript，
-    // 主会话只留状态卡；右栏过程视图经 /api/agent-log 按需拉取，行号 seq 单调
-    // （重启按现存行数续接），前端据此合并「拉取历史」与「实时增量」不重不漏
+    // 子代理工作明细存档（sessions/agents/<会话id>/agent_<turn>.jsonl 追加写 +
+    // SSE 广播；行号 seq 单调续接，前端历史+实时合并不重不漏）
     void agent_log_append_(int turn_id, const json& rec);
     void close_agent_logs_();
     json api_agent_log_(const std::string& target);   // 数据源：路由 defer 包装
@@ -171,8 +176,11 @@ private:
     bool persist_config_();
     json config_public_();
     http::Response api_config_save_(const http::Request& req);
-    // 组装并投递 vc.llm.set_active（provider/key/base_url + 当前模型窗口）——
-    // activate 对齐、配置保存热切、模型热切补发共用一个出口（窗口字段单点维护）。
+    // 插件 UI 贡献清单（vc.ui.register 累积；前端设置面板的动态节）
+    json api_ui_registry_();
+    // 供应商模型清单拉取（设置面动作，SSE provider_models 回发；网络在 detach 线程）
+    http::Response api_provider_models_(const http::Request& req);
+    // 组装并投递 vc.llm.set_active（activate 对齐/配置保存热切/模型热切共用出口）
     void post_llm_set_active_();
 
     // ---- 会话注册表（src/sessions.cpp）------------------------------------------
@@ -184,37 +192,45 @@ private:
     void ensure_session_(const std::string& id, const std::string& workspace);
     void sweep_uninitialized_();
     void switch_to_(const std::string& id);
-    // 工作区补发（tool_register 兜底）：workspace 工具表后到 ⇒ 启动恢复时
-    // switch_to_ 发出的 WorkspaceSet 可能先于其订阅被丢（事件总线无保留语义），
-    // 按当前活跃会话重发一次（同值热切幂等）
+    // 工作区补发（tool_register 兜底）：启动恢复的 WorkspaceSet 可能先于 workspace
+    // 订阅被丢（总线无保留语义），按当前活跃会话重发一次（同值热切幂等）
     void backfill_workspace_();
     http::Response api_session_new_(const http::Request& req);
     http::Response api_session_open_(const http::Request& req);
     http::Response api_session_rename_(const http::Request& req);
     http::Response api_session_delete_(const http::Request& req);
     json session_meta_();
+    // 上下文构成分解（悬停指示器的数据源；读活跃会话 state.json，mtime 缓存）
+    json api_context_breakdown_();
 
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
 
     void start_turn_(const std::string& text, const std::string& attachments_json);
-    json attachments_payload_(const json& rel_paths);   // 附件路径 → 多模态载荷（data_url 内联）
     http::Response api_input_(const http::Request& req);
     http::Response api_decision_(const http::Request& req);
     http::Response api_permission_mode_(const http::Request& req);
     http::Response api_model_(const http::Request& req);
-    http::Response api_provider_models_(const http::Request& req);   // 拉平台模型清单（SSE 回发）
-    json api_context_breakdown_();   // 上下文构成分解（悬停指示器的数据源）
-    http::Response api_upload_(const http::Request& req);   // 附件上传（base64 → 工作区 .ithaca/uploads）
     http::Response api_session_cmd_(const http::Request& req);   // 会话级命令（vc.session.cmd 转发）
-    http::Response api_pick_folder_(const http::Request& req);
-    json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
+
+    // ---- 附件管线（src/attachments.cpp）-------------------------------------------
+
+    http::Response api_upload_(const http::Request& req);   // 附件上传（base64 → 工作区 .ithaca/uploads）
+    // 附件路径 → 多模态载荷（data_url 内联；上传落点 .ithaca/uploads/ 即白名单）
+    json attachments_payload_(const json& rel_paths);
+
+    // ---- 工作区代理（src/api_fs.cpp）----------------------------------------------
+
     http::Response api_fs_list_(const http::Request& req);
     http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
     // /api/fs/* 代理共用：table 由调用方按分流选定（workspace / office）
     json call_tool_json_(const vc_api::ToolTable* table, const char* tool,
                          const std::string& args_json);
     json api_mcp_status_();
-    json api_ui_registry_();   // 插件 UI 贡献清单（vc.ui.register 累积）
+
+    // ---- 原生选目录（src/picker.cpp）----------------------------------------------
+
+    http::Response api_pick_folder_(const http::Request& req);
+    json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
 
     // ---- 状态 -------------------------------------------------------------------
 
