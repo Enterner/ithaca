@@ -6,16 +6,6 @@
 
 ## 当前发现（批次：整体代码审核修复 · 2026-10-29）
 
-**kit 缺「路径沙箱」件（触发场景：修 jail 的 junction 穿透时）**：jail 的三道闸
-（词法校验 + GetFullPathNameW 规范化 + reparse 逐组件扫描）是所有"接受模型给定
-路径"插件的共性安全原语，但当前唯一实现挂在 workspace 插件内部，office/webui
-反向 `../workspace/*.hpp` include（六个消费方绑死一个插件，独立构建被绑架）。
-本次修复把第三道闸补齐后才看清完整形态：逐组件 `GetFileAttributesW` 查
-`FILE_ATTRIBUTE_REPARSE_POINT`——词法规范化管不住 junction/symlink，真实解析
-（GetFinalPathNameByHandle）对不存在的末端（新建文件）又不成立，逐组件属性扫描
-是唯一两全且无需句柄的形态。收编 kit 的价值：安全边界单源（第二份实现必漂移，
-office 的 STAT_CHUNK 镜像事故是前车之鉴）+ 消掉跨插件反向 include。
-
 **kit::http 挂起连接的异常语义缺口（触发场景：给 webui defer_ 写中央 catch 时）**：
 `poster_submit` 吞掉闭包异常 + 挂起连接豁免 stall_timeout 的组合，让「defer 闭包
 抛一次异常 = 连接槽位永久泄漏」（max_clients 占满 = 整个服务停摆）成为结构性
@@ -78,6 +68,7 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-10-29 | kit 缺「路径沙箱」件：jail 三道闸（词法校验 + GetFullPathNameW 规范化复核 + reparse 逐组件扫描）是「接受模型给定路径」插件的共性安全原语，唯一实现挂在 workspace 插件内部，office/runner 反向 `../workspace/jail.hpp` include（独立构建被绑架） | 已落地（内核 a36a0d8：kit/path_jail.hpp 单源——三道闸原样上收、非 Windows 显式拒绝桩；产品仓 workspace/office/runner + test_jail/test_edit 六处 include 跟迁、workspace/jail.hpp 删除，跨插件反向 include 中 jail 一路清零。text/read_paged/iface 的反向 include 非安全原语，不属内核职责，维持观察） |
 | 2026-10-29 | 「同服务多实现竞争 + 择一发布」样板第三份手写（llm_cloud/llm_mock/ctx_basic 逐字同构，热切语义与激活日志靠约定）；kit::win 缺可中断睡眠与环境块构建小件（prober/shell 分片睡眠两份手写；shell/runner 两份 env 块构建且策略已漂移——一份排序一份不排） | 已落地（内核 287c2cb：kit/active_gate.hpp 竞争发布门——env 门三态首发 + mine/other/keep 三值热切 + 幂等 + 激活/休眠日志统一落门内，插件只留表组装与载荷解读；kit::win 增 sleep_interruptible 与 build_env_block_w 单源，piped_process 内联实现退役。产品仓三 provider + prober/shell/runner 收编，约 90 行机械重复退役；mock 首发新增一行「已激活」、休眠文案统一（golden 按此重录）；ctx 首发发布失败从带病继续改为激活失败回滚） |
 | 2026-10-27 | workspace search 的 regex 走 std::regex（回溯实现无步数钩子），灾难性回溯构造模式会在 agent 线程长阻塞 | 已落地（内核 kit/regex.hpp 有界正则——Thompson NFA 线性模拟，ECMAScript 子集，无回溯 ⇒ 灾难性模式构造上不可能挂死，步数预算另封顶；反向引用/环视解析期点名拒绝。抛弃式探针对拍 std::regex 25 例全过 + 灾难性模式 0ms + 420KB 文件 105ms；产品 workspace search 切换，std::regex 退役） |
 | 2026-10-27 | webui 全量单线程化（挂起-补响应试点验证后的全量迁移）：data_mu_ 的真正锚点是 GET 类端点（select 线程读宿主线程写的共享状态） | 已落地（20+ 端点含全部 GET 经 defer_ 样板投宿主线程闭包、真响应经内核原语补发；data_mu_ 30 余处 lock_guard 与上下文缓存锁整体退役，tools_/in_flight_ 原子降为普通成员，select 线程只剩解析/投递与静态、SSE 直答；defer_ 编译期强制闭包返回 void——值返回闭包的 fall-through 是 UB 且爆点漂移到无关容器操作，check 全绿） |

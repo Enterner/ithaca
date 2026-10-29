@@ -20,7 +20,7 @@
 #include "diff.hpp"
 #include "edit.hpp"
 #include "fs.hpp"
-#include "jail.hpp"
+#include <nostos/kit/path_jail.hpp>
 #include "read_paged.hpp"
 #include "snapshots.hpp"
 
@@ -99,7 +99,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(
+        jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
             env != nullptr && *env != '\0' ? env : "."));
         store_ = std::make_unique<vcws::DiskStore>();
 
@@ -118,7 +118,7 @@ public:
         host.log(2, "ithaca.workspace: 就绪，jail 根 = " +
                         nostos::kit::win::wide_to_utf8(jail_->root().c_str()));
 
-        // 工作区热切——重建 Jail 边界，立即生效
+        // 工作区热切——重建 PathJail 边界，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
@@ -126,7 +126,7 @@ public:
             if (jail_ != nullptr && jail_->root() == next) return;   // 同值热切幂等（backfill 补发）
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<vcws::Jail>(next);
+            jail_ = std::make_unique<nostos::kit::PathJail>(next);
             // 快照栈随根清空：FileSnap.full 是旧根解析的绝对路径，undo_write 直写
             // 该路径全程不再过新 jail——不清栈则切根后撤销会对旧工作区做 jail 外写
             snaps_ = vcws::SnapshotStack{};
@@ -672,7 +672,7 @@ private:
     // ---- 状态 ---------------------------------------------------------------------
 
     nostos::abi::Host host_{};
-    std::unique_ptr<vcws::Jail> jail_;
+    std::unique_ptr<nostos::kit::PathJail> jail_;
     std::unique_ptr<vcws::TextStore> store_;  // DiskStore；单测走 MemoryStore 的纯逻辑头
     vcws::SnapshotStack snaps_;
     std::vector<nostos::abi::Host::Subscription> subs_;  // 工作区热切订阅

@@ -3,7 +3,7 @@
 #include "ithaca_test_framework.hpp"
 
 #include "edit.hpp"
-#include "jail.hpp"
+#include <nostos/kit/path_jail.hpp>
 
 #include <filesystem>
 #include <string>
@@ -12,7 +12,7 @@
 namespace fs = std::filesystem;
 using vcws::ApplyResult;
 using vcws::EditOp;
-using vcws::Jail;
+using Jail = nostos::kit::PathJail;
 using vcws::MemoryStore;
 using vcws::OpError;
 

@@ -22,7 +22,7 @@
 #include "vc_events.hpp"
 #include "vc_tool.hpp"
 
-#include "../workspace/jail.hpp"   // vcws::Jail：cwd 容纳检查（全仓唯一路径 jail 实现）
+#include <nostos/kit/path_jail.hpp>   // cwd 容纳检查（安全原语在 kit 单源）
 #include "../workspace/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
 #include <nostos/abi/plugin.hpp>
@@ -88,7 +88,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        std::atomic_store(&jail_, std::make_shared<vcws::Jail>(nostos::kit::win::utf8_to_wide(
+        std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
             env != nullptr && *env != '\0' ? env : ".")));
         // 权限模式默认值：webui 事件可热切；ITHACA_RUN_ALLOW
         // 白名单机制已移除（把关责任上移到权限模式与沙箱）
@@ -110,7 +110,7 @@ public:
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            std::atomic_store(&jail_, std::make_shared<vcws::Jail>(
+            std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(
                 nostos::kit::win::utf8_to_wide(e->root)));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
@@ -238,10 +238,10 @@ private:
         if (cmd.empty()) return json{{"ok", false}, {"error", "command_line 为空"}};
 
         // cwd：jail 内相对路径（空 = 根）
-        const std::shared_ptr<vcws::Jail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
+        const std::shared_ptr<nostos::kit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
         std::wstring cwd_wide = jail->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
-            // 纯点/斜杠路径（"."、" ./ "类）在 Jail 折叠后为空，语义 = 根本身；
+            // 纯点/斜杠路径（"."、" ./ "类）在 PathJail 折叠后为空，语义 = 根本身；
             // ".." 含转义企图，不在此列——必须走 resolve 被拒
             bool dots_only = rel.find("..") == std::string::npos;
             for (const char c : rel)
@@ -526,9 +526,9 @@ private:
     vc_api::ToolTable table_{};
     std::string out_buf_;
 
-    // Jail 只读不可变：workspace_set 热切（宿主线程）与 run_tool（agent 线程）
+    // PathJail 只读不可变：workspace_set 热切（宿主线程）与 run_tool（agent 线程）
     // 并发访问 ⇒ shared_ptr 原子换装，取局部副本后解引用
-    std::shared_ptr<vcws::Jail> jail_;
+    std::shared_ptr<nostos::kit::PathJail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
     bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关，取舍见 activate）
     std::atomic<bool> sandboxed_{false};   // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控；

@@ -10,7 +10,7 @@
 // committed 标志实现"成功路径零副作用、失败路径 LIFO 全量还原"。
 #include "diff.hpp"
 #include "fs.hpp"
-#include "jail.hpp"
+#include <nostos/kit/path_jail.hpp>
 
 #include <nostos/plugin_scope.hpp>
 
@@ -191,7 +191,7 @@ inline ApplyResult rejected_midway(ApplyResult r, std::vector<FileEdit> planned,
     return r;
 }
 
-inline ApplyResult apply_ops(const Jail& jail, TextStore& store, const std::vector<EditOp>& ops,
+inline ApplyResult apply_ops(const nostos::kit::PathJail& jail, TextStore& store, const std::vector<EditOp>& ops,
                              bool dry_run) {
     ApplyResult r;
     std::vector<FileEdit> planned;                              // 每文件一项

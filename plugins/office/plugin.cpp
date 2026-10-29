@@ -21,7 +21,7 @@
 #include "vc_tool.hpp"
 
 #include "docs.hpp"
-#include "../workspace/jail.hpp"
+#include <nostos/kit/path_jail.hpp>
 #include "../workspace/read_paged.hpp"
 
 #include <nostos/abi/plugin.hpp>
@@ -48,7 +48,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(
+        jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
             env != nullptr && *env != '\0' ? env : "."));
         publish_(host);
 
@@ -57,7 +57,7 @@ public:
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<vcws::Jail>(nostos::kit::win::utf8_to_wide(e->root));
+            jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(e->root));
             host_.log(2, "ithaca.office: 工作区已热切为 " + std::string(e->root));
         }));
         return NOSTOS_OK;
@@ -199,7 +199,7 @@ private:
     // ---- 状态 ---------------------------------------------------------------------
 
     nostos::abi::Host host_{};
-    std::unique_ptr<vcws::Jail> jail_;
+    std::unique_ptr<nostos::kit::PathJail> jail_;
     std::vector<nostos::abi::Host::Subscription> subs_;  // 工作区热切订阅
     vc_api::ToolTable table_{};
     std::mutex tool_mu_;

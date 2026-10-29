@@ -1,14 +1,14 @@
 // 路径 jail 的单测：合法形态折叠、危险形态点名拒绝、规范化复核。
 #include "ithaca_test_framework.hpp"
 
-#include "jail.hpp"
+#include <nostos/kit/path_jail.hpp>
 
 #include <filesystem>
 #include <fstream>
 #include <string>
 
 namespace fs = std::filesystem;
-using vcws::Jail;
+using Jail = nostos::kit::PathJail;
 
 namespace {
 
