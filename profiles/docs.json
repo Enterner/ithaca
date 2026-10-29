@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "name": "docs",
+  "_说明": "文档形态 = 插件集表达能力的演示：去掉 runner（不执行命令）、工具清单收窄、suggest 权限、独立产品身份提示词与独立 home。与 coder 形态可同时跑（端口/home 各异）互不干扰。",
+
+  "plugins": ["llm_cloud", "workspace", "agent", "mcp", "webui"],
+  "plugin_dir": "",
+  "home": "%LOCALAPPDATA%/ithaca/docs",
+
+  "llm": { "active": "cloud" },
+
+  "agent": {
+    "tools": ["ithaca.tool.workspace", "ithaca.tool.mcp"],
+    "permission_mode": "suggest",
+    "system_prompt_file": "prompts/docs.md"
+  },
+
+  "workspace": { "dir": "" },
+
+  "ui": { "port": 8791 },
+
+  "env": {}
+}

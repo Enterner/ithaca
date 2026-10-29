@@ -7,6 +7,8 @@
 #include "agent_plugin.hpp"
 
 #include <cstdlib>  // std::getenv：工具清单/权限模式/会话文件
+#include <fstream>  // std::ifstream：系统提示词文件通道
+#include <iterator>  // std::istreambuf_iterator：提示词整读
 
 namespace vc_agent {
 
@@ -118,6 +120,30 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
             return;  // env 显式覆盖最高，事件不覆写（对齐 ITHACA_CONTEXT_WINDOW 的优先级语义）
         ctx_.agent_dir_ = (fs::path(e->root) / ".ithaca" / "agent").string();
     });
+
+    // 产品身份：profile 注入的系统提示词（内联优先，文件次之；都缺 = 内置
+    // kSystemPrompt）。只影响新会话首轮注入的 system 消息——已落盘会话的历史
+    // system 不追改（历史是事实），换身份 = 开新会话；子代理仍用各自 AgentType
+    // 的 prompt（type 优先，产品身份不覆盖）。
+    if (const char* v = std::getenv("ITHACA_SYSTEM_PROMPT"); v != nullptr && *v != '\0') {
+        ctx_.system_prompt_ = v;
+        host.log(2, "ithaca.agent: 系统提示词 = 内联（" +
+                        std::to_string(ctx_.system_prompt_.size()) + " 字节）");
+    } else if (const char* f = std::getenv("ITHACA_SYSTEM_PROMPT_FILE");
+               f != nullptr && *f != '\0') {
+        std::ifstream in(fs::path(f), std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+        if (!text.empty()) {
+            ctx_.system_prompt_ = std::move(text);
+            host.log(2, "ithaca.agent: 系统提示词 = " + std::string(f) + "（" +
+                            std::to_string(ctx_.system_prompt_.size()) + " 字节）");
+        } else {
+            // 文件失败不阻激活：形态缺身份提示词只是降级为内置，点名让人能查
+            host.log(3, std::string("ithaca.agent: 系统提示词文件读取失败或为空"
+                                    "（回退内置）：") + f);
+        }
+    }
 
     host.log(2, "ithaca.agent: 就绪（工具集 " + std::to_string(ctx_.tool_svcs_.size()) +
                     " 个；需批准 " + std::to_string(ctx_.confirm_.size()) + " 项）");

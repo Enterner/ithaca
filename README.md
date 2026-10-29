@@ -58,6 +58,29 @@ npm run build:release
 
 首次使用在设置里填入 LLM API Key（DeepSeek 或任意 OpenAI 兼容端）。
 
+## 产品形态（profile）
+
+一份 JSON = 一个产品形态：声明装载哪些插件、产品身份提示词、工具清单、权限默认、
+上下文阈值与端口等（完整字段见 `host/profile.hpp` 的映射表）。仓库自带两个示例：
+`profiles/coder.json`（代码形态，6 插件全量）与 `profiles/docs.json`（文档形态，
+无 runner、suggest 权限、独立身份提示词）。
+
+```powershell
+# 裸名（查 cwd 与 exe 旁三级父目录的 profiles/）
+build\debug\bin\ithaca_host.exe --profile docs
+# 显式路径
+build\debug\bin\ithaca_host.exe --profile profiles\docs.json
+# 老用法不受影响（不带 --profile，直接给插件路径）
+build\debug\bin\ithaca_host.exe build\debug\bin\*_plugin.dll
+```
+
+每个形态的 `home` 按形态隔离注册表与会话目录——两种形态可同时跑（`ui.port` 错开）
+互不干扰。产品身份（系统提示词）只对新会话生效：已有会话的历史 system 消息不追改，
+换形态 = 开新会话。
+
+边界：桌面壳与启动脚本尚未接 `--profile`（现为手动启动路径）；profile 清单是
+`scripts/plugins.mjs` 之外的第二装配源，两者改动需各自同步。
+
 ## 测试
 
 ```powershell

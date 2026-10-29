@@ -1,6 +1,10 @@
 // ithaca_host —— ithaca 通用宿主。
 //
-//   ithaca_host [--selftest] [--seconds N] <插件路径...>
+//   ithaca_host [--profile <路径|名字>] [--selftest] [--seconds N] <插件路径...>
+//     --profile    ：产品形态装配（host/profile.hpp）：按声明装载插件集 + 把产品级
+//                    配置翻译成既有 env 旋钮。裸名查 profiles/<名>.json（cwd 与 exe
+//                    三级父目录）；位置参数插件追加在 profile 清单之后。不带时行为
+//                    与无 profile 完全一致（向后兼容）。
 //     无 --selftest：装载插件后进入排水循环，Ctrl+C 退出。
 //     --seconds N  ：N 秒后干净退出（0 = 一直跑；自动化验收用，仿内核参考宿主）。
 //     --selftest   ：M0 冒烟。装载后直接驱动 vc.llm.v1 跑一次回放，校验
@@ -13,6 +17,7 @@
 //     不可兼得：16ms 轮询空转、拉长周期则延迟劣化——这个取舍已被消解）。
 //   · 宿主不含业务：事件在插件之间流动；宿主唯一的"应用知识"是契约头与这份自检。
 //   · 启动自检：加载结果与 PENDING 依赖点名打屏。
+#include "profile.hpp"
 #include "selftest.hpp"
 #include "vc_events.hpp"
 
@@ -156,6 +161,7 @@ int main(int argc, char** argv) {
 
     bool selftest = false;
     int seconds = 0;  // 0 = 一直跑（Ctrl+C 退出）
+    std::string profile_arg;
     std::vector<std::string> paths;
     for (int i = 1; i < argc; ++i) {
         const std::string_view arg = argv[i];
@@ -163,12 +169,33 @@ int main(int argc, char** argv) {
             selftest = true;
         } else if (arg == "--seconds" && i + 1 < argc) {
             seconds = std::atoi(argv[++i]);
+        } else if (arg == "--profile" && i + 1 < argc) {
+            profile_arg = argv[++i];
+        } else if (arg == "--profile") {  // 缺值：装配目标不明，立即拒绝
+            std::printf("用法：ithaca_host [--profile <路径|名字>] [--selftest] "
+                        "[--seconds N] <插件路径...>\n--profile 缺少值。\n");
+            return 2;
         } else {
             paths.emplace_back(arg);
         }
     }
+    // profile 装配先于一切 env 消费方（selftest 的场景 env 在其后应用 ⇒ 场景覆盖
+    // profile 默认）；清单合并 = profile 在前、位置参数追加在后（两路可共存，
+    // 不带 --profile 时本段整体跳过，行为与旧版逐字一致）。
+    if (!profile_arg.empty()) {
+        const ithaca::profile::Loaded prof =
+            ithaca::profile::load(profile_arg, ithaca::profile::exe_dir(argv[0]));
+        if (!prof.ok) {
+            std::printf("profile 装配失败：%s\n", prof.error.c_str());
+            return 2;  // 产品装配失败不能带病启动
+        }
+        if (!prof.error.empty()) std::printf("profile 警告：%s\n", prof.error.c_str());
+        std::printf("profile：%s（%s）\n", prof.name.c_str(), prof.path.c_str());
+        paths.insert(paths.begin(), prof.plugins.begin(), prof.plugins.end());
+    }
     if (paths.empty()) {
-        std::printf("用法：ithaca_host [--selftest] <插件路径...>\n"
+        std::printf("用法：ithaca_host [--profile <路径|名字>] [--selftest] "
+                    "[--seconds N] <插件路径...>\n"
                     "例：ithacaweb.bat 会拼好全部插件产物路径再启动。\n");
         return 2;
     }

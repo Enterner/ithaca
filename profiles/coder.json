@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "name": "coder",
+  "_说明": "代码形态 = 全量插件 + 内置产品身份（不设 system_prompt 即继承 agent 内置提示词）。演示：6 插件全量、auto-edit 权限、独立 home。",
+
+  "plugins": ["llm_cloud", "workspace", "runner", "agent", "mcp", "webui"],
+  "plugin_dir": "",
+  "home": "%LOCALAPPDATA%/ithaca/coder",
+
+  "llm": { "active": "cloud" },
+
+  "agent": {
+    "permission_mode": "auto-edit"
+  },
+
+  "workspace": { "dir": "" },
+
+  "ui": { "port": 8790 },
+
+  "env": {}
+}
