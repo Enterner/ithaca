@@ -124,6 +124,16 @@ export function fetchMcpStatus() {
   return api('/api/mcp/status')
 }
 
+/** 附件条目是否图片（mime 来自浏览器 File.type / 后端按扩展名折叠，都可能为空）。 */
+export function isImageAtt(a) {
+  return !!(a && a.mime && a.mime.startsWith('image/'))
+}
+
+/** 附件图片预览 URL（/api/attachment 字节出口；落盘路径带撞名避让，会话内不可变）。 */
+export function attUrl(path) {
+  return '/api/attachment?path=' + encodeURIComponent(path)
+}
+
 /** 子代理工作明细存档（右栏过程视图的历史补齐；按 turn 过滤）。 */
 export function fetchAgentLog(turn) {
   return api('/api/agent-log?turn=' + turn)

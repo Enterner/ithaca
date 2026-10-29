@@ -6,7 +6,7 @@
 // 折叠块（思考/工具卡/run 兜底）统一走 FoldBlock 轮子（.fold 网格动画 + Chev
 // 旋转箭头 + 语义色脊柱）；编辑行的展开行留在汇总卡内不走轮子（卡片自带行几何）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
-import { S } from '../store'
+import { S, isImageAtt, attUrl } from '../store'
 import { mdHtml, esc, toolLabel } from '../md'
 import { diffHtml, stripHeads } from '../diff'
 import Chev from './Chev.vue'
@@ -153,12 +153,17 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
 
       <template v-for="(rec, i) in S.records" :key="rec.id ?? 'r' + i">
         <template v-if="rec.type === 'user'">
-          <!-- 附件 chips 挂在消息上方（ZCode 式）；图标按类型区分（图/文件） -->
+          <!-- 附件挂在消息上方（ZCode 式）：图片直接出预览（图即全部语义），
+               文档类保留文件名 chip；mime 为空 = 后端读取失败/非图片扩展名 -->
           <div class="uwrap">
             <div v-if="rec.attachments && rec.attachments.length" class="uatts">
-              <span v-for="a in rec.attachments" :key="a.path" class="uatt" :title="a.path">
-                <span class="ico">{{ a.mime && a.mime.startsWith('image/') ? '🖼' : '📎' }}</span>{{ a.name }}
-              </span>
+              <template v-for="a in rec.attachments" :key="a.path">
+                <img v-if="isImageAtt(a)" class="uatt-img" :src="attUrl(a.path)"
+                     :alt="a.name" :title="a.name" loading="lazy">
+                <span v-else class="uatt" :title="a.path">
+                  <span class="ico">📎</span>{{ a.name }}
+                </span>
+              </template>
             </div>
             <div class="msg u">{{ rec.text }}</div>
           </div>

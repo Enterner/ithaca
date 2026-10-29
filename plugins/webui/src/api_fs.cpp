@@ -13,35 +13,6 @@
 
 namespace vc_webui {
 
-// query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含加号）。
-// /api/fs/list 与 /api/fs/read 共用：同一解码规则写两份必然漂移。
-static std::string query_val(const std::string& target, const char* key) {
-    const std::size_t q = target.find(std::string(key) + "=");
-    if (q == std::string::npos) return "";
-    std::size_t e = target.find('&', q);
-    if (e == std::string::npos) e = target.size();
-    std::string raw = target.substr(q + std::string(key).length() + 1, e - q - std::string(key).length() - 1);
-    std::string out;
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        if (raw[i] == '%' && i + 2 < raw.size()) {
-            auto hex = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            const int hi = hex(raw[i + 1]), lo = hex(raw[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>(hi * 16 + lo));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(raw[i]);
-    }
-    return out;
-}
-
 /// GET /api/fs/list?path=<相对路径,空=根>&depth=<1..6> → 文件树栏的目录列举。
 /// 代理 workspace 的 list 工具（jail 越界防护/上限/symlink 跳过全在提供方），
 /// 本端点只做：黑名单目录过滤（树视图不需要的噪音，agent 的 list 保持无偏）、

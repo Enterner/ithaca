@@ -96,22 +96,34 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
                                                  ? std::string(kSystemPrompt)
                                                  : system_prompt_}});
     // 多模态附件：图片把 user content 升为 OpenAI parts 数组（text + image_url
-    // data_url 内联，随上下文持久——多轮对话的视觉历史）；非图片仅路径注记（已在
-    // text 尾部，模型可用 read 处理文件本体）。纯文本消息保持字符串形态不变。
+    // data_url 内联，随上下文持久——多轮对话的视觉历史）；未内联的附件（文档类、
+    // 读取失败的图片）在 text 尾部拼路径注记，模型据此用 read 处理文件本体。
+    // NOTE: 注记是模型语境的管道，只在这里注入——TurnInput.text 即用户消息原文
+    // （webui 对话流直接渲染 transcript 文本，管道文本混进用户消息就是展示噪音）。
+    // 纯文本消息保持字符串形态不变。
     json att = json::parse(attachments_json.empty() ? "[]" : attachments_json.c_str(),
                            nullptr, /*allow_exceptions=*/false);
-    json user_content = text;
+    std::string text_with_note = text;
+    json image_parts = json::array();
     if (att.is_array() && !att.empty()) {
-        json parts = json::array();
-        parts.push_back(json{{"type", "text"}, {"text", text}});
+        std::string note_paths;
         for (const auto& a : att) {
             if (!a.is_object()) continue;
             const std::string du = a.value("data_url", "");
             if (!du.empty())
-                parts.push_back(json{{"type", "image_url"},
-                                     {"image_url", json{{"url", du}}}});
+                image_parts.push_back(json{{"type", "image_url"},
+                                           {"image_url", json{{"url", du}}}});
+            else
+                note_paths += (note_paths.empty() ? "" : "、") + a.value("path", "");
         }
-        if (parts.size() > 1) user_content = parts;
+        if (!note_paths.empty())
+            text_with_note += "\n\n（附件已上传至工作区，可用 read 读取：" + note_paths + "）";
+    }
+    json user_content = text_with_note;
+    if (!image_parts.empty()) {
+        image_parts.insert(image_parts.begin(),
+                           json{{"type", "text"}, {"text", text_with_note}});
+        user_content = std::move(image_parts);
     }
     messages_.push_back(json{{"role", "user"}, {"content", user_content}});
     // mission 任务目标卡（上下文压缩阶段一）：turn 边界 = 重建点，整卡重写并

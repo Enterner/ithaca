@@ -13,12 +13,11 @@ import { loadSessions } from './sessions'
 export async function send(text) {
   const line = (text || '').trim()
   if (!line) return
-  // 附件两路同行：结构化数组（多模态——图片经 data_url 进 LLM 视觉输入）+
-  // 文本尾注（模型据此用 read 处理文件本体）。创建失败回退时不清附件，重试仍带上
+  // 附件只走结构化数组：图片经 data_url 进 LLM 视觉输入；文档类的 read 指引由
+  // agent 组模型语境时按未内联附件补注记——消息文本保持用户原文（对话流直接
+  // 渲染 transcript 文本，管道注记混进用户消息就是展示噪音）。创建失败回退时
+  // 不清附件，重试仍带上
   const attPaths = S.attachments.map(a => a.path)
-  const attNote = S.attachments.length
-    ? '\n\n（附件已上传至工作区，可用 read 读取：' + S.attachments.map(a => a.path).join('、') + '）'
-    : ''
   S.inputText = ''
   // 本地命令（/undo /cancel /help）不是 turn：不置 inFlight——否则空闲会话输入
   // /undo 后发送键恒为停止态（inFlight 无人复位：/undo 没有 error/assistant 收口
@@ -44,7 +43,7 @@ export async function send(text) {
     S.draft = null
     let r
     try {
-      r = await api('/api/session/new', ws ? { workspace: ws, message: line + attNote, attachments: attPaths } : { message: line + attNote, attachments: attPaths })
+      r = await api('/api/session/new', ws ? { workspace: ws, message: line, attachments: attPaths } : { message: line, attachments: attPaths })
     } catch (e) {
       // 网络失败（宿主重启瞬间/断连）：回滚草稿与输入，等同创建失败——否则
       // 未捕获 rejection + inFlight 永不复位
@@ -74,7 +73,7 @@ export async function send(text) {
     }
   }
   try {
-    await api('/api/input', { line: line + attNote, attachments: attPaths })
+    await api('/api/input', { line, attachments: attPaths })
     S.attachments = []
   } catch (e) {
     // 发送失败回滚现场：输入框先清后发，网络失败时文字必须放回、inFlight 必须

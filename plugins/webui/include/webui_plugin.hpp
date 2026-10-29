@@ -2,7 +2,8 @@
 //
 // 翻译单元职责地图（按功能切片，类声明为本文件）：
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
-//                         通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）+ NOSTOS_PLUGIN 入口
+//                         通用工具（parse_body_/json_resp/query_val/mime_of/file_/
+//                         broadcast_）+ NOSTOS_PLUGIN 入口
 //   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）+ /api/pick-folder
 //   src/events.cpp     —— 事件总线订阅（15 个事件回调 → 落盘 + SSE 广播）
 //   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* + 上下文构成端点
@@ -10,7 +11,8 @@
 //   src/fs_watcher.cpp —— 文件树真监听（ReadDirectoryChangesW → fs_changed 广播）
 //   src/prober.cpp     —— 兄弟实例健康探测（聚合 alive 真值）+ /api/shell/sessions
 //   src/api.cpp        —— 对话动作端点（输入/裁决/权限模式/模型热切/会话命令）
-//   src/attachments.cpp —— 附件管线（上传落盘 + 多模态载荷 + base64 编解码）
+//   src/attachments.cpp —— 附件管线（上传落盘 + 多模态载荷 + base64 编解码 +
+//                         附件图片字节出口）
 //   src/api_fs.cpp     —— 工作区代理端点（文件树/查看器/MCP 状态）
 //
 // 总职责：kit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
@@ -152,6 +154,10 @@ private:
     }
 
     static std::string mime_of(const fs::path& p);
+    // query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含
+    // 加号）。/api/fs/list、/api/fs/read、/api/attachment 三个带参 GET 共用：同一
+    // 解码规则写多份必然漂移
+    static std::string query_val(const std::string& target, const char* key);
     http::Response file_(const std::string& rel);
     void broadcast_(json rec);
 
@@ -215,6 +221,8 @@ private:
     // ---- 附件管线（src/attachments.cpp）-------------------------------------------
 
     http::Response api_upload_(const http::Request& req);   // 附件上传（base64 → 工作区 .ithaca/uploads）
+    // 附件图片字节（前端缩略图/对话流预览的数据源；uploads 白名单内的图片）
+    http::Response api_attachment_(const http::Request& req);
     // 附件路径 → 多模态载荷（data_url 内联；上传落点 .ithaca/uploads/ 即白名单）
     json attachments_payload_(const json& rel_paths);
 

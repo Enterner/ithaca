@@ -1,7 +1,8 @@
 // 附件管线（plugin/webui 的附件切片）。
 // /api/upload：上传落盘工作区 .ithaca/uploads/（base64 解码 + 撞名避让）；
 // attachments_payload_：相对路径数组 → 多模态载荷（图片读字节内联 data_url，
-// 非图片仅路径注记）；base64 编解码与图片 mime 折叠为本文件私有纯函数。
+// 非图片仅元数据）；/api/attachment：附件图片字节（前端预览的数据源）；
+// base64 编解码与图片 mime 折叠为本文件私有纯函数。
 
 #include "webui_plugin.hpp"
 
@@ -160,6 +161,40 @@ json WebuiPlugin::attachments_payload_(const json& rel_paths) {
         out.push_back(std::move(item));
     }
     return out;
+}
+
+/// GET /api/attachment?path=<相对路径> → 附件图片字节（流式文件体，Content-Type
+/// 按扩展名）。发送栏缩略图与对话流图片预览的唯一数据源——transcript 只带展示
+/// 元数据（data_url 体量大不落转录），预览必须能按路径取回字节。只放行 uploads
+/// 白名单内的图片：其余文件继续走 /api/fs/read 的文本护栏，不在此开二进制口子。
+/// host_workspace_ 是宿主线程数据面 ⇒ select 线程只解析 query，取根/归界/补发
+/// 全在宿主线程闭包。
+http::Response WebuiPlugin::api_attachment_(const http::Request& req) {
+    const std::string rel = query_val(req.target, "path");
+    return defer_(req, [this, rel](std::uint64_t conn) {
+        if (host_workspace_.empty())
+            return respond_err_(conn, "附件图片不存在", 404);
+        // 归界（file_ 同款教训）：词法白名单外再做规范化复核——weakly_canonical
+        // 兜符号链接与穿越，父目录须恰为 uploads 根（upload 落点无子目录，兄弟
+        // 目录的同前缀名也一并排除）
+        std::error_code ec;
+        const fs::path root = fs::weakly_canonical(
+            fs::path(host_workspace_) / ".ithaca" / "uploads", ec);
+        const fs::path target =
+            ec ? fs::path{}
+               : fs::weakly_canonical(fs::path(host_workspace_) / fs::path(rel), ec);
+        const std::string mime = ec ? std::string()
+                                    : image_mime_of(target.extension().string());
+        if (ec || target.parent_path() != root || mime.empty() ||
+            !fs::is_regular_file(target, ec))
+            return respond_err_(conn, "附件图片不存在", 404);
+        http::Response r;
+        r.file_path = target.string();
+        r.file_length = fs::file_size(target, ec);
+        if (ec) return respond_err_(conn, "附件图片不可读", 404);
+        r.content_type = mime;
+        server_->respond(conn, r);
+    });
 }
 
 }  // namespace vc_webui

@@ -5,7 +5,8 @@
 // Esc 拒绝——输入框里的文字随拒绝作为反馈回灌给 agent。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { S, send, decide, setMode, setModel,
-         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api } from '../store'
+         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api,
+         isImageAtt, attUrl } from '../store'
 import Cdl from './Cdl.vue'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
@@ -284,8 +285,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
     <div v-if="uploadHint" class="uploadhint">{{ uploadHint }}</div>
     <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
     <div v-if="S.attachments.length" class="atchips">
-      <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip" :title="a.path">
-        <span class="nm">{{ a.mime && a.mime.startsWith('image/') ? '🖼' : '📄' }} {{ a.name }}</span>
+      <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip"
+            :class="{ imgch: isImageAtt(a) }" :title="a.name + '（' + a.path + '）'">
+        <!-- 图片 = 缩略图即全部语义（文件名只进 title）；文档类保留文件名 chip -->
+        <img v-if="isImageAtt(a)" class="thumb" :src="attUrl(a.path)" :alt="a.name">
+        <span v-else class="nm">📄 {{ a.name }}</span>
         <span class="x" title="移除（文件保留在工作区）" @click="S.attachments.splice(i, 1)">×</span>
       </span>
     </div>

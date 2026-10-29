@@ -4,7 +4,7 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：插件逐个结构审查 · 2026-10-29）
+## 当前发现（批次：附件图片预览 · 2026-10-30；观察 1–3 自「插件逐个结构审查」批次携带，仍开放）
 
 **观察 1：kit::win 缺 ASCII 大小写折叠件**（触发场景：全库审查清点小写化循环，
 找到 7 处手写——context.hpp 的 provider 错误文案折叠、workspace/office/webui 的
@@ -23,12 +23,12 @@
 与 http_fetch 内部同款样板；http_fetch 现只收 URL 串，crack 结果（host/port/
 path/secure）不外露，流式客户端无法复用其解析）。
 
-**观察 4：kit::http Request 缺 query 解析**（触发场景：插件审查批次看 webui
-api_fs.cpp——手写 60 行 query_val（含 %XX 解码器，注释自认「同一解码规则写两份
-必然漂移」）；另有 transcript 的 `find("after=")`、agent-log 的 `find("?turn=")`
-两处手挖，共 4 个消费点。Request.target 原样保留（含 query）、无结构化取值面，
-每个带参端点各自手搓）。方向：Request 增 query(name) 或解析好的键值表——URL
-解码语义单点，'+' 不折叠为空格等口径也随之固定。
+**观察 4：kit::http Request 缺 query 解析**（触发场景：webui 手写 %XX 解码器
+（现收编为插件内通用工具 query_val，三端点共用）；新增 /api/attachment 端点
+时再次需要同款解析——transcript 的 `find("after=")`、agent-log 的 `find("?turn=")`
+两处手挖依旧，共 5 个消费点。Request.target 原样保留（含 query）、无结构化取值
+面，每个带参端点各自手搓）。方向：Request 增 query(name) 或解析好的键值表——
+URL 解码语义单点，'+' 不折叠为空格等口径也随之固定。
 
 **不立项记录**：webui 的 base64 编解码（60 行标准实现，唯一消费方；结构审查后
 已隔离进 attachments.cpp 附件管线切片）；JSON 文件 temp+rename 原子落盘样板
