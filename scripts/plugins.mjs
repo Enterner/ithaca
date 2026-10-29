@@ -1,16 +1,19 @@
 // 插件 dll 清单唯一出处：新增/改名插件只改本文件。C++ 侧两处无法 import
 // （shell/ithaca.cpp、启动宿主.cmd——各有指针注释），改清单时需同步。
 // 子集按语义划分：llm 两插件互斥装载（产品决策），各宿主形态只带其一。
-export const ALL = ["llm_mock", "llm_cloud", "workspace", "office", "runner", "agent", "mcp", "webui"];
+// ctx_basic（vc.ctx.v1 策略）是"可选依赖 + 内置回退"：MOCK_CHAIN（selftest
+// 回归基线）恒不带——插件在/不在输出必须逐字一致（A/B 验收口径），接入
+// MOCK_FULL/CLOUD_FULL/ALL 让 dev/真实链路常走策略表路径。
+export const ALL = ["llm_mock", "llm_cloud", "workspace", "office", "ctx_basic", "runner", "agent", "mcp", "webui"];
 
 // mock 最小闭环：无 HTTP 面（selftest / regress 的 --selftest 链）
 export const MOCK_CHAIN = ["llm_mock", "workspace", "office", "runner", "agent"];
 
 // mock 全链：+ HTTP/SSE + MCP（dev --provider mock、e2e host fixture）
-export const MOCK_FULL = ["llm_mock", "workspace", "office", "runner", "agent", "webui", "mcp"];
+export const MOCK_FULL = ["llm_mock", "workspace", "office", "ctx_basic", "runner", "agent", "webui", "mcp"];
 
 // cloud 全链（dev 默认、便携包启动宿主）
-export const CLOUD_FULL = ["llm_cloud", "workspace", "office", "runner", "agent", "mcp", "webui"];
+export const CLOUD_FULL = ["llm_cloud", "workspace", "office", "ctx_basic", "runner", "agent", "mcp", "webui"];
 
 // 评测链：纯 workspace 闭环不跑命令（无 runner），无 MCP
-export const MOCK_EVAL = ["llm_mock", "workspace", "office", "agent", "webui"];
+export const MOCK_EVAL = ["llm_mock", "workspace", "office", "ctx_basic", "agent", "webui"];

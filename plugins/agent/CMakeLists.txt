@@ -24,6 +24,7 @@ nostos_plugin_module(agent_plugin
     src/ctx_turn.cpp    # turn 状态机（分发/收口/上下文压缩执行/子代理 spawn 与回灌）
     src/ctx_session.cpp # 会话持久化 + mission 任务目标卡
     src/ctx_tools.cpp   # 工具桥 + 调用/结果人话摘要
+    src/ctx_strategy.cpp # vc.ctx.v1 策略缝（表解析 + plan/ingest/recall/摘要槽包装）
     src/agent_types.cpp # 子代理类型注册表（.ithaca/agent/*.md + 内置 general）
 )
 # 内部头（include/agent_plugin.hpp：AgentCtx/AgentPlugin 声明 + 职责地图；

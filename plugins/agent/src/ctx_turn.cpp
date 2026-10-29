@@ -85,6 +85,8 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
     // 本槽事件订阅（先于 discover_tools——工具事件可能在本 turn 内即到）：
     // 上 turn 的槽订阅此时已无事件源，直接换订
     subscribe_turn_slot_();
+    // 上下文策略表轮边界解析（先于 discover_tools——recall 能力位影响工具开合）
+    resolve_ctx_strategy_();
     // 类型清单 turn 边界重载（热编辑即生效）：先于 discover_tools——task 自述
     // 要带上最新类型名。仅主会话（子代理不再派生，类型无用）
     if (depth_ == 0) load_agent_types_();
@@ -178,16 +180,27 @@ void AgentCtx::send_chat_impl() {
     // 省一次 provider 400 往返；LLM 摘要仍只在 turn 边界。粗估宁高勿低：误折
     // 代价 = 上下文略瘦，可接受；折叠后旧信号置零待下次回报。子代理不压缩——
     // 折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
-    if (!subagent_ && session_threshold_ > 0 &&
-        estimate_prompt_tokens(body_buf_) > session_threshold_) {
-        if (const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty()); plan.valid) {
-            pending_plan_ = plan;
-            replace_with_digest_(plan.digest, "发送前预检");
-            pending_plan_ = {};
-            last_prompt_tokens_ = 0;   // 旧信号已失效（上下文已折叠），待下次回报
-            json nb = {{"messages", messages_}};
-            if (!tools_.empty()) nb["tools"] = tools_;
-            body_buf_ = nb.dump();
+    // 策略缝：表接管时门槛判定在策略内（signals 带请求体粗估），计划经
+    // acquire_plan_；无表走内置阈值门槛 + plan_compress。预检恒机械（不能等 LLM）。
+    if (!subagent_) {
+        const long long est = estimate_prompt_tokens(body_buf_);
+        const bool gate = ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
+                              ? true
+                              : (session_threshold_ > 0 && est > session_threshold_);
+        if (gate) {
+            vcagent::CompressPlan plan = ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
+                                             ? acquire_plan_("precheck", est)
+                                             : vcagent::plan_compress(messages_,
+                                                                      !raw_dir_.empty());
+            if (plan.valid) {
+                pending_plan_ = plan;
+                replace_with_digest_(plan.digest, "发送前预检");
+                pending_plan_ = {};
+                last_prompt_tokens_ = 0;   // 旧信号已失效（上下文已折叠），待下次回报
+                json nb = {{"messages", messages_}};
+                if (!tools_.empty()) nb["tools"] = tools_;
+                body_buf_ = nb.dump();
+            }
         }
     }
     if (const nostos_status st = llm_->chat_ex(llm_->self, inflight_, body_buf_.c_str());
@@ -494,39 +507,47 @@ void AgentCtx::append_results_and_continue() {
 // 上下文压缩阶段一：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
 // 确定性模板摘要 + ref（锚点逐字节保留；失败 2KB 内保留详细错误，ref 兜底全量）
 void AgentCtx::append_results_and_continue_impl() {
-    for (const auto& ctx : calls_) {
+    for (std::size_t ci = 0; ci < calls_.size(); ++ci) {
+        const ToolCallCtx& ctx = calls_[ci];
         std::string content = ctx.result;
-        // 内容型工具内联豁免按工具分档（量级理由与实测依据见各 Cap 声明处）：
-        // read 96KB（逐字素材一次进上下文）/ task 1KB（结论消费型，超限外置 +
-        // 结论头）；其余工具超 kInlineResultCap 即外置
-        const auto last_tool = tool_last(ctx.full_name);
-        const bool content_inline =
-            last_tool == "read" ? content.size() <= kContentInlineCap
-          : last_tool == "task" ? content.size() <= kTaskInlineCap
-          : false;
-        if (content.size() > vcagent::kInlineResultCap && !content_inline) {
-            if (tool_last(ctx.full_name) == "recall") {
-                // recall 回包本身是 JSON——直接 trim 会劈在 content 字符串中间
-                // 产生非法 JSON tool 消息（实地测试踩过：中文页 3B/字，4096 字节
-                // 闸按字符数轻松撞上）。在 content 值内截断后重打包，保持合法 JSON
-                const json rj = json::parse(content, nullptr, false);
-                if (rj.is_object() && rj.contains("content") && rj["content"].is_string()) {
-                    json fixed = rj;
-                    fixed["content"] = vcws::trim_utf8(rj["content"].get<std::string>(), 1024) +
-                                       "…（回查内容过长，已截断）";
-                    content = fixed.dump();
+        // 策略缝：表接管时收编（外置+最小记录一步）整个在策略内；无表走内置
+        // 分档内联上限 + spool_raw + compact_result
+        if (ctx_tbl_ != nullptr && ctx_tbl_->ingest_tool_result != nullptr) {
+            content = strategy_ingest_(ctx.full_name, content, ci);
+        } else {
+            // 内容型工具内联豁免按工具分档（量级理由与实测依据见各 Cap 声明处）：
+            // read 96KB（逐字素材一次进上下文）/ task 1KB（结论消费型，超限外置 +
+            // 结论头）；其余工具超 kInlineResultCap 即外置
+            const auto last_tool = tool_last(ctx.full_name);
+            const bool content_inline =
+                last_tool == "read" ? content.size() <= vcagent::kContentInlineCap
+              : last_tool == "task" ? content.size() <= vcagent::kTaskInlineCap
+              : false;
+            if (content.size() > vcagent::kInlineResultCap && !content_inline) {
+                if (tool_last(ctx.full_name) == "recall") {
+                    // recall 回包本身是 JSON——直接 trim 会劈在 content 字符串中间
+                    // 产生非法 JSON tool 消息（实地测试踩过：中文页 3B/字，4096 字节
+                    // 闸按字符数轻松撞上）。在 content 值内截断后重打包，保持合法 JSON
+                    const json rj = json::parse(content, nullptr, false);
+                    if (rj.is_object() && rj.contains("content") && rj["content"].is_string()) {
+                        json fixed = rj;
+                        fixed["content"] =
+                            vcws::trim_utf8(rj["content"].get<std::string>(), 1024) +
+                            "…（回查内容过长，已截断）";
+                        content = fixed.dump();
+                    } else {
+                        content = vcws::trim_utf8(content, 2048) +
+                                  "…（回查内容过长，已截断）";
+                    }
                 } else {
-                    content = vcws::trim_utf8(content, 2048) +
-                              "…（回查内容过长，已截断）";
-                }
-            } else {
-                const std::string ref = spool_raw(ctx.full_name, content);
-                if (!ref.empty()) {
-                    const json r = json::parse(content, nullptr, false);
-                    content = vcagent::compact_result(ctx.full_name, r, ref);
-                } else {
-                    content = vcws::trim_utf8(content, 2048) +
-                              "…（超出内联上限且外置失败）";
+                    const std::string ref = spool_raw(ctx.full_name, content);
+                    if (!ref.empty()) {
+                        const json r = json::parse(content, nullptr, false);
+                        content = vcagent::compact_result(ctx.full_name, r, ref);
+                    } else {
+                        content = vcws::trim_utf8(content, 2048) +
+                                  "…（超出内联上限且外置失败）";
+                    }
                 }
             }
         }
@@ -560,6 +581,15 @@ std::string AgentCtx::spool_raw(const std::string& tool, const std::string& resu
 // offset/limit 字节窗口（limit 缺省 2048、上限 4096 = 单条内联护栏），回包带
 // total/next_offset/has_more——大归档分段读，不再"永远只看头 2KB"
 std::string AgentCtx::exec_recall(const json& args) {
+    // 策略缝：表接管时回查执行体在策略内（外置目录/分页/聚合过滤口径随策略）；
+    // 无表走内置（raw_dir_ 字节窗口分页）。
+    if (ctx_tbl_ != nullptr && ctx_tbl_->recall != nullptr) {
+        const std::string a = args.dump();
+        const char* out = nullptr;
+        if (ctx_tbl_->recall(ctx_tbl_->self, a.c_str(), &out) == NOSTOS_OK && out != nullptr)
+            return std::string(out);
+        return json{{"ok", false}, {"error", "context.recall（策略插件）执行失败"}}.dump();
+    }
     const std::string ref = args.value("ref", "");
     if (ref.empty() || raw_dir_.empty())
         return json{{"ok", false},
@@ -743,6 +773,20 @@ bool AgentCtx::hard_window_() const {
 bool AgentCtx::maybe_compress_() {
     if (subagent_) return false;  // 子代理总闸：单任务短命上下文，压缩语义（回 Idle/
                                   // 摘要异步收口/退避校验）全部不适用
+    // 策略缝：表接管时判定门槛与计划都在策略内（turn_end 信号透传）；agent 只
+    // 决定是否 LLM 精修（summary_enabled_ + 插件给不给 summary_prompt 槽）。
+    if (ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr) {
+        const vcagent::CompressPlan plan = acquire_plan_("turn_end");
+        if (!plan.valid) return false;
+        if (summary_enabled_ && ctx_tbl_->summary_prompt != nullptr) {
+            pending_plan_ = plan;
+            request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
+            return true;
+        }
+        pending_plan_ = plan;
+        apply_digest_(plan.digest, false);  // apply_digest_ 内收口（回 Idle + flush 排队）
+        return true;
+    }
     const bool hard = hard_window_();
     if (!hard && !vcagent::should_compress(last_prompt_tokens_, session_threshold_))
         return false;
@@ -753,6 +797,10 @@ bool AgentCtx::maybe_compress_() {
         request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
         return true;
     }
+    // NOTE: 机械路径也必须先冻结计划——replace_with_digest_ 的 cut 区间/折叠统计
+    // 读 pending_plan_（不设则全零：digest 插到 0 号位、原文一条不裁——踩过：
+    // 手动压缩曾因此只插不剪，历史原样残留）
+    pending_plan_ = plan;
     apply_digest_(plan.digest, false);  // apply_digest_ 内收口（回 Idle + flush 排队）
     return true;
 }
@@ -765,11 +813,16 @@ void AgentCtx::request_digest_() {
         return apply_digest_(pending_plan_.digest, false);
     compress_seq_ = next_chat_seq();
     compress_inflight_ = true;
+    // 摘要素材与指令：表接管时由策略给（summary_prompt 槽），内置 = kSummarySystem
+    // + 机械 digest 正文。发送权留 agent（request_id 出自 agent 发号器——两套
+    // 发号器必然数值重叠，插件自发会被 agent 当成自己的应答收进历史）。
+    std::string system = std::string(vcagent::kSummarySystem);
+    std::string material = pending_plan_.digest.value("content", "");
+    if (ctx_tbl_ != nullptr && ctx_tbl_->summary_prompt != nullptr)
+        strategy_summary_brief_(system, material);
     json body = {{"messages", json::array({
-                                  json{{"role", "system"},
-                                       {"content", std::string(vcagent::kSummarySystem)}},
-                                  json{{"role", "user"},
-                                       {"content", pending_plan_.digest.value("content", "")}}})}};
+                                  json{{"role", "system"}, {"content", system}},
+                                  json{{"role", "user"}, {"content", material}}})}};
     body_buf_ = body.dump();   // 调用点均在无在途请求时（turn 收口后/请求已失败或
                                // 取消）——复用缓冲安全
     if (llm_->chat_ex(llm_->self, compress_seq_, body_buf_.c_str()) != NOSTOS_OK)
@@ -782,6 +835,14 @@ void AgentCtx::on_compress_done_(const vc_api::LlmDone& e) {
     std::string s = a.is_object() && a.contains("content") && a["content"].is_string()
                         ? a["content"].get<std::string>() : std::string();
     if (s.empty()) return apply_digest_(pending_plan_.digest, false);
+    // 策略缝：表接管时摘要后处理（裁切/provenance/外置索引重建）在策略内；
+    // 槽失败机械 digest 兜底（压缩永不卡死）。
+    if (ctx_tbl_ != nullptr && ctx_tbl_->apply_summary != nullptr) {
+        json out_digest;
+        if (strategy_apply_summary_(s, out_digest))
+            return apply_digest_(out_digest, true);
+        return apply_digest_(pending_plan_.digest, false);
+    }
     // 超长截断（伤散文不伤回查链——外置索引由本函数在截断之后确定性重建）
     if (s.size() > 4096) s = vcws::trim_utf8(s, 4096) + "…";
     json digest = json{

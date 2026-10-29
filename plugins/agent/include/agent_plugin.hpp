@@ -16,7 +16,7 @@
 // 不解析工具语义（工具自述经 list() 反射透传给 LLM）。
 //
 // 工具发现：env ITHACA_AGENT_TOOLS（svc 名清单，默认
-// "ithaca.tool.workspace,ithaca.tool.mcp,ithaca.tool.runner"），每次 turn 开始按清单取表。
+// workspace/office/mcp/runner 四族），每次 turn 开始按清单取表（缺表跳过并通告）。
 // 审批策略：suggest 逐条问 / auto-edit 编辑免批、命令逐条问 /
 // full-auto 全自动（沙箱由 runner 负责）。确认清单 = 模式映射（rebuild_confirm_），
 // ITHACA_PERMISSION_MODE 设默认，vc.permission.mode 事件热切。
@@ -35,6 +35,7 @@
 #include "../context.hpp"  // 上下文压缩阶段一（mission 卡/最小充分记录/raw 外置/迟滞压缩）
 #include "../permission.hpp"  // 权限模式三档（归一/确认清单映射）
 
+#include "vc_ctx.hpp"
 #include "vc_events.hpp"
 #include "vc_llm.hpp"
 #include "vc_tool.hpp"
@@ -89,19 +90,6 @@ inline constexpr int kMaxOverwindowResend = 2;
 // 单调膨胀。
 inline constexpr int kMaxChildren = 4;
 inline constexpr int kMaxChildRounds = 30;
-
-// 内容型工具结果的分工具内联上限（对齐主流形态：限制收口在工具侧——read 按
-// 行分页、task 报告即子代理的最终产出）。
-// · read：96KB——正文是逐字工作素材（编辑依据），一次内联回灌，外置会让主/子
-//   会话为拿到正文打几十次 recall，踩过。96KB 给行号前缀（每行 ≈7 字节）留
-//   余量，代码类内容 ≈25K token。
-// · task：1KB——报告是「结论消费型」内容，而实测会话（24 轮/92K tok）五份
-//   报告 35.3KB 全文内联、折叠后模型仍以 4KB 满页 18 次整卷回读归档——内联 +
-//   回读双倍开销。超限走「外置 + 结论头」（报告首段即结论摘要，compact_result
-//   的 task 分支），细节按页 recall：内联恒小，回读只在真需要细节时发生。
-// · 其他工具维持 4KB 通用闸（runner 输出等构建日志类本就该瘦着进上下文）。
-inline constexpr std::size_t kContentInlineCap = 96 * 1024;
-inline constexpr std::size_t kTaskInlineCap = 1024;
 
 // 子代理类型（一个 .ithaca/agent/<名>.md；内置 general 恒在，同名 md 覆盖之）。
 // 类型只管提示词与工具面——子代理用哪个模型走配置链路（当前主模型的 sub_model
@@ -266,6 +254,26 @@ struct AgentCtx {
     // 消费路径不变）；子会话槽事件不重播——不可见性由"订阅才可达"保证。
     void subscribe_turn_slot_();
 
+    // ---- 上下文策略缝（vc.ctx.v1 单点解析；src/ctx_strategy.cpp）----------------
+
+    // begin_turn 解析策略表 + capabilities 自述缓存。null = 内置回退（不
+    // inject——缺插件零行为变化）；轮边界生效，在途 turn 不换策略。
+    void resolve_ctx_strategy_();
+    // 压缩计划统一口：表接管 ⇒ messages/signals 打包调 plan 槽（判定门槛在
+    // 策略内，action=none ⇒ 无效计划）；estimate ≥ 0 时并入 signals（precheck
+    // 的粗估门槛信号）。无表返回无效计划——调用点自行走内置门槛 + plan_compress。
+    vcagent::CompressPlan acquire_plan_(const char* reason, long long estimate = -1);
+    // 表接管的工具结果收编（ingest_tool_result 槽）：外置 + 最小记录一步在策略
+    // 内完成；槽失败 ⇒ 原文内联兜底（调用方保底通路）。
+    std::string strategy_ingest_(const std::string& full_name, const std::string& content,
+                                 std::size_t seq);
+    // 表接管的摘要请求素材（summary_prompt 槽）：覆盖 system 指令与 user 素材；
+    // 槽失败保持调用方传入的内置值不变。
+    void strategy_summary_brief_(std::string& system, std::string& instructions);
+    // 表接管的摘要回包后处理（apply_summary 槽）：产出定稿摘要消息。返回 false =
+    // 槽失败，调用方机械 digest 兜底。
+    bool strategy_apply_summary_(const std::string& summary, json& out_digest);
+
     // ---- 子代理派发（spawn/回灌在 ctx_turn.cpp；类型加载在 agent_types.cpp）------
 
     // task 内置工具：校验参数与护栏 → 起子 ctx 事件驱动跑循环 → 登记在途。
@@ -343,6 +351,11 @@ struct AgentCtx {
     const vc_api::LlmTable* llm_ = nullptr;  // 每次 send_chat 前解析（provider 可被竞争顶掉）
     const vc_api::LlmTable* window_probed_llm_ = nullptr;  // 已向 info() 探过窗口的 provider 实例
     long long ctx_max_output_ = 0;      // provider 自述的输出上限（info()；消费方 = 发送前输出预留）
+    // 上下文策略表（vc.ctx.v1）：轮边界解析、轮内持有；null = 内置同名逻辑。
+    // NOTE: 不 manifest inject——inject 会让无插件时 LazyGate 永远 PENDING；
+    // 本表是"可选依赖 + 内置回退"，缺插件零行为变化。
+    const vc_api::CtxTable* ctx_tbl_ = nullptr;
+    bool ctx_cap_recall_ = false;       // 策略自述 capabilities 含 recall ⇒ 暴露 context.recall
 
     State state_ = State::Idle;
     int turn_no_ = 0;
@@ -359,6 +372,8 @@ struct AgentCtx {
 
     // 上下文压缩
     long long last_prompt_tokens_ = 0;  // provider 回报的最近 prompt_tokens（判定信号）
+    bool last_usage_real_ = false;      // 上次信号是真实 usage 回报（false = 粗估兜底
+                                        // ——策略缝的退避判定只认真实回报，透传用）
     long long compress_threshold_ = 32000;  // W 未知时的兜底阈值（阶段一语义）
     long long ctx_window_ = 0;          // 当前模型上下文窗口（0 = 未知；env > set_active）
     bool ctx_window_env_ = false;       // env ITHACA_CONTEXT_WINDOW 已设 ⇒ set_active 事件不覆写

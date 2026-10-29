@@ -349,4 +349,16 @@ inline std::string normalize_permission_mode(const std::string& m) {
     return valid_permission_mode(m) ? m : std::string("auto-edit");
 }
 
+// ---- 上下文策略热切（尾部追加）------------------------------------------------
+// 同名服务 vc.ctx.v1 可多实现竞争装载（与 llm 两供应商同构）：env 门控 + 本事件
+// 运行期热切。active = 策略实现自报的名字（如 "basic"），匹配 → publish /
+// 不匹配 → unpublish（参照 LlmSetActive 的语义）。消费方（agent）只在轮边界
+// 重解析表指针——在途 turn 不换策略。
+struct CtxSetActive {
+    static constexpr std::string_view name = "vc.ctx.set_active";
+    const char* active = nullptr;   // 期望活跃的策略名；"" = 无偏好（保持现状）
+};
+
+inline constexpr std::uint64_t ctx_set_active = nostos::event_id<CtxSetActive>;
+
 }  // namespace vc_api

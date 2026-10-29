@@ -95,9 +95,23 @@ void AgentCtx::persist_session_() {
 }
 
 // mission 任务目标卡重建（turn 边界 = 重建点）：已存在则原位重写内容，否则
-// 插到 system 之后（下标 1）。turn 内不改动——固定前缀纪律
+// 插到 system 之后（下标 1）。turn 内不改动——固定前缀纪律。
+// 策略缝：表接管时卡内容由 mission 槽产出（null/失败 = 不动）；无表内置
+// collect_tasks + mission_message。原位替换依赖 is_mission 标记识别——产出须
+// 沿用内置标记形态（契约注明）。
 void AgentCtx::rebuild_mission_() {
-    const json mission = vcagent::mission_message(vcagent::collect_tasks(messages_));
+    json mission;
+    if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {
+        const std::string msgs = messages_.dump();
+        const char* out = nullptr;
+        if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &out) != NOSTOS_OK ||
+            out == nullptr)
+            return;   // 表接管：null/失败 = 本轮不动（策略的显式决策）
+        mission = json::parse(out, nullptr, /*allow_exceptions=*/false);
+        if (!mission.is_object()) return;
+    } else {
+        mission = vcagent::mission_message(vcagent::collect_tasks(messages_));
+    }
     for (std::size_t k = 1; k < messages_.size(); ++k)
         if (vcagent::is_mission(messages_[k])) {
             messages_[k] = mission;

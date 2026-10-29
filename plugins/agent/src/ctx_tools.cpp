@@ -32,8 +32,9 @@ bool AgentCtx::discover_tools() {
         }
         bound_.push_back(Bound{nostos::svc_id_of(svc_name), svc_name, table});
     }
-    // 内置工具：context.recall（外置存储回查；仅 raw 外置可用时暴露）
-    if (!raw_dir_.empty())
+    // 内置工具：context.recall（外置存储回查；仅 raw 外置可用时暴露——策略表
+    // 接管时按其 capabilities 自述开合，外置目录/回查口径随策略）
+    if (!raw_dir_.empty() || ctx_cap_recall_)
             tools_.push_back(json{
         {"type", "function"},
         {"function",

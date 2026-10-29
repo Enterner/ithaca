@@ -65,13 +65,16 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
         }
     }
     if (!usage_real) last_prompt_tokens_ = estimate_prompt_tokens(body_buf_);
+    last_usage_real_ = usage_real;   // 信号来源随值走（策略缝的退避只认真实回报）
     // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升；封顶
     // 0.95×W——越过即由硬保护接管判定，阈值不再虚高（阈值一旦
     // 越过 W，should_compress 永不命中，压缩停摆回到爆窗）。仅真实 usage 参与
     // 比较——拿粗估信号退避 = 用垃圾调阈值。
+    // 策略缝：表接管时退避判定在策略内（plan 的 turn_end 信号带 usage 真实性），
+    // agent 不持有阈值状态——本块整体跳过。
     if (compress_verify_) {
         compress_verify_ = false;
-        if (usage_real && session_threshold_ > 0 &&
+        if (ctx_tbl_ == nullptr && usage_real && session_threshold_ > 0 &&
             last_prompt_tokens_ >= session_threshold_) {
             session_threshold_ = session_threshold_ / 4 * 5;
             if (ctx_window_ > 0) {
@@ -125,10 +128,27 @@ void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
     // send_chat）；重发有 kMaxOverwindowResend 上界——折叠不够再超窗时最终仍走
     // 报废路径，不会打转。TODO: provider 文案归一后收窄这里的匹配面。
     // 子代理不参与：折叠产物会破坏「报告 = 最后一条 assistant」的回灌语义
+    // 策略缝：超窗分类是策略知识（各家 provider 文案不一）——表接管走
+    // classify_error 槽，无表走内置保守子串匹配。
+    bool overflow = false;
+    if (ctx_tbl_ != nullptr && ctx_tbl_->classify_error != nullptr) {
+        const std::string msg = e.message != nullptr ? e.message : "";
+        const char* out = nullptr;
+        if (ctx_tbl_->classify_error(ctx_tbl_->self, msg.c_str(), &out) == NOSTOS_OK &&
+            out != nullptr) {
+            const json c = json::parse(out, nullptr, /*allow_exceptions=*/false);
+            overflow = c.is_object() && c.value("overflow", false);
+        }
+    } else {
+        overflow =
+            vcagent::is_context_overflow_error(e.message != nullptr ? e.message : "");
+    }
     if (!subagent_ && state_ == State::TurnActive && runs_.empty() &&
-        compress_retries_ < kMaxOverwindowResend &&
-        vcagent::is_context_overflow_error(e.message != nullptr ? e.message : "")) {
-        const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
+        compress_retries_ < kMaxOverwindowResend && overflow) {
+        const vcagent::CompressPlan plan =
+            ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
+                ? acquire_plan_("overflow")
+                : vcagent::plan_compress(messages_, !raw_dir_.empty());
         if (plan.valid) {
             ++compress_retries_;
             pending_plan_ = plan;
@@ -170,17 +190,27 @@ void AgentCtx::on_session_cmd_impl(const vc_api::SessionCmd& c) {
     // 主动压缩 = turn 边界自动压缩的立即版（同一管线：同一 plan/摘要/兜底）。
     // LLM 摘要期间与收口压缩一致地保持占用（state TurnActive）——摘要回包中途
     // 若开新 turn，apply_digest_ 的区间替换会踩在半截对话上（踩过预防）。
-    const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
+    // 策略缝：表接管时计划出自 plan 槽（reason=manual，门槛在策略内）；LLM 精修
+    // 还需策略给 summary_prompt 槽（内置路径恒有 kSummarySystem）。
+    const vcagent::CompressPlan plan =
+        ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
+            ? acquire_plan_("manual")
+            : vcagent::plan_compress(messages_, !raw_dir_.empty());
     if (!plan.valid) {
         notice("上下文还比较小，暂无需压缩");
         return;
     }
-    if (summary_enabled_) {
+    const bool llm_brief_ready =
+        ctx_tbl_ != nullptr ? ctx_tbl_->summary_prompt != nullptr : true;
+    if (summary_enabled_ && llm_brief_ready) {
         state_ = State::TurnActive;
         pending_plan_ = plan;
         notice("开始压缩上下文（LLM 摘要，期间输入将排队）…");
         request_digest_();   // 回包/失败在 on_done/on_llm_error 分流 → apply_digest_ 回 Idle
     } else {
+        // NOTE: 机械路径先冻结计划——replace_with_digest_ 读 pending_plan_ 的
+        // cut 区间（不设则全零：只插 digest 不裁原文，踩过）
+        pending_plan_ = plan;
         apply_digest_(plan.digest, false);   // 机械折叠：出口自带通告 + 回 Idle
     }
 }

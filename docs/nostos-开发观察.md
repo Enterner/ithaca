@@ -4,28 +4,18 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：对话流 UI 改版 · 2026-10-28）
+## 当前发现（批次：可替换架构（profile/office/vc.ctx）· 2026-10-29）
 
-**kit::http 跨线程关闭竞态——已修复（本轮实施，内核子模块内待提交）**：webui
-验证中三次撞到宿主 HTTP 全量无应答（进程活、端口听、静态/接口全部 0 字节超时；
-CPU 冻结、线程数归 1）。复现序列 = SSE 常开收广播 + 中途销毁 + 新页面，第 7 轮
-即挂。根因两层：
+**「同服务多实现竞争 + 择一发布」样板第三份手写（触发场景：写 ctx_basic 插件的
+选择开关时）**：env 门（`ITHACA_<域>_ACTIVE` 匹配 → publish / 不匹配 → 休眠）+
+`vc.<域>.set_active` 事件热切（匹配 → publish / 不匹配 → unpublish）的竞争样板
+现已三份：llm_cloud、llm_mock、ctx_basic，逐字同构（activate 读 env 决定
+首发状态 + 订阅 set_active + publish/unpublish 两个分支 + 日志文案）。这是内核
+"SDK 便利性"职责内的候选：一个「命名实现竞争发布」小件（声明服务 id 与实现名，
+内核托管 env 门语义与 set_active 订阅，插件只剩 publish 的表组装），可消掉每个
+provider 约 30 行机械重复并让热切语义单源。是否做由内核节奏定。
 
-- **主因（select 与关闭的跨线程竞态）**：挂起-补响应在宿主线程补发，`flush`
-  对已死对端 send 失败即 `close_client` → `closesocket(fd)`——此刻 select 线程
-  可能仍在 `select()` 同一 fd 的快照上（窗口最长一个 poll_interval）。Windows
-  对已关 socket select = 未定义（WSAENOTSOCK 形态），`run()` 对非 EINTR 错误
-  直接 break → 循环线程静默退出。
-- **帮凶（EOF 不关连接）**：`read_ready` 对「请求已完成」的对端关闭不关——
-  SSE 正是这种，导航即泄漏死连接：fd 恒可读（EOF）→ select 每轮立即返回
-  （200ms 超时永不生效，热旋转）+ reap 对 sse 豁免 → 死连接永久占用。
-
-**已实施**：`close_client` 改为仅标记 `dead`（任何线程不跨线程 closesocket），
-select 循环每轮开头持锁统一关闭并出 fd_set；EOF 无条件标记 dead。验证 = 复现
-脚本 60 轮（原第 7 轮即挂）+ 竞态 200 轮全绿，宿主 CPU 平稳（热旋转随之消失）；
-本仓 check 全绿。
-
-**挂账（上批两条总线/投递语义方向，未落地维持观察；触发场景：修「工具调用记录恒
+**挂账（上批总线/投递语义方向，未落地维持观察；触发场景：修「工具调用记录恒
 落在思考块上方」撞上）**：
 
 - **EventHub 同步递归派发的兄弟订阅者顺序无文档化保证**：llm_done 的订阅者
@@ -40,7 +30,7 @@ select 循环每轮开头持锁统一关闭并出 fd_set；EOF 无条件标记 d
   「与插件同生命周期的主 ctx」。poster 若支持 owner 绑定（owner 作废时未执行任务
   逐条丢弃，复用现有 dispose 通路），子会话分发等一切亚生命周期投递都能安全化。
 
-**挂账（上一批两条 kit 小件，未落地维持观察）**：kit::win 可中断睡眠小件
+**挂账（上批两条 kit 小件，未落地维持观察）**：kit::win 可中断睡眠小件
 （prober/shell 各手写分片睡眠查旗标）与 env 块构建纯函数（shell/runner 两份
 GetEnvironmentStringsW 合并）——细节随 git 历史（fe994c4）。
 
