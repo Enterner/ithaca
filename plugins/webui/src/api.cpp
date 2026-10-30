@@ -196,6 +196,11 @@ http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
     json in = parse_body_(req.body);
     const int cmd = in.value("cmd", 0);
     return defer_(req, [this, cmd](std::uint64_t conn) {
+        // cmd=2（撤回中断回合）：先回退转录面（webui 数据面），agent 随令回退
+        // 模型上下文——两侧守卫同款（尾部中断现场），本侧不适格时不发射，避免
+        // 双侧各发一条「没有现场」通告
+        if (cmd == 2 && !rollback_interrupt_transcript_())
+            return respond_err_(conn, "没有可撤回的中断现场（中断后已有新对话）");
         const vc_api::SessionCmd e{cmd, session_.c_str()};
         host_.emit(vc_api::session_cmd, &e);
         server_->respond(conn, json_resp({{"ok", true}}));

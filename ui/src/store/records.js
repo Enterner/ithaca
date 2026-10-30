@@ -123,6 +123,7 @@ export function flushTurnEdits() {
 let parkSse = false
 const parked = []
 let pollChain = Promise.resolve()
+let rollbackSeq = 0   // 撤回转录面的代次：poll 拉取期发生撤回 ⇒ 本轮结果作废重拉
 
 // 后台 turn 链会打 session 标的事件类型（切走不杀 turn——链运行期事件按归属
 // 会话落盘广播）。非当前会话的带标事件不进当前视图，切回时 HTTP 重放补齐
@@ -133,6 +134,24 @@ const TURN_TAGGED = new Set(['user', 'assistant', 'assistant_delta', 'assistant_
 
 /** SSE/重放的统一入口：所有宿主记录（含转态信号）都经此进状态机。 */
 export function render(rec) {
+  // 撤回转录面（中断卡 ↩）：按位裁剪记录流、对齐游标、清被撤轮次的挂起面。
+  // 位裁剪是自愈的——竞态窗口内渲染的迟到记录同样被裁掉
+  if (rec.type === 'records_rollback') {
+    const cut = rec.count
+    let at = S.records.length
+    for (let i = 0; i < S.records.length; i++) {
+      const id = S.records[i].id
+      if (id !== undefined && id >= cut) { at = i; break }
+    }
+    for (const r of S.records.splice(at))
+      if (r.turn_id) {   // 被撤轮次的子代理缓冲与状态面一并清理
+        delete S.subDetail[r.turn_id]; delete S.subLive[r.turn_id]; delete S.subDone[r.turn_id]
+      }
+    S.since = cut; S.lastId = cut - 1
+    X.turnEdits = new Map(); X.turnEditsTurn = 0
+    S.fsRev++   // 文件树对齐磁盘真态（被撤轮次的文件改动仍在盘上）
+    return
+  }
   // turn_state 无论归属都消费：后台会话刷徽标行；当前会话对账 inFlight
   if (rec.type === 'turn_state') {
     S.bgRun[rec.session] = !!rec.working
@@ -428,7 +447,9 @@ export function pollOnce() {
 async function pollOnceImpl() {
   parkSse = true
   try {
+    const seq0 = rollbackSeq
     const t = await api('/api/transcript?after=' + S.since)
+    if (seq0 !== rollbackSeq) return pollOnceImpl()   // 拉取期发生撤回：游标已重置，按新位重拉
     t.records.forEach(renderNow)
     S.since = t.next
     flushTurnEdits()   // 重放结束 ⇒ 最后一轮的编辑汇总也落位（否则丢了）

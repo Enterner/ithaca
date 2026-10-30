@@ -108,21 +108,32 @@ void AgentCtx::persist_session_() {
 }
 
 // 撤回中断回合（语义见 agent_plugin.hpp 声明处）。truncate 与异常兜底同一清理面：
-// 从尾部弹出 tool 结果段与悬挂 assistant，回到中断轮的 user 消息——下一请求前缀
-// 在撤回点截断（用户显式选择丢弃该段，缓存分叉即预期）
+// 弹出 tool 结果段与悬挂 assistant 后，中断轮的 user 消息一并撤出（「从未出现过」；
+// 尾判定保证它属于被撤轮次）——下一请求前缀在撤回点截断（用户显式丢弃该段，缓存
+// 分叉即预期）。文件副作用不在撤回面（磁盘回滚走撤销快照）
 void AgentCtx::revoke_interrupt_() {
     if (subagent_) return;   // 子会话无 UI 命令面
     if (state_ != State::Idle) {
         notice("会话运行中，无法撤回中断现场");
         return;
     }
-    if (messages_.empty() || messages_.back().value("role", "") != "tool") {
+    // 尾部现场判定：tool 结尾（有工具交互的取消）或 user 结尾（首个响应前即取消，
+    // 或排队输入丢弃后的形态）——两者都可整体回退到该轮之前；中断后已续聊则尾部
+    // 是 assistant/其他 ⇒ 拒绝
+    if (messages_.empty()) {
+        notice("没有可撤回的中断现场");
+        return;
+    }
+    const std::string tail = messages_.back().value("role", "");
+    if (tail != "tool" && tail != "user") {
         notice("没有可撤回的中断现场（中断后已有新对话）");
         return;
     }
     truncate_dangling_tool_exchange_();
+    if (!messages_.empty() && messages_.back().value("role", "") == "user")
+        messages_.erase(messages_.size() - 1);
     persist_session_();
-    notice("已撤回中断回合的上下文（文件改动未回滚，需要时用撤销处理）");
+    notice("已撤回中断回合（模型上下文与显示记录一并回退；文件改动未回滚，需要时用撤销处理）");
 }
 
 // 任务卡建档（仅缺卡时插到 system 之后）：跨轮冻结是缓存前缀纪律——卡坐在

@@ -1,22 +1,22 @@
 == ithaca_host selftest ==
-待加载： <ROOT>\build\debug\bin\llm_mock_plugin.dll
-待加载： <ROOT>\build\debug\bin\workspace_plugin.dll
-待加载： <ROOT>\build\debug\bin\office_plugin.dll
-待加载： <ROOT>\build\debug\bin\runner_plugin.dll
-待加载： <ROOT>\build\debug\bin\agent_plugin.dll
+[INFO] ithaca.host: 待加载 <ROOT>\build\debug\bin\llm_mock_plugin.dll
+[INFO] ithaca.host: 待加载 <ROOT>\build\debug\bin\workspace_plugin.dll
+[INFO] ithaca.host: 待加载 <ROOT>\build\debug\bin\office_plugin.dll
+[INFO] ithaca.host: 待加载 <ROOT>\build\debug\bin\runner_plugin.dll
+[INFO] ithaca.host: 待加载 <ROOT>\build\debug\bin\agent_plugin.dll
 已加载插件 'ithaca.llm.mock' v0.2.0
-  [日志 2] ithaca.llm.mock: 已激活
-  [日志 2] ithaca.llm.mock: 就绪（turn 剧本 9 条，间隔 5ms）
+[INFO] ithaca.llm.mock: 已激活
+[INFO] ithaca.llm.mock: 就绪（turn 剧本 9 条，间隔 5ms）
 已加载插件 'vc.workspace' v0.1.0
-  [日志 2] ithaca.workspace: 就绪，jail 根 = <ROOT>\tests\regress\.ws
+[INFO] ithaca.workspace: 就绪，jail 根 = <ROOT>\tests\regress\.ws
 已加载插件 'vc.office' v0.1.0
-  [日志 2] ithaca.office: 就绪，jail 根 = <ROOT>\tests\regress\.ws
+[INFO] ithaca.office: 就绪，jail 根 = <ROOT>\tests\regress\.ws
 已加载插件 'vc.runner' v0.1.0
-  [日志 2] ithaca.runner: 就绪（权限模式 suggest，jail 根 = <ROOT>\tests\regress\.ws）
+[INFO] ithaca.runner: 就绪（权限模式 suggest，jail 根 = <ROOT>\tests\regress\.ws）
 已加载插件 'vc.agent' v0.1.0
-  [日志 2] ithaca.agent: 会话槽 session.json 就绪（工具集 4 个；需批准 2 项）
-  [日志 2] ithaca.agent: 全新会话（<ROOT>\tests\regress\.ws\session.json）
-  [日志 2] ithaca.agent: 就绪（多会话槽模式；已恢复 1 个会话）
+[INFO] ithaca.agent: 会话槽 session.json 就绪（工具集 4 个；需批准 2 项）
+[INFO] ithaca.agent: 全新会话（<ROOT>\tests\regress\.ws\session.json）
+[INFO] ithaca.agent: 就绪（多会话槽模式；已恢复 1 个会话）
 自检：活跃插件 5 个。
 selftest[workspace] list（空目录）: ✓
 selftest[workspace] write 新文件（turn 1）: ✓
@@ -35,7 +35,7 @@ selftest[workspace] read 确认已删除: ✓
     done#3
     [tool] workspace.apply ok=1 ithaca_smoke/m3.txt +1 −1
     delta#4: M3 场景完成
-  [日志 2] ithaca.agent: turn #1 完成（tokens total 1100）
+[INFO] ithaca.agent: turn #1 完成（tokens total 1100）
     done#4
     done#5
     [tool] runner.run ok=1 已转后台（run#1）
@@ -46,12 +46,12 @@ selftest[workspace] read 确认已删除: ✓
     [tool] runner.run ok=1 已转后台（run#2）
     [tool] runner.run ok=1 exit 0｜BUILD OK
     delta#8: M5 场景完成
-  [日志 2] ithaca.agent: turn #2 完成（tokens total 3960）
+[INFO] ithaca.agent: turn #2 完成（tokens total 3960）
     done#8
     cancel#0: 当前会话中断
-  [日志 2] ithaca.agent: 已停用
-  [日志 2] ithaca.runner: 已停用
-  [日志 2] ithaca.office: 已停用
-  [日志 2] ithaca.workspace: 已停用
-  [日志 2] ithaca.llm.mock: 已停用
+[INFO] ithaca.agent: 已停用
+[INFO] ithaca.runner: 已停用
+[INFO] ithaca.office: 已停用
+[INFO] ithaca.workspace: 已停用
+[INFO] ithaca.llm.mock: 已停用
 selftest 通过：delta=2 done=8 error=0 proposals=5，全程 <T>ms；workspace 冒烟 ✓；M3 闭环 ✓（含死锁回归）；M4 取消 ✓；M5 回灌 ✓

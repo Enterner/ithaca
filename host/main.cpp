@@ -200,14 +200,31 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::printf("== ithaca_host %s ==\n", selftest ? "selftest" : "交互");
-    for (const auto& p : paths) std::printf("待加载： %s\n", p.c_str());
+    // 标准日志行：时间戳 + 级别名 + 消息（插件消息自带 "ithaca.xxx: " 来源前缀，
+    // 宿主自身的生命周期行同走此出口——控制台/host.log 单一格式）。级别名与内核
+    // context.hpp 的档位名对齐（0-4 = TRACE/DEBUG/INFO/WARN/ERROR）
+    const auto log_line = [](int level, std::string_view msg) {
+        using clock = std::chrono::system_clock;
+        const auto tp = clock::now();
+        const std::time_t t = clock::to_time_t(tp);
+        std::tm tm{};
+        localtime_s(&tm, &t);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            tp.time_since_epoch()).count() % 1000;
+        static constexpr const char* kLevels[] = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
+        const char* lv = (level >= 0 && level <= 4) ? kLevels[level] : "LOG";
+        std::printf("%04d-%02d-%02d %02d:%02d:%02d.%03d [%s] %.*s\n",
+                    tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
+                    tm.tm_min, tm.tm_sec, static_cast<int>(ms), lv,
+                    static_cast<int>(msg.size()), msg.data());
+        std::fflush(stdout);
+    };
 
     nostos::Host<> host;
-    host.set_log_sink([](int level, std::string_view msg) {
-        std::printf("  [日志 %d] %.*s\n", level, static_cast<int>(msg.size()), msg.data());
-        std::fflush(stdout);
-    });
+    host.set_log_sink(log_line);
+
+    std::printf("== ithaca_host %s ==\n", selftest ? "selftest" : "交互");
+    for (const auto& p : paths) log_line(2, "ithaca.host: 待加载 " + p);
 
     // selftest 脚手架（观测订阅 + 剧本落盘 + env 指路）——必须在插件装载前：
     // llm_mock/runner 激活时读取这些 env。

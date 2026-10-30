@@ -8,7 +8,7 @@
 // 渲染成本两面收口：md/diff 逐记录缓存（收口记录不可变，算一次挂对象上）+
 // 尾部窗口渐进挂载（历史窗口段——切会话/重放只挂最近一段，触顶扩窗补更早历史）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
-import { S, isImageAtt, attUrl, api } from '../store'
+import { S, isImageAtt, attUrl, api, pushLocal } from '../store'
 import { mdHtml, esc, toolLineHtml, toolName } from '../md'
 import { diffHtml, stripHeads } from '../diff'
 import Chev from './Chev.vue'
@@ -173,11 +173,12 @@ function statText(rec) {
 }
 function superseded(rec) { return rec !== S.pending && rec._decided === null }
 
-// 中断卡的撤回：请服务端把取消回合从模型上下文抹掉（尾部不适格时通告回流），
-// 成功即本地摘除按钮（重复点击只会得到「没有现场」）
+// 中断卡的撤回：整轮回退（模型上下文 + 显示记录，服务端两侧守卫同款）；尾部
+// 不适格（已续聊）时服务端拒绝，反馈落流；成功即本地摘除按钮
 async function revokeInterrupt(rec) {
   const r = await api('/api/session/cmd', { cmd: 2 })
   if (r.ok) rec._revoked = true
+  else pushLocal(r.error || '撤回失败')
 }
 
 async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的事件委托）
@@ -341,7 +342,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               （图标无文字，交互语义在 tooltip）；不适格（已续聊）由服务端通告 -->
           <div class="errcard" :title="'错误码 ' + rec.code">⚠ {{ rec.msg }}<button
               v-if="rec.msg === '当前会话中断' && !rec._revoked" class="rc-btn"
-              title="撤回中断回合的模型上下文（文件改动不回滚，需要时用撤销处理）"
+              title="撤回本轮全部痕迹——模型上下文与显示记录一并回退（文件改动不回滚，需要时用撤销处理）"
               @click.stop="revokeInterrupt(rec)">↩</button></div>
         </template>
         <template v-else-if="rec.type === 'local'">

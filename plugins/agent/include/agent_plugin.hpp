@@ -206,8 +206,8 @@ struct AgentCtx {
     void cleanup_turn_(bool keep_partial = false);
     // 取消现场配对（keep_partial 路径）：未决 tool_call 注入合成结果并回灌进历史
     void settle_cancelled_calls_();
-    // 撤回中断回合（会话命令 cmd=2，中断卡 ↩ 按钮触发）：把取消现场从模型上下文
-    // 抹掉——只认尾部现场，文件副作用与 transcript 记录均不在撤回面
+    // 撤回中断回合（会话命令 cmd=2，中断卡 ↩ 按钮触发）：整轮回退到该轮之前
+    //（模型上下文含 user 消息一并撤出）；webui 侧同令回退转录面。只认尾部现场
     void revoke_interrupt_();
     // 清理悬挂的工具回合尾巴（provider 400 防护，见 ctx_turn.cpp 实现）
     void truncate_dangling_tool_exchange_();

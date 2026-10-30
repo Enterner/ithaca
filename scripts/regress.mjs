@@ -38,6 +38,8 @@ function invokeSelftest() {
     return fs.readFileSync(outFile, "utf8")
         .replaceAll("\r\n", "\n")
         .replaceAll(/全程 \d+ms/g, "全程 <T>ms")
+        // 标准日志行的行级时间戳 = 纯时序噪音（两次运行的差异只在时刻本身），归一移除
+        .replaceAll(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} /gm, "")
         // 取消场景（turn 9）的截断行数 = 取消传播与 5ms 流节奏的赛跑结果，是
         // 时序噪音——锁进 golden 只会偶发假失败。断言价值在 m4_ok（流即刻终止
         // + 通告到达），不在截断在第几行；整段归一移出比对（delta 文本以 \n 结尾

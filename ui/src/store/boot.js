@@ -31,7 +31,7 @@ function connect() {
   es.onmessage = (e) => {
     // 非 JSON 帧就地丢弃（未来心跳帧/异常帧不得中断状态机——handler 内抛出
     // 会终止本次派发且无任何日志路径）
-    try { render(JSON.parse(e.data)) } catch (err) { console.warn('sse 非法帧丢弃', err) }
+    try { render(JSON.parse(e.data)) } catch (err) { console.warn('ithaca.web: sse 非法帧丢弃', err) }
   }
 }
 
@@ -70,6 +70,6 @@ export async function boot() {
   if (S.shell) {
     try {
       shellMsg({ type: 'ping', key: S.curSession })   // 消息通道自证（壳端日志）
-    } catch (e) { console.error('shellMsg failed', e) }
+    } catch (e) { console.error('ithaca.web: shellMsg 消息通道发送失败', e) }
   }
 }

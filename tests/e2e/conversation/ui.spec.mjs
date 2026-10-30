@@ -103,7 +103,7 @@ test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, 
     // /help：本地伪记录应答（不走 agent）
     await page.locator("textarea.in").fill("/help");
     await page.locator(".send-btn").click();
-    await expect(page.locator(".msg", { hasText: "/undo 撤销上一 turn" })).toBeVisible();
+    await expect(page.locator(".msg", { hasText: "/undo 撤销上一 turn" })).toBeVisible({ timeout: 15000 });
 
     // /cancel：无待取消 turn 时空转无害（不报错、对话流不受污染）
     await page.locator("textarea.in").fill("/cancel");

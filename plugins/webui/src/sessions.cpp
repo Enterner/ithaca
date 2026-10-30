@@ -258,6 +258,71 @@ bool WebuiPlugin::ws_conflicts_running_(const std::string& ws) const {
     return false;
 }
 
+// 撤回转录面（语义见 webui_plugin.hpp 声明处）。transcript 的 id = 行号的设计
+// 让回退就是尾部截断：文件重写为前 cut 行、镜像裁剪、id 水位自然对齐（加载侧的
+// 密集校验与尾部自愈都兼容）；被撤轮次的子代理存档随删（句柄先收口）。
+// 文件副作用不在回退面——文件树经 fsRev 刷新对齐磁盘真态
+bool WebuiPlugin::rollback_interrupt_transcript_() {
+    if (records_.empty()) return false;
+    // 守卫：尾记录 = 中断卡（尾部中断现场的充分条件；中断后已续聊则尾记录是
+    // 后续内容 ⇒ 拒绝，agent 侧同款）
+    const json& last = records_.back();
+    if (!(last.value("type", "") == "error" &&
+          last.value("msg", "") == "当前会话中断"))
+        return false;
+    std::size_t cut = records_.size();
+    for (std::size_t i = records_.size(); i-- > 0;)
+        if (records_[i].value("type", "") == "user") { cut = i; break; }
+    if (cut >= records_.size()) return false;   // 无 user 记录（不该发生：中断必有输入）
+    // 被撤记录携带的子代理轮号：收口明细句柄后删存档文件
+    std::set<int> turns;
+    for (std::size_t i = cut; i < records_.size(); ++i)
+        if (records_[i].contains("turn_id") && records_[i]["turn_id"].is_number_integer())
+            turns.insert(records_[i]["turn_id"].get<int>());
+    for (int t : turns) {
+        if (auto it = agent_logs_.find(t); it != agent_logs_.end()) {
+            if (it->second.is_open()) it->second.close();
+            agent_logs_.erase(it);
+        }
+        std::error_code ec;
+        fs::remove(home_ / "sessions" / "agents" / session_ /
+                   ("agent_" + std::to_string(t) + ".jsonl"), ec);
+        agent_log_seq_.erase(t);
+    }
+    // 会话计数回退（与 persist_ 的递增同口径反向）
+    if (json* e = session_entry_(session_); e != nullptr) {
+        for (std::size_t i = cut; i < records_.size(); ++i) {
+            const std::string type = records_[i].value("type", "");
+            if (type == "user")
+                (*e)["turns"] = std::max(0, (*e).value("turns", 0) - 1);
+            if (type == "assistant" && records_[i].contains("usage") &&
+                records_[i]["usage"].is_object())
+                (*e)["tokens"] = std::max(
+                    0LL, (*e).value("tokens", 0LL) -
+                             records_[i]["usage"].value("total_tokens", 0LL));
+        }
+        (*e)["updated"] = now_epoch_();
+    }
+    // transcript 重写为前 cut 行（active 会话句柄先收口再重开——尾部自愈逻辑复用）
+    if (out_.is_open()) out_.close();
+    {
+        std::ofstream f(home_ / "sessions" / (session_ + ".transcript.jsonl"),
+                        std::ios::binary | std::ios::trunc);
+        for (std::size_t i = 0; i < cut; ++i) f << records_[i].dump() << "\n";
+        f.flush();
+    }
+    open_transcript_();
+    records_.resize(cut);
+    save_index_();
+    // 回退信号：前端按位裁剪记录流并对齐游标（session 标 = 当前会话，恒过门卫）
+    if (server_ != nullptr)
+        server_->broadcast(json{{"type", "records_rollback"},
+                                {"session", session_},
+                                {"count", cut}}
+                               .dump());
+    return true;
+}
+
 long long WebuiPlugin::now_epoch_() {
     return std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch())

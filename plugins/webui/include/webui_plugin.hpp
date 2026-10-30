@@ -52,6 +52,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <mutex>
 #include <nostos/nlohmann/json.hpp>
 #include <string>
@@ -207,6 +208,11 @@ private:
     json* session_entry_(const std::string& id);
     // 会话条目的 workspace（未注册 = 空串）
     std::string session_ws_(const std::string& id) const;
+    // 撤回转录面（会话命令 cmd=2，与 agent 的上下文撤回同令并行）：从最后一条
+    // user 记录起整体回退——transcript 文件截断 + 内存镜像裁剪 + 会话计数回退 +
+    // 子代理存档删除，广播回退信号（前端按位裁剪与游标对齐）。守卫：最后一条
+    // 记录必须是中断卡（尾部中断现场，agent 侧同款）——返回 false = 不适格
+    bool rollback_interrupt_transcript_();
     // 运行池工作区一致性：任一在跑 turn 的会话工作区与 ws 不同 ⇒ true
     //（workspace 插件单实例 jail——跨工作区并行会文件面错配）。空 ws 不换
     // jail，恒 false（新会话/未设置工作区的会话不构成冲突）
