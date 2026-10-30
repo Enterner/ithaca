@@ -78,9 +78,21 @@ void WebuiPlugin::load_transcript_() {
 void WebuiPlugin::open_transcript_() {
     if (session_.empty()) return;   // 无会话态：不建任何 transcript 文件
     std::error_code ec;
+    const fs::path f = home_ / "sessions" / (session_ + ".transcript.jsonl");
     fs::create_directories(home_ / "sessions", ec);
-    out_.open(home_ / "sessions" / (session_ + ".transcript.jsonl"),
-              std::ios::app | std::ios::binary);
+    // 追加前确保文件以换行收尾：崩溃中断的半行残留若不隔离，下一条记录会粘在
+    // 半行上（getline 拼成一行、两条一起解析失败）——重启自愈加载跳过了损坏行，
+    // 但此后每条新记录在下次加载时全部丢失。补一个换行把损坏封在它自己那行里。
+    if (fs::file_size(f, ec) > 0) {
+        std::ifstream in(f, std::ios::binary);
+        in.seekg(-1, std::ios::end);
+        char last = 0;
+        if (in.get(last) && last != '\n') {
+            std::ofstream out(f, std::ios::app | std::ios::binary);
+            out << '\n';
+        }
+    }
+    out_.open(f, std::ios::app | std::ios::binary);
 }
 
 // ---- 子代理明细存档（sessions/agents/<会话id>/agent_<turn>.jsonl）------------

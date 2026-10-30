@@ -125,3 +125,45 @@ test("SC2d 镜像：失败创建后原会话与 active 分毫未动", async ({ h
     const s = (await getJson(host.base, "/api/sessions")).body.find((x) => x.id === sid);
     expect(s.turns).toBe(1);
 });
+
+test("SC3 transcript 尾行损坏：崩溃中断的半行被忽略，会话照常可用", async ({ host }) => {
+    const created = await postJson(host.base, "/api/session/new", { message: "创建 hello.txt" });
+    expect(created.body.ok).toBe(true);
+    const sid = created.body.id;
+    await expect.poll(async () => {
+        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
+        return t.records.some((x) => x.type === "assistant" && /任务完成/.test(x.text ?? ""));
+    }, { timeout: 15_000 }).toBe(true);
+    const before = (await getJson(host.base, "/api/transcript?after=0")).body.records.length;
+
+    // 模拟崩溃中断的追加写：文件尾残留无换行的半行 JSON——加载侧必须跳过而不是
+    // 抛错拒载（transcript 是重放源，一行损坏废掉整个会话 = 不可接受的失败面）
+    host.stop();
+    fs.appendFileSync(path.join(host.home, "sessions", `${sid}.transcript.jsonl`),
+                      '{"id":99,"type":"assi');
+    host.start();
+    await host.waitReady();
+
+    const meta = (await getJson(host.base, "/api/session")).body;
+    expect(meta.id).toBe(sid);
+    expect((await getJson(host.base, "/api/transcript?after=0")).body.records.length).toBe(before);
+
+    // 会话照常可用：新 turn 正常收口（追加行带正确 id，下次重放仍完整）。
+    // 收口判定只看 before 之后的新增区段——旧轮的同文案 assistant 不算数；
+    // in_flight 后端真值兜记录流的时序缺口
+    const r = await postJson(host.base, "/api/input", { line: "继续" });
+    expect(r.body.ok).toBe(true);
+    await expect.poll(async () => {
+        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
+        const m = (await getJson(host.base, "/api/session")).body;
+        return !m.in_flight && t.records.length > before &&
+               t.records.slice(before).some((x) => x.type === "assistant" && /任务完成/.test(x.text ?? ""));
+    }, { timeout: 15_000 }).toBe(true);
+
+    // 二次重启：跳行加载的自愈语义——新行 id 与记录数对齐，重放不少一行
+    const healed = (await getJson(host.base, "/api/transcript?after=0")).body.records.length;
+    host.stop();
+    host.start();
+    await host.waitReady();
+    expect((await getJson(host.base, "/api/transcript?after=0")).body.records.length).toBe(healed);
+});
