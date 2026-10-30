@@ -160,30 +160,6 @@ VC_TEST("diff: 行号列 4 位右对齐（≥1000 行可读）") {
     CHECK(d.find("1050 + CHANGED") != std::string::npos);
 }
 
-VC_TEST("diff: utf8_change_span——变化子串按码点对齐（行内高亮的底座）") {
-    std::string pre, ma, mb, suf;
-    vcws::utf8_change_span("任务一：稳定前缀 + 一两天可落地 |",
-                           "任务一：稳定前缀 + ✅ 已落地（§八） |", pre, ma, mb, suf);
-    CHECK(pre == "任务一：稳定前缀 + ");
-    CHECK(ma == "一两天可落地");
-    CHECK(mb == "✅ 已落地（§八）");
-    CHECK(suf == " |");
-    CHECK(pre + ma + suf == "任务一：稳定前缀 + 一两天可落地 |");
-    CHECK(pre + mb + suf == "任务一：稳定前缀 + ✅ 已落地（§八） |");
-
-    // 字节级失配落在多字节字符中间（"い" vs "う" 共享前两字节）⇒ 前缀收缩到码点
-    vcws::utf8_change_span("\xE3\x81\x82\xE3\x81\x84", "\xE3\x81\x82\xE3\x81\x86", pre, ma, mb,
-                           suf);
-    CHECK(pre == "\xE3\x81\x82");  // あ
-    CHECK(ma == "\xE3\x81\x84");   // い
-    CHECK(mb == "\xE3\x81\x86");   // う
-    CHECK(suf.empty());
-
-    // 完全不同：前缀/后缀均空，mid 为全串
-    vcws::utf8_change_span("abc", "xyz", pre, ma, mb, suf);
-    CHECK(pre.empty() && suf.empty() && ma == "abc" && mb == "xyz");
-}
-
 VC_TEST("diff: split_lines 语义——末尾空串算一行、CRLF 剥离") {
     const auto a = split_lines("x\ny\n");
     REQUIRE(a.size() == 3);

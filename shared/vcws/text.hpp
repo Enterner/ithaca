@@ -115,25 +115,4 @@ inline std::string ascii_lower(std::string s) {
     return s;
 }
 
-// ---- 行内高亮的公共跨度（diff 展示配对行用）------------------------------------
-// 取 a/b 的公共前缀与公共后缀（按 UTF-8 码点对齐——字节级比较后回退/推进到码点
-// 首字节，绝不把多字节字符劈成两半），拆出 (pre, mid_a, mid_b, suf)：
-//   a = pre + mid_a + suf，b = pre + mid_b + suf。mid 为"变化子串"（行内高亮段）。
-inline void utf8_change_span(const std::string& a, const std::string& b, std::string& pre,
-                             std::string& mid_a, std::string& mid_b, std::string& suf) {
-    std::size_t p = 0;
-    while (p < a.size() && p < b.size() && a[p] == b[p]) ++p;
-    while (p > 0 && (static_cast<unsigned char>(a[p]) & 0xC0) == 0x80) --p;
-    std::size_t s = 0;
-    while (s < a.size() - p && s < b.size() - p &&
-           a[a.size() - 1 - s] == b[b.size() - 1 - s])
-        ++s;
-    // 字节级失配点落在多字节字符中间 ⇒ 后缀收缩到码点首字节（扩展会并入不相等字节）
-    while (s > 0 && (static_cast<unsigned char>(a[a.size() - s]) & 0xC0) == 0x80) --s;
-    pre = a.substr(0, p);
-    mid_a = a.substr(p, a.size() - p - s);
-    mid_b = b.substr(p, b.size() - p - s);
-    suf = s > 0 ? a.substr(a.size() - s) : std::string();
-}
-
 }  // namespace vcws
