@@ -28,13 +28,16 @@ add_executable(ithaca_unit_tests
     test_snapshots.cpp
     test_sse.cpp
     test_tools_bridge.cpp
-    test_proc.cpp)
+    test_proc.cpp
+    test_read_paged.cpp
+    test_attachments.cpp)
 target_include_directories(ithaca_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../shared"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/workspace"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/llm_cloud"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/agent"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/runner")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/runner"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/webui")
 target_link_libraries(ithaca_unit_tests PRIVATE nostos::core nostos::kit)
 
 if(MSVC)
