@@ -46,16 +46,21 @@ void WebuiPlugin::subscribe_() {
     subs_.push_back(host_.on(vc_api::llm_delta, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
         if (e->text == nullptr) return;
-        broadcast_({{"type", "assistant_delta"}, {"text", std::string(e->text)}});
+        broadcast_turn_({{"type", "assistant_delta"}, {"text", std::string(e->text)}},
+                        e->session);
     }));
     subs_.push_back(host_.on(vc_api::llm_reasoning, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmReasoning*>(p);
         if (e->text == nullptr) return;
-        reasoning_buf_ += e->text;   // 与广播同源累积，llm_done 时并入 assistant 记录
-        broadcast_({{"type", "assistant_reasoning"}, {"text", std::string(e->text)}});
+        // 与广播同源累积，llm_done 时并入 assistant 记录——按归属会话分桶
+        //（多会话并行流交错，单桶会串话）
+        reasoning_buf_[ev_owner_(e->session)] += e->text;
+        broadcast_turn_({{"type", "assistant_reasoning"}, {"text", std::string(e->text)}},
+                        e->session);
     }));
     subs_.push_back(host_.on(vc_api::llm_done, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDone*>(p);
+        const std::string owner = ev_owner_(e->session);
         std::string content;
         json usage = json::object();
         bool turn_done = true;  // 无 tool_calls ⇒ 本 turn 收口（前端「本轮修改」卡时机）
@@ -71,31 +76,36 @@ void WebuiPlugin::subscribe_() {
             json u = json::parse(e->usage, nullptr, false);
             if (u.is_object()) usage = u;
         }
-        // in_flight 语义 = 「turn 进行中」（整个工具/子代理阶段都算），不再随每轮
-        // done 清零——子代理/后台任务一跑数分钟，按请求清零会让停止入口在 turn
-        // 中段消失（踩过：子代理挂起期间发送键变回发送、取消无处可点）。
-        // 收口信号 = 无 tool_calls 的 done 或 error。
-        in_flight_ = !turn_done;
-        persist_status_();
         json rec = {{"type", "assistant"},
                     {"text", content},
                     {"usage", usage},
                     {"turn_done", turn_done}};
         // 本轮思考并入收口记录（有才带字段——旧记录/无推理模型形状不变）
-        if (!reasoning_buf_.empty()) {
-            rec["reasoning"] = std::move(reasoning_buf_);
-            reasoning_buf_.clear();
+        if (auto it = reasoning_buf_.find(owner);
+            it != reasoning_buf_.end() && !it->second.empty()) {
+            rec["reasoning"] = std::move(it->second);
+            reasoning_buf_.erase(it);
         }
-        record_(std::move(rec));
+        // 收口记账在 record_ 之后（归属事件流先落盘）。带 tool_calls 的 done 只是
+        // 轮次收束（turn 仍在跑），不减计数——in_flight 语义 = 「turn 进行中」
+        //（工具/子代理阶段都算），按请求清零曾让停止入口在 turn 中段消失（踩过）。
+        // 收口信号 = 无 tool_calls 的 done 或 error
+        record_(std::move(rec), e->session);
+        if (turn_done && chain_settle_(owner)) broadcast_turn_state_(owner);
+        persist_status_();
     }));
     subs_.push_back(host_.on(vc_api::llm_error, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
-        in_flight_ = false;
-        persist_status_();
-        reasoning_buf_.clear();   // 失败轮的思考不残留到下一轮
+        // 错误 = turn 终态（provider 报错 / agent 哨兵 / 取消）：同 done 收口记账，
+        // 且记账在 record_ 之后（归属事件流先落盘）。失败轮的思考不残留到下一轮
+        const std::string owner = ev_owner_(e->session);
+        reasoning_buf_.erase(owner);
         record_({{"type", "error"},
                  {"code", e->code},
-                 {"msg", e->message != nullptr ? std::string(e->message) : ""}});
+                 {"msg", e->message != nullptr ? std::string(e->message) : ""}},
+                e->session);
+        if (chain_settle_(owner)) broadcast_turn_state_(owner);
+        persist_status_();
     }));
     subs_.push_back(host_.on(vc_api::tool_call, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolCall*>(p);
@@ -104,7 +114,8 @@ void WebuiPlugin::subscribe_() {
                  {"brief", e->args_brief != nullptr ? std::string(e->args_brief) : ""},
                  // 调用参数原始形态（尾部追加字段；旧生产者组合为 null ⇒ 空串，
                  // 前端以非空探测决定是否出「展开看参数」）
-                 {"args", e->args_json != nullptr ? std::string(e->args_json) : ""}});
+                 {"args", e->args_json != nullptr ? std::string(e->args_json) : ""}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::tool_result, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolResult*>(p);
@@ -113,18 +124,23 @@ void WebuiPlugin::subscribe_() {
                  {"ok", e->ok},
                  {"brief", e->result_brief != nullptr ? std::string(e->result_brief) : ""},
                  // 后台 ack 归属信号（尾部追加字段；旧生产者组合恒 0）
-                 {"run_id", e->run_id}});
+                 {"run_id", e->run_id}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::edit_proposed, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditProposed*>(p);
-        pending_turn_ = e->turn_id;   // 与 /api/decision 闭包同线程（宿主排水串行化）
+        pendings_[ev_owner_(e->session)] = e->turn_id;   // 与 /api/decision 闭包同线程（宿主排水串行化）
         persist_status_();   // 提案待裁决（聚合徽标同步）
         record_({{"type", "proposal"},
                  {"turn_id", e->turn_id},
-                 {"diff", e->diff_text != nullptr ? std::string(e->diff_text) : ""}});
+                 {"diff", e->diff_text != nullptr ? std::string(e->diff_text) : ""}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::edit_applied, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditApplied*>(p);
+        // 只消费 agent 补标重播：workspace 的原始广播不带会话标（工具 ABI 不传
+        // 会话），多会话下无法归属——放行会与重播副本双计（踩过）
+        if (e->session == nullptr) return;
         json paths = json::array();
         if (e->paths_json != nullptr) {
             json pa = json::parse(e->paths_json, nullptr, false);
@@ -142,22 +158,27 @@ void WebuiPlugin::subscribe_() {
                  {"turn_id", e->turn_id},
                  {"paths", paths},
                  {"diff", e->diff_text != nullptr ? std::string(e->diff_text) : ""},
-                 {"files", files}});
+                 {"files", files}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::edit_undone, [this](const void* p) {
         const auto* e = static_cast<const vc_api::EditUndone*>(p);
-        record_({{"type", "undone"}, {"turn_id", e->turn_id}, {"depth", e->snapshot_depth}});
+        if (e->session == nullptr) return;   // 同 applied：只认补标重播副本
+        record_({{"type", "undone"}, {"turn_id", e->turn_id}, {"depth", e->snapshot_depth}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::run_line, [this](const void* p) {
         const auto* e = static_cast<const vc_api::RunLine*>(p);
         record_({{"type", "run_line"},
                  {"run_id", e->run_id},
                  {"stream", e->stream},
-                 {"text", e->text != nullptr ? std::string(e->text) : ""}});
+                 {"text", e->text != nullptr ? std::string(e->text) : ""}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::run_exit, [this](const void* p) {
         const auto* e = static_cast<const vc_api::RunExit*>(p);
-        record_({{"type", "run_exit"}, {"run_id", e->run_id}, {"exit_code", e->exit_code}});
+        record_({{"type", "run_exit"}, {"run_id", e->run_id}, {"exit_code", e->exit_code}},
+                e->session);
     }));
     subs_.push_back(host_.on(vc_api::notice, [this](const void* p) {
         const auto* e = static_cast<const vc_api::Notice*>(p);
@@ -168,7 +189,8 @@ void WebuiPlugin::subscribe_() {
                  // 机器路由元数据（尾部追加字段；旧生产者组合 kind 为空串）
                  {"kind", e->kind != nullptr ? std::string(e->kind) : ""},
                  {"run_id", e->run_id},
-                 {"count", e->count}});
+                 {"count", e->count}},
+                e->session);
     }));
     // 子代理事件三路分流（agent 广播）：phase 1 = 流式增量只广播；phase 2/3 =
     // 工具明细 → 独立存档（sessions/agents/…）+ 广播，**不进主 transcript**——
@@ -179,14 +201,16 @@ void WebuiPlugin::subscribe_() {
         const auto* e = static_cast<const vc_api::SubagentEvent*>(p);
         const std::string text = e->text != nullptr ? e->text : "";
         const std::string tool = e->tool != nullptr ? e->tool : "";
+        const std::string owner = ev_owner_(e->session);   // 父会话（归属随父）
         if (e->phase == 1) {
-            broadcast_({{"type", "subagent_delta"},
-                        {"turn_id", e->turn_id},
-                        {"text", text}});
+            broadcast_turn_({{"type", "subagent_delta"},
+                             {"turn_id", e->turn_id},
+                             {"text", text}},
+                            e->session);
             return;
         }
         if (e->phase == 2 || e->phase == 3) {
-            agent_log_append_(e->turn_id,
+            agent_log_append_(owner, e->turn_id,
                               {{"type", "subagent"},
                                {"turn_id", e->turn_id},
                                {"phase", e->phase},
@@ -198,7 +222,8 @@ void WebuiPlugin::subscribe_() {
                  {"turn_id", e->turn_id},
                  {"phase", e->phase},
                  {"tool", tool},
-                 {"text", text}});
+                 {"text", text}},
+                e->session);
     }));
     // 插件 UI 贡献：schema 是"界面长什么样"，值在 config 的 plugins 节。
     // 载荷三串均调用期有效——立即拷贝。map 插入在宿主线程串行化，无锁。

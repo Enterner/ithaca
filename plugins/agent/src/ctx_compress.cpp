@@ -127,7 +127,8 @@ void AgentCtx::request_digest_() {
     std::string material = pending_plan_.digest.value("content", "");
     if (ctx_tbl_ != nullptr && ctx_tbl_->summary_prompt != nullptr)
         strategy_summary_brief_(system, material);
-    json body = {{"messages", json::array({
+    json body = {{"slot", turn_no_},
+                   {"messages", json::array({
                                   json{{"role", "system"}, {"content", system}},
                                   json{{"role", "user"}, {"content", material}}})}};
     body_buf_ = body.dump();   // 调用点均在无在途请求时（turn 收口后/请求已失败或

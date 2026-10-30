@@ -22,18 +22,39 @@ static std::string clip_title(std::string t) {
 
 // ---- 会话记录（落盘 + 广播；id = transcript 行号，页面据此续传）--------------
 
-// 只落盘。NOTE: 按**引用**收参——id 写回调用方的 rec，广播/延迟广播因此都带
-// id，前端按 id 去重。宿主线程专用（poster 闭包与事件回调串行化，无并发）。
-void WebuiPlugin::persist_(json& rec) {
-    // records_/out_/index_ 的复合变更按序原子完成——单线程下顺序即原子。
-    rec["id"] = records_.size();
-    records_.push_back(rec);
-    if (out_.is_open()) {
-        out_ << rec.dump() << "\n";
-        out_.flush();
+// 只落盘。owner = 归属会话：活跃会话走内存镜像 + out_ 句柄（records_ 是重放源，
+// /api/transcript 服务它）；后台会话直写其 transcript 文件——id 水位独立续号
+// （切离运行中会话时按其镜像行数捕获，切回时整卷重放进镜像，id 恰好接续）。
+// NOTE: 按**引用**收参——id 写回调用方的 rec，广播/延迟广播因此都带 id，前端按
+// id 去重。宿主线程专用（poster 闭包与事件回调串行化，无并发）。
+void WebuiPlugin::persist_(json& rec, const std::string& owner) {
+    if (owner == session_) {
+        rec["id"] = records_.size();
+        records_.push_back(rec);
+        if (out_.is_open()) {
+            out_ << rec.dump() << "\n";
+            out_.flush();
+        }
+    } else {
+        // 非活跃归属：懒开会话自己的 transcript 追加写，id 按水位续号（水位在
+        // 切离活跃会话时按其镜像行数捕获——切回时整卷重放恰好接续）。崩溃半行
+        // 自愈由 open_transcript_ 的常规路径覆盖——sink 只追加不重开
+        long long& nid = sink_ids_[owner];
+        std::ofstream& out = sinks_[owner];
+        rec["id"] = nid++;
+        if (!out.is_open()) {
+            std::error_code ec;
+            fs::create_directories(home_ / "sessions", ec);
+            out.open(home_ / "sessions" / (owner + ".transcript.jsonl"),
+                     std::ios::app | std::ios::binary);
+        }
+        if (out.is_open()) {
+            out << rec.dump() << "\n";
+            out.flush();
+        }
     }
-    // 更新活跃会话的计数/标题（工作区分组侧栏的数据源）
-    if (json* e = session_entry_(session_); e != nullptr) {
+    // 更新归属会话的计数/标题（工作区分组侧栏的数据源）
+    if (json* e = session_entry_(owner); e != nullptr) {
         const std::string type = rec.value("type", "");
         if (type == "user") {
             (*e)["turns"] = (*e).value("turns", 0) + 1;
@@ -54,10 +75,24 @@ void WebuiPlugin::persist_(json& rec) {
     }
 }
 
-// 落盘 + 广播（宿主线程用：事件回调里调用，不在 handle 栈内）
-void WebuiPlugin::record_(json rec) {
-    persist_(rec);
-    if (server_) server_->broadcast(rec.dump());
+// 落盘 + 广播（宿主线程用：事件回调里调用，不在 handle 栈内）。广播副本带归属
+// 会话标——前端据此过滤非当前会话的 turn 事件（切走不杀 turn：事件仍按归属
+// 落盘广播，切回时 HTTP 重放补齐）。落盘副本不带标（transcript 按会话分文件，
+// 重放不需要）
+void WebuiPlugin::record_(json rec, const char* tag) {
+    const std::string owner = ev_owner_(tag);
+    persist_(rec, owner);
+    if (server_) {
+        rec["session"] = owner;
+        server_->broadcast(rec.dump());
+    }
+}
+
+// turn 事件的广播出口（只广播不落盘的流式增量/明细）：同 record_ 打归属标
+void WebuiPlugin::broadcast_turn_(json rec, const char* tag) {
+    if (server_ == nullptr) return;
+    rec["session"] = ev_owner_(tag);
+    server_->broadcast(rec.dump());
 }
 
 void WebuiPlugin::load_transcript_() {
@@ -98,14 +133,15 @@ void WebuiPlugin::open_transcript_() {
 // ---- 子代理明细存档（sessions/agents/<会话id>/agent_<turn>.jsonl）------------
 
 // 追加写 + SSE 广播（宿主线程串行化，事件回调专用）。行号 id 按 turn 单调递增，
-// 重启后按现存行数续接；每条 flush 与 transcript 同纪律。
-void WebuiPlugin::agent_log_append_(int turn_id, const json& rec) {
+// 重启后按现存行数续接；每条 flush 与 transcript 同纪律。owner = 父会话（事件
+// 尾部 session 标解析）——子代理明细落父会话目录。
+void WebuiPlugin::agent_log_append_(const std::string& owner, int turn_id, const json& rec) {
     json line;
-    if (session_.empty()) return;
+    if (owner.empty()) return;
     std::ofstream& out = agent_logs_[turn_id];
     if (!out.is_open()) {
         std::error_code ec;
-        const fs::path dir = home_ / "sessions" / "agents" / session_;
+        const fs::path dir = home_ / "sessions" / "agents" / owner;
         fs::create_directories(dir, ec);
         const fs::path f = dir / ("agent_" + std::to_string(turn_id) + ".jsonl");
         long long seq = 0;
@@ -126,9 +162,10 @@ void WebuiPlugin::agent_log_append_(int turn_id, const json& rec) {
     }
     // 广播副本必须换类型名：type=subagent 会被前端当主会话记录 push 进主对话流，
     // subagent_detail 才进右栏实时缓冲（踩过：类型未换 ⇒ 右栏永不实时更新，
-    // 刷新后明细反而"出现在主会话"）
+    // 刷新后明细反而"出现在主会话"）。打归属标：后台链的明细不进当前视图
     json evt = line;
     evt["type"] = "subagent_detail";
+    evt["session"] = owner;
     if (server_) server_->broadcast(evt.dump());   // 明细只广播：主 transcript 不落
 }
 
@@ -205,6 +242,22 @@ json* WebuiPlugin::session_entry_(const std::string& id) {
     return nullptr;
 }
 
+// 会话条目的 workspace（未注册 = 空串；返回值即用即弃，单线程无失效风险）
+std::string WebuiPlugin::session_ws_(const std::string& id) const {
+    for (const auto& s : index_["sessions"])
+        if (s.is_object() && s.value("id", "") == id)
+            return s.value("workspace", std::string());
+    return {};
+}
+
+// 运行池工作区一致性（语义见 webui_plugin.hpp 声明处）
+bool WebuiPlugin::ws_conflicts_running_(const std::string& ws) const {
+    if (ws.empty()) return false;
+    for (const auto& [rid, n] : running_)
+        if (session_ws_(rid) != ws) return true;
+    return false;
+}
+
 long long WebuiPlugin::now_epoch_() {
     return std::chrono::duration_cast<std::chrono::seconds>(
                std::chrono::system_clock::now().time_since_epoch())
@@ -239,11 +292,19 @@ void WebuiPlugin::sweep_uninitialized_() {
     if (changed) index_["sessions"] = arr;
 }
 
-// 会话切换：换 transcript + 通知 agent 加载上下文（vc.session.load）
+// 会话切换：换 transcript + 通知 agent 加载上下文（vc.session.load）。
+// 切走不杀 turn：运行中链继续跑在原会话（事件经 turn_owner_ 归属路由落盘广播），
+// 本函数只换视图面；agent 忙时 session_load 在 agent 侧挂起、链收口自动应用。
 void WebuiPlugin::switch_to_(const std::string& id) {
     const fs::path sp = home_ / "sessions" / (id + ".state.json");
     std::string ws;
     bool ws_changed = false;
+    // 水位交接：切离活跃会话 ⇒ 捕获其镜像行数作该会话 sink 的 id 水位（后续
+    // 后台记录直写文件续号，切回时整卷重放恰好接续）；进入的会话若留有 sink
+    //（上一轮后台期开的）随即退役——活跃面归 out_ 句柄
+    if (id != session_) sink_ids_[session_] = static_cast<long long>(records_.size());
+    if (auto it = sinks_.find(id); it != sinks_.end() && it->second.is_open())
+        it->second.close();
     // 同步段：session_/index_/records_/日志句柄的换会话变更是复合操作，按序完成
     session_ = id;
     index_["active"] = id;
@@ -263,16 +324,41 @@ void WebuiPlugin::switch_to_(const std::string& id) {
     // 广播与 emit 投宿主线程排水（activate 期 server 未建 = 广播 no-op，
     // SSE 客户端连上后由 /api/transcript 重放补齐——不丢事实）
     nostos::kit::poster_submit(poster_, [this, path = sp.string(), id, ws, ws_changed] {
-        reasoning_buf_.clear();   // 会话边界：旧会话残留的思考不串进新会话收口记录
+        // 会话边界：旧会话残留的思考不串进新会话收口记录
+        reasoning_buf_.erase(id);
         broadcast_({{"type", "session"}, {"id", id}, {"workspace", ws}});
         const vc_api::SessionLoad e{path.c_str()};
-        host_.emit(vc_api::session_load, &e);
+        host_.emit(vc_api::session_load, &e);   // 多会话槽：加载即建槽，与在跑 turn 无关
         if (ws_changed) {
             const vc_api::WorkspaceSet w{ws.c_str()};
             host_.emit(vc_api::workspace_set, &w);
             start_fs_watcher_(ws);   // 监听随工作区迁移（同工作区切会话无需重启）
         }
     });
+}
+
+// 会话在途 turn 收口：running_ 减一；归零 = 该会话空闲（多会话并行的其余槽不
+// 受影响）⇒ 非活跃 sink 句柄收口。返回 true = 恰好归零（调用方发状态帧）
+bool WebuiPlugin::chain_settle_(const std::string& owner) {
+    const auto it = running_.find(owner);
+    if (it == running_.end()) return false;
+    if (--it->second > 0) return false;
+    running_.erase(it);
+    if (owner != session_) {
+        if (auto sit = sinks_.find(owner); sit != sinks_.end() && sit->second.is_open())
+            sit->second.close();
+    }
+    return true;
+}
+
+// turn_state 状态帧（SSE 瞬态不落盘）：侧栏徽标与前端 inFlight 的实时源——
+// 运行状态任何变更后广播一次，前端就地改会话行，不再拉接口
+void WebuiPlugin::broadcast_turn_state_(const std::string& sid) {
+    if (server_ == nullptr) return;
+    server_->broadcast(json{{"type", "turn_state"},
+                            {"session", sid},
+                            {"working", running_.count(sid) > 0}}
+                           .dump());
 }
 
 /// POST /api/session/new {message 必须, workspace?} → 创建即初始化：注册 + 切换
@@ -300,8 +386,9 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
     json att_paths = in.contains("attachments") && in["attachments"].is_array()
                          ? in["attachments"] : json::array();
     return defer_(req, [this, msg, ws, att_paths = std::move(att_paths)](std::uint64_t conn) {
-        if (in_flight_)
-            return respond_err_(conn, "turn 进行中，稍后再试");
+        if (ws_conflicts_running_(ws))
+            return respond_err_(conn, "有会话正在运行 turn 且工作区不同——"
+                                      "先停止它或等完成后再新建");
         // 毫秒级 id——同秒内连点不撞车
         const std::string id = "s" + std::to_string(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -318,18 +405,21 @@ http::Response WebuiPlugin::api_session_new_(const http::Request& req) {
     });
 }
 
-/// POST /api/session/open {id} → 切换活跃会话，返回 {ok, id}；turn 进行中或
-/// id 不存在被拒。副作用：SSE session 广播、vc.session.load、工作区随会话热切。
+/// POST /api/session/open {id} → 切换活跃会话，返回 {ok, id}；id 不存在被拒，
+/// 后台链运行中照常切换（turn 继续跑在原会话）。副作用：SSE session 广播、
+/// vc.session.load（agent 忙则挂起）、工作区随会话热切（链运行中限同工作区）。
 http::Response WebuiPlugin::api_session_open_(const http::Request& req) {
     json in = parse_body_(req.body);
     const std::string id = in.value("id", "");
     return defer_(req, [this, id](std::uint64_t conn) {
-        if (in_flight_)
-            return respond_err_(conn, "轮次进行中，稍后再试");
         if (session_entry_(id) == nullptr)
             return respond_err_(conn, "会话不存在");
         if (id == session_)
             return server_->respond(conn, json_resp({{"ok", true}, {"id", id}}));
+        // 前端已先行确认（停止或等待），此处兜底拒绝跨工作区并行
+        if (ws_conflicts_running_(session_ws_(id)))
+            return respond_err_(conn, "有会话正在运行 turn 且工作区不同——"
+                                      "先停止它或等完成后再切换");
         switch_to_(id);
         server_->respond(conn, json_resp({{"ok", true}, {"id", id}}));
     });
@@ -361,11 +451,10 @@ http::Response WebuiPlugin::api_session_delete_(const http::Request& req) {
     return defer_(req, [this, id](std::uint64_t conn) {
         if (session_entry_(id) == nullptr)
             return respond_err_(conn, "会话不存在");
-        // 生成中禁删活跃会话：删后 records_ 清零、transcript 句柄换向，而 agent
-        // 的 turn 仍在跑——后续事件经 record_ 落进切换后的新会话（串会话 + id
-        // 从 0 重排撞前端去重）。非活跃会话不受限：agent 事件只落活跃会话
-        if (in_flight_ && id == session_)
-            return respond_err_(conn, "当前会话生成中，请先停止再删除");
+        // 运行中禁删：删后该会话的 transcript 句柄/水位作废，而 turn 仍在跑——
+        // 后续事件会写向已删文件。非运行会话不受限
+        if (running_.count(id) > 0)
+            return respond_err_(conn, "该会话正在运行 turn，请先停止再删除");
         // 活跃会话也可删（用户定义）：删后自动切到最近更新的会话；全空则新建无工作区会话
         json arr = json::array();
         for (auto& s : index_["sessions"])
@@ -378,6 +467,7 @@ http::Response WebuiPlugin::api_session_delete_(const http::Request& req) {
         fs::remove(home_ / "sessions" / (id + ".transcript.jsonl"), ec);
         fs::remove(home_ / "sessions" / (id + ".state.json"), ec);
         fs::remove_all(home_ / "sessions" / "agents" / id, ec);   // 子代理明细随会话删除
+        sinks_.erase(id); sink_ids_.erase(id); pendings_.erase(id);   // 归属面随删
         if (is_active) {
             long long best = -1;
             std::string next;
@@ -428,9 +518,11 @@ json WebuiPlugin::session_meta_() {
             {"turns", turns},
             {"tokens", tokens},
             {"workspace", ws},
-            {"in_flight", in_flight_},   // 后端真值：前端重放后对账防 zombie
+            // 后端真值：前端重放后对账防 zombie。in_flight/pending 均按会话归属
+            // 判定（其他会话的 turn 在跑不影响本会话——真并行）
+            {"in_flight", running_.count(session_) > 0},
             {"records", records_.size()},
-            {"pending", pending_turn_ >= 0}};
+            {"pending", pendings_.count(session_) > 0}};
 }
 
 // ---- 上下文构成分解（/api/context/breakdown；读 agent 写的 state.json）-------

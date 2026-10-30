@@ -27,6 +27,8 @@ watch(() => S.subView, (v) => { if (v) filesOpen.value = true })
 function makePane({ lsKey, field, init, min, max, calc, initFlag }) {
   const w = ref(init)
   const on = ref(initFlag)
+  const dragging = ref(false)   // 拖拽中：调用方据此关掉宽度过渡（过渡是开合动画用的，
+                                // 拖拽时开着会让面板以 .28s 步距追赶光标——不跟手）
   try {
     const saved = JSON.parse(localStorage.getItem(lsKey) || '{}')
     if (saved.w >= min && saved.w <= max) w.value = saved.w
@@ -36,8 +38,10 @@ function makePane({ lsKey, field, init, min, max, calc, initFlag }) {
   function toggle() { on.value = !on.value; persist() }
   function startDrag(e) {
     e.preventDefault()
+    dragging.value = true
     const move = (ev) => { w.value = Math.min(max, Math.max(min, calc(ev))) }
     const up = () => {
+      dragging.value = false
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
       persist()
@@ -45,14 +49,14 @@ function makePane({ lsKey, field, init, min, max, calc, initFlag }) {
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
   }
-  return { w, on, toggle, startDrag }
+  return { w, on, dragging, toggle, startDrag }
 }
 // 会话栏（拖右缘调宽）与文件树右栏（栏在右侧：宽 = 窗口宽 - 指针 x，拖左缘）
 const { w: sideW, on: collapsed, toggle: toggleSide, startDrag } = makePane({
   lsKey: 'vcSidebar', field: 'collapsed', init: 248, min: 180, max: 420,
   calc: (ev) => ev.clientX, initFlag: false,
 })
-const { w: filesW, on: filesOpen, toggle: toggleFiles, startDrag: startFilesDrag } = makePane({
+const { w: filesW, on: filesOpen, dragging: filesDragging, toggle: toggleFiles, startDrag: startFilesDrag } = makePane({
   lsKey: 'vcFiles', field: 'open', init: 232, min: 200, max: 1000,
   calc: (ev) => window.innerWidth - ev.clientX, initFlag: false,
 })
@@ -166,7 +170,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
 
     <!-- 右栏(浮卡):子代理过程视图（选中时优先）⇄ 文件树/查看器。
          折叠不卸载只收宽(width→0 过渡),保持树展开态与过渡动画 -->
-    <aside v-if="S.curWs" class="fileside" :class="{ closed: !filesShown }"
+    <aside v-if="S.curWs" class="fileside" :class="{ closed: !filesShown, dragging: filesDragging }"
            :style="{ width: (filesShown ? filesW : 0) + 'px' }">
       <div class="fs-head">
         <span class="fs-title">{{ S.subView ? '子代理' : '文件' }}</span>

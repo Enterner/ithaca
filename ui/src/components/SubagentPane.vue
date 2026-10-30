@@ -7,12 +7,11 @@
 // 取消 = 级联取消在途子代理与当前 turn（decide 4），与主会话停止键同一路径。
 import { ref, computed, watch, nextTick } from 'vue'
 import { S, decide, fetchAgentLog } from '../store'
-import { esc, toolLabel } from '../md'
+import { esc, toolLineText } from '../md'
 
-// 明细行显示（与主对话流同款纪律）：标签为空 = 摘要自含中文动词
+// 明细行显示（与主对话流同款纪律，规整/接缝/人话前缀单点在 md.js）
 function line(r) {
-  const label = toolLabel(r.tool, r.text)
-  return label ? label + ' ' + r.text : (r.text || '')
+  return toolLineText(r.tool, r.text, S.curWs)
 }
 
 const bodyEl = ref(null)

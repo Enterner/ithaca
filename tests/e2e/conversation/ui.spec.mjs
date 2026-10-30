@@ -159,8 +159,9 @@ test.describe("CONV10 工具行人性化", () => {
         await page.locator("textarea.in").fill("看看目录");
         await page.locator(".send-btn").click();
 
-        // 调用参数摘要（两行制：调用行只说跑了什么）
-        await expect(page.locator(".fblock", { hasText: "列目录 .（深度 1）" }))
+        // 调用参数摘要（两行制：调用行只说跑了什么——depth 等请求参数细节只在
+        // 展开区；缺省 path = 工作区根，直接显示真实目录）
+        await expect(page.locator(".fblock", { hasText: "列目录 " + host.ws }))
             .toBeVisible({ timeout: 15000 });
         await expect(page.locator(".fblock", { hasText: "搜索「hello」" })).toBeVisible();
         await expect(page.locator(".fblock", { hasText: "读取 api.txt" })).toBeVisible();

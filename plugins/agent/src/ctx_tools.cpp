@@ -120,7 +120,8 @@ void AgentCtx::exec_undo() {
 void AgentCtx::emit_subagent_(int turn_id, int phase, const char* tool,
                               const std::string& text) {
     nostos::kit::Scratch scratch;
-    const vc_api::SubagentEvent e{turn_id, phase, tool, scratch.hold(text)};
+    const vc_api::SubagentEvent e{turn_id, phase, tool, scratch.hold(text),
+                                  scratch.hold(session_id_)};
     host_.emit(vc_api::subagent_event, &e);
 }
 
@@ -128,7 +129,7 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // 参数摘要人话化（op 清单/读哪个文件/搜什么词，原始 JSON 对人不可读）；
     // 解析不出 ⇒ 空，回退原 JSON 截断（前向兼容未知工具）
     nostos::kit::Scratch scratch;
-    std::string brief = summarize_call(tool_last(name), args);
+    std::string brief = summarize_call(tool_last(name), args, ws_root_);
     if (brief.empty()) brief = trim(args.dump(), 200);
     if (subagent_) {   // 子代理工作记录：广播给 UI（落 transcript），不进任何上下文
         emit_subagent_(turn_no_, 2, name.c_str(), brief);
@@ -142,7 +143,7 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     if (args_json.size() > 8192)
         args_json = vcws::trim_utf8(args_json, 8192) + "\n…（参数过长，已截断）";
     const vc_api::ToolCall e{turn_no_, scratch.hold(name), scratch.hold(brief),
-                             scratch.hold(args_json)};
+                             scratch.hold(args_json), scratch.hold(session_id_)};
     host_.emit(vc_api::tool_call, &e);
 }
 
@@ -167,13 +168,15 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
     }
     const vc_api::ToolResult e{turn_no_, scratch.hold(name), ok ? 1 : 0,
                                scratch.hold(summarize_result(tool_last(name), brief)),
-                               ack_run};
+                               ack_run, scratch.hold(session_id_)};
     host_.emit(vc_api::tool_result, &e);
 }
 
 void AgentCtx::notice(const std::string& text, int sys) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
-    const vc_api::Notice e{2, text.c_str(), sys};
+    nostos::kit::Scratch scratch;
+    const vc_api::Notice e{2, scratch.hold(text), sys, nullptr, 0, 0,
+                           scratch.hold(session_id_)};
     host_.emit(vc_api::notice, &e);
 }
 
@@ -181,7 +184,9 @@ void AgentCtx::notice_meta(const std::string& text, std::string_view kind,
                            long long run_id, int count) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
     const std::string k(kind);   // 事件载荷调用期有效——拷贝保活到 emit 返回
-    const vc_api::Notice e{2, text.c_str(), 0, k.c_str(), run_id, count};
+    nostos::kit::Scratch scratch;
+    const vc_api::Notice e{2, scratch.hold(text), 0, k.c_str(), run_id, count,
+                           scratch.hold(session_id_)};
     host_.emit(vc_api::notice, &e);
 }
 
@@ -190,9 +195,19 @@ std::string AgentCtx::trim(const std::string& s, std::size_t cap) {
     return s.size() <= cap ? s : vcws::trim_utf8(s, cap) + "…";
 }
 
+// 路径参数的人话呈现："."（工作区根）对人不可读——根直接给真实目录（未知时退
+// 占位名词）；模型习惯性带 "./" 前缀，对人是噪音，剥掉。前端显示层有同规则兜
+// 旧记录的重放
+static std::string human_path(const std::string& p, const std::string& root) {
+    if (p.empty() || p == "." || p == "./")
+        return root.empty() ? std::string("工作区根目录") : root;
+    return p.rfind("./", 0) == 0 ? p.substr(2) : p;
+}
+
 // apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空，回退）
 // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）
-std::string AgentCtx::summarize_call(const std::string& tool, const json& args) {
+std::string AgentCtx::summarize_call(const std::string& tool, const json& args,
+                                     const std::string& ws_root) {
     if (!args.is_object()) return {};
     if (tool == "apply") return summarize_apply_ops(args);
     const auto path_of = [&args]() -> std::string {
@@ -200,15 +215,12 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
     };
     if (tool == "read") {
         const std::string p = path_of();
-        return p.empty() ? std::string{} : "读取 " + p;
+        return p.empty() ? std::string{} : "读取 " + human_path(p, ws_root);
     }
     if (tool == "list") {
-        int depth = 3;
-        if (args.contains("depth") && args["depth"].is_number_integer())
-            depth = args["depth"].get<int>();
-        const std::string p = path_of();
-        return "列目录 " + (p.empty() ? std::string(".") : p) +
-               "（深度 " + std::to_string(depth) + "）";
+        // 行内摘要只说「查哪里」——depth 等查询参数是细节，进参数原始形态
+        //（args_json，UI 展开区可见），不进人话行
+        return "列目录 " + human_path(path_of(), ws_root);
     }
     if (tool == "search") {
         const std::string q = vcagent::str_of(args, "query");
@@ -224,10 +236,7 @@ std::string AgentCtx::summarize_call(const std::string& tool, const json& args) 
     if (tool == "recall") {
         const std::string ref = vcagent::str_of(args, "ref");
         if (ref.empty()) return {};
-        std::string out = "回查归档 " + ref;
-        if (const long long off = args.value("offset", 0LL); off > 0)
-            out += "（自 " + std::to_string(off) + " 字节）";
-        return out;
+        return "回查归档 " + ref;   // 分页 offset 同 depth：请求参数细节只在展开区
     }
     if (tool == "undo_turn") {
         if (args.contains("turn_id") && args["turn_id"].is_number_integer())

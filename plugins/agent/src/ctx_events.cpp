@@ -233,7 +233,7 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
         // 收口事件由 agent 统一发（provider 各家都已取消静默）：transcript 由此
         // 有终态记录，重放不会把「进行中」复活；webui 已在 d=4 时先行解锁
         const std::string msg = "turn #" + std::to_string(turn_no_) + " 已被用户取消";
-        const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str()};
+        const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str(), 0, session_id_.c_str()};
         host_.emit(vc_api::llm_error, &e);
         cleanup_turn_();
         return;

@@ -13,10 +13,10 @@ namespace vc_webui {
 // 发送管线（/api/session/new 从 select 线程调；/api/input 从宿主线程挂起闭包调）：
 // 落盘用户记录 + 延迟广播/开 turn。NOTE: 持连接表锁的 handle 栈内禁直接广播/
 // 发射——跨线程锁序倒挂即死锁（踩过：POST /api/input 即 500）；广播一律经
-// poster defer 到宿主线程。
+// poster defer 到宿主线程。多会话并行：turn 立即发车（归属 = 活跃会话），其余
+// 会话的在跑 turn 不受影响；跨工作区并发已被 open/new 门卫拦截。
 void WebuiPlugin::start_turn_(const std::string& text, const std::string& attachments_json) {
-    in_flight_ = true;
-    persist_status_();   // turn 开始（聚合徽标同步）
+    const std::string owner = session_;
     json rec = {{"type", "user"}, {"text", text}};
     json att = json::parse(attachments_json.empty() ? "[]" : attachments_json.c_str(),
                            nullptr, /*allow_exceptions=*/false);
@@ -30,11 +30,17 @@ void WebuiPlugin::start_turn_(const std::string& text, const std::string& attach
                                 {"mime", a.value("mime", "")}});
         if (!meta.empty()) rec["attachments"] = std::move(meta);
     }
-    persist_(rec);   // 只落盘；广播 defer 到宿主线程
-    nostos::kit::poster_submit(poster_, [this, text, rec, att_json = attachments_json] {
-        reasoning_buf_.clear();                // 轮边界兜底：取消/异常残留的思考不串进新轮
-        broadcast_(rec);                       // 先广播用户消息
-        const vc_api::TurnInput e{text.c_str(), att_json.c_str()};
+    const bool pool_start = running_.empty();
+    ++running_[owner];
+    persist_status_();   // turn 开始（聚合徽标同步）
+    persist_(rec, owner);   // 只落盘；广播 defer 到宿主线程
+    nostos::kit::poster_submit(poster_, [this, text, rec, att_json = attachments_json,
+                                         owner, pool_start]() mutable {
+        reasoning_buf_.erase(owner);   // 轮边界兜底：取消/异常残留的思考不串进新轮
+        rec["session"] = owner;
+        broadcast_(rec);                       // 先广播用户消息（副本打归属标，落盘副本不带）
+        if (pool_start) broadcast_turn_state_(owner);
+        const vc_api::TurnInput e{text.c_str(), att_json.c_str(), owner.c_str()};
         host_.emit(vc_api::turn_input, &e);    // 再开 turn（顺序保证）
     });
 }
@@ -80,21 +86,30 @@ http::Response WebuiPlugin::api_decision_(const http::Request& req) {
     // 拒绝反馈：{msg:"..."} 随拒绝回灌给 agent（ZCode 式"拒绝并告诉它怎么做"）
     const std::string msg = in.contains("msg") && in["msg"].is_string()
                                 ? in["msg"].get<std::string>() : "";
-    return defer_(req, [this, d, paths_json = std::move(paths_json),
+    // 裁决目标会话（body.session；缺省 = 活跃会话。body 值在闭包外解析——in 未
+    // 捕获进闭包）
+    const std::string target_in = in.contains("session") && in["session"].is_string()
+                                      ? in["session"].get<std::string>() : "";
+    return defer_(req, [this, d, target_in, paths_json = std::move(paths_json),
                         msg](std::uint64_t conn) {
-        const int turn = (d == 0 || d == 1) ? pending_turn_ : 0;  // undo/cancel 不看 turn
+        // 裁决目标会话：决策坞只挂当前浏览会话的提案（其他会话的提案按标路由，
+        // 不进当前坞）——undo/cancel 同样按它路由（多会话下「当前 turn」不再全局
+        // 唯一）。缺省回落活跃会话（旧前端/裸调用兼容）
+        const std::string target = target_in.empty() ? session_ : target_in;
+        const int turn = (d == 0 || d == 1)
+                             ? (pendings_.count(target) ? pendings_[target] : 0)
+                             : 0;  // undo/cancel 不看 turn
         // 任意裁决（含免批/撤销/取消）都终结当前提案——重启后 pending 恒为
         // false，前端决策坞以后端事实为准（防幻影）
-        pending_turn_ = -1;
-        // NOTE: 取消（d=4）后 provider 侧不发 done/error（mock 直接静默终止），agent
-        // 只发 notice——in_flight_ 无人清零 ⇒ UI 永远卡「生成中」（踩过：停止键卡死）。
-        // 用户主动终止 = UI 必须立即解锁。
-        if (d == 4) in_flight_ = false;
-        persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：in_flight + pending）
+        pendings_.erase(target);
+        // 取消的 UI 解锁走链收口记账：agent 的 d=4 处理同 drain 内发 llm_error
+        //（outstanding 减一 → 归零即链收口）——此处不再手工置位
+        persist_status_();   // 全部状态变更落定后一次同步（聚合徽标：运行 + 挂起）
         server_->respond(conn, json_resp({{"ok", true}}));
         // 响应先行、emit 收尾：agent 侧裁决处理可能起进程等重活，不能拖住 UI
         // 的 POST 应答（原同步形态即立即应答+异步 emit，此处保序）。
-        const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str()};
+        const vc_api::TurnDecision e{turn, d, paths_json.c_str(), msg.c_str(),
+                                     target.c_str()};
         host_.emit(vc_api::turn_decision, &e);
     });
 }
@@ -168,7 +183,7 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
         json rec = json{{"type", "notice"},
                         {"level", 2},
                         {"text", "模型已保存为 " + model + "（重启后生效；" + diag + "）"}};
-        persist_(rec);  // 只落盘；广播随响应后内联（已在宿主线程）
+        persist_(rec, session_);  // 只落盘；广播随响应后内联（已在宿主线程）
         broadcast_(rec);
     }
     server_->respond(conn, json_resp({{"ok", true}, {"live", live}}));
@@ -181,7 +196,7 @@ http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
     json in = parse_body_(req.body);
     const int cmd = in.value("cmd", 0);
     return defer_(req, [this, cmd](std::uint64_t conn) {
-        const vc_api::SessionCmd e{cmd};
+        const vc_api::SessionCmd e{cmd, session_.c_str()};
         host_.emit(vc_api::session_cmd, &e);
         server_->respond(conn, json_resp({{"ok", true}}));
     });

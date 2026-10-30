@@ -16,6 +16,7 @@ namespace vc_agent {
 // state 文件加载（activate 与会话切换共用；缺文件 = 全新会话）
 void AgentCtx::load_session_state_(const std::string& path) {
     session_path_ = path;
+    session_id_ = vc_agent::session_id_of_state(path);
     // raw 外置目录随会话走（与会话切换同源）：多会话共享宿主时归档名会跨会话
     // 撞车——归档名加会话 stem 前缀隔离（同一 parent/raw 内 ref 仍为裸文件名）
     const fs::path sp(path);

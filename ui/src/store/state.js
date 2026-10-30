@@ -33,6 +33,10 @@ export const S = reactive({
   // subDetail = 各子代理的工具明细实时缓冲（turn_id → 记录数组；明细落独立
   // 存档，主会话不收，SSE 实时推送 + 右栏打开时 /api/agent-log 拉历史合并）。
   subView: 0, subLive: {}, subDone: {}, subDetail: {},
+  // 后台 turn 徽标（多会话并行）：bgRun = 会话 id → 该会话是否有 turn 在跑。
+  // 实时源 = turn_state 帧与 /api/sessions 的 working 字段；与当前会话相关的
+  // inFlight 不在此（上方专用字段）
+  bgRun: {},
   inputText: '',
   // 待发送附件（+号上传/拖拽进来，发送时随消息带上相对路径并清空）：
   // {path: 工作区相对路径, name: 显示名}。文件实体已在 .ithaca/uploads 落盘

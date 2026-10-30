@@ -147,20 +147,25 @@ input, textarea, select { font: inherit; }
 .fold.open { grid-template-rows: 1fr; }
 .fold-in { overflow: hidden; min-height: 0; }
 @media (prefers-reduced-motion: reduce) { .fold { transition: none; } }
-/* 思考中：标签文字走品牌渐变流光（同 .hero-title 的 background-clip 手法），
-   💭 随之呼吸——只在思考阶段生效，正文开始（thinking=false）即熄灭 */
-.fblock.live .fb-head .t {
+/* 进行中：标签文字走品牌渐变流光（同 .hero-title 的 background-clip 手法），
+   💭/⚙ 图标随之呼吸。两个消费方：思考行（正文开始即熄灭）与工具调用行
+   （结果归位 _done 即熄灭）——同一「正在干活」的视觉语言 */
+.fblock.live .fb-head .t,
+.fblock.live .fb-head .tlabel {
   background: linear-gradient(90deg, var(--dim) 25%, var(--acc-from) 50%, var(--acc-to) 65%, var(--dim) 90%);
   background-size: 200% 100%;
   -webkit-background-clip: text; background-clip: text; color: transparent;
   animation: think-shimmer 2.2s linear infinite;
 }
-.fblock.live .fb-head .ico { animation: think-breathe 2.2s ease-in-out infinite; }
+.fblock.live .fb-head .ico,
+.fblock.live .fb-head .tico { animation: think-breathe 2.2s ease-in-out infinite; }
 @keyframes think-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @keyframes think-breathe { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) {
-  .fblock.live .fb-head .t { animation: none; color: var(--acc); -webkit-text-fill-color: var(--acc); }
-  .fblock.live .fb-head .ico { animation: none; }
+  .fblock.live .fb-head .t,
+  .fblock.live .fb-head .tlabel { animation: none; color: var(--acc); -webkit-text-fill-color: var(--acc); }
+  .fblock.live .fb-head .ico,
+  .fblock.live .fb-head .tico { animation: none; }
 }
 /* 思考体：10 行封顶（行高 1.65）后内部滚动；contain 防滚到头时把页面一起带走 */
 .think-body { max-height: calc(10 * 1.65em); overflow-y: auto; overscroll-behavior: contain; }
@@ -494,6 +499,9 @@ div.li { line-height: 1.55; }
             margin: 10px 10px 10px 8px; min-width: 0; overflow: hidden;
             transition: width .28s ease, opacity .2s ease, margin-left .28s ease; }
 .fileside.closed { opacity: 0; margin-left: 0; border-color: transparent; pointer-events: none; }
+/* 拖宽期间关掉宽度过渡：过渡是开合动画用的，拖拽时开着 = 面板以 .28s 步距
+   追赶光标（不跟手，踩过）；左栏无宽度过渡故无需同款 */
+.fileside.dragging { transition: none; }
 @media (prefers-reduced-motion: reduce) { .fileside { transition: none; } }
 .fs-head { display: flex; align-items: center; gap: 6px; padding: 9px 12px 7px;
            font-size: 12px; color: var(--dim); border-bottom: 1px solid var(--line); flex: none; }

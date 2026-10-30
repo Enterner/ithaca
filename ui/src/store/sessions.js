@@ -3,6 +3,7 @@
 // ——它对齐 session 广播的清空面；records.render 消费 session 事件后调本模块。
 import { S, X } from './state'
 import { api, shellMsg } from './api'
+import { confirmDialog } from '../confirm'
 
 // ---- 视图重置与草稿态 --------------------------------------------------------
 
@@ -74,9 +75,10 @@ export async function loadSessions() {
 }
 
 /**
- * 生成中切走的前置收口：取消当前 turn。与 actions.decide(4) 的 UI 侧效果一致
- * （解锁/收坞/收流式块），但不经 actions 层——依赖方向 sessions ← actions，
- * 会话域不得反向引用（actions 的 send/openSession 都要先过这里）。
+ * 停止运行中的 turn 链：跨工作区切换确认后的「停止并切换」路径。与
+ * actions.decide(4) 的 UI 侧效果一致（解锁/收坞/收流式块），但不经 actions 层
+ * ——依赖方向 sessions ← actions，会话域不得反向引用（actions 的 send/openSession
+ * 都要先过这里）。
  */
 async function cancelInflightTurn_() {
   const r = await api('/api/decision', { decision: 4 })
@@ -88,7 +90,10 @@ async function cancelInflightTurn_() {
   return r
 }
 
-/** 切到指定会话；先丢弃草稿（零请求零落盘）。 */
+/** 切到指定会话；先丢弃草稿（零请求零落盘）。
+ *  切走不杀 turn：链运行中照常切（事件按归属会话路由，侧栏徽标跟进）；跨
+ *  工作区目标会与运行中 turn 的文件面错配（workspace 插件单实例 jail）——先
+ *  确认停止再切（服务端同规则兜底拒绝）。 */
 export async function openSession(id) {
   S.draft = null
   if (id === S.curSession) return
@@ -103,20 +108,25 @@ export async function openSession(id) {
     }
     return
   }
-  // 单实例：后端是单活跃会话（agent 一次只跑一个 turn，session/load 在 turn
-  // 进行中会被拒）——切走 = 先取消当前轮次（语义同停止键），再开目标会话。
-  // 两请求都经宿主线程串行：decision 先清 turn，session/load 后到必是 Idle。
-  if (S.inFlight) await cancelInflightTurn_()
+  const chainRunning = S.inFlight || Object.values(S.bgRun).some(Boolean)
+  const tgt = S.sessions.find(x => x.id === id)
+  if (chainRunning && tgt && tgt.workspace && tgt.workspace !== S.curWs) {
+    const ok = await confirmDialog({
+      title: '切换会话',
+      content: '当前有 turn 正在后台运行，且目标会话的工作区不同——需要先停止它才能切换。',
+      positive: '停止并切换',
+    })
+    if (!ok) return
+    await cancelInflightTurn_()
+  }
   await api('/api/session/open', { id })
   loadSessions()   // 硬化：不只依赖 SSE
 }
 
 /** ＋新建 = 进草稿态：零请求，注册表/磁盘在首条消息前不动。
  *  壳模式同构（页内 hero 选目录，选完由壳拉起新实例并整页切换——见 folder_picked）。
- *  单实例生成中新建同样先取消当前轮次——首条消息要经 /api/session/new，
- *  in_flight 未清会被后端拒。 */
+ *  多会话并行：运行中的 turn 不受新建影响；跨工作区并发由服务端拒绝并在发送处报错。 */
 export async function newSession(ws) {
-  if (!S.shell && S.inFlight) await cancelInflightTurn_()
   enterDraft(ws)
 }
 

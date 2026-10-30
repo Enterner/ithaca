@@ -163,13 +163,24 @@ private:
 
     // ---- 会话记录（src/sessions.cpp）--------------------------------------------
 
-    void persist_(json& rec);
-    void record_(json rec);
+    // owner = 记录归属会话（事件尾部 session 标解析，多会话并行各自落盘）：
+    // 活跃会话走内存镜像 + out_ 句柄（重放源）；其余会话直写各自 transcript
+    // 文件（sink_ids_ 水位独立续号，切回时整卷重放恰好接续）
+    void persist_(json& rec, const std::string& owner);
+    // tag = 事件的 session 标（契约尾部字段；null/空回落活跃会话）：落盘按归属，
+    // 广播副本带归属标（前端按标过滤非当前会话的 turn 事件）
+    void record_(json rec, const char* tag);
+    // turn 事件的广播出口（只广播不落盘的流式增量/明细）：同 record_ 打归属标
+    void broadcast_turn_(json rec, const char* tag);
+    // 事件 session 标 → 归属会话（空标回落活跃会话——旧生产者组合兜底）
+    std::string ev_owner_(const char* tag) const {
+        return (tag != nullptr && *tag != '\0') ? std::string(tag) : session_;
+    }
     void load_transcript_();
     void open_transcript_();
     // 子代理工作明细存档（sessions/agents/<会话id>/agent_<turn>.jsonl 追加写 +
-    // SSE 广播；行号 seq 单调续接，前端历史+实时合并不重不漏）
-    void agent_log_append_(int turn_id, const json& rec);
+    // SSE 广播；行号 seq 单调续接，前端历史+实时合并不重不漏）。owner = 父会话
+    void agent_log_append_(const std::string& owner, int turn_id, const json& rec);
     void close_agent_logs_();
     json api_agent_log_(const std::string& target);   // 数据源：路由 defer 包装
 
@@ -194,6 +205,12 @@ private:
     void load_index_();
     void save_index_();
     json* session_entry_(const std::string& id);
+    // 会话条目的 workspace（未注册 = 空串）
+    std::string session_ws_(const std::string& id) const;
+    // 运行池工作区一致性：任一在跑 turn 的会话工作区与 ws 不同 ⇒ true
+    //（workspace 插件单实例 jail——跨工作区并行会文件面错配）。空 ws 不换
+    // jail，恒 false（新会话/未设置工作区的会话不构成冲突）
+    bool ws_conflicts_running_(const std::string& ws) const;
     static long long now_epoch_();
     void ensure_session_(const std::string& id, const std::string& workspace);
     void sweep_uninitialized_();
@@ -265,16 +282,15 @@ private:
     fs::path home_{};      // %USERPROFILE%\.ithaca
     fs::path web_root_{};  // SPA 目录
     std::string session_;          // 活跃会话 id；"" = 无会话态（前端草稿态兜底）
-    // 数据面字段（records_/session_/pending_turn_/index_/out_/agent_logs_*/
-    // host_workspace_/ui_registry_/config_）读写全在宿主线程：poster 闭包与
-    // 事件回调同经宿主排水串行化，无共享无锁（线程纪律见文件头）。
+    // 数据面字段（records_/session_/pendings_/running_/sinks_/sink_ids_/
+    // reasoning_buf_/index_/out_/agent_logs_*/host_workspace_/ui_registry_/config_）
+    // 读写全在宿主线程：poster 闭包与事件回调同经宿主排水串行化，无共享无锁
+    //（线程纪律见文件头）。
     json config_ = json::object();
     std::vector<json> records_;      // 会话记录（内存镜像 = 重放源）
-    std::ofstream out_{};            // transcript 追加写
-    std::string reasoning_buf_;      // 当前轮深度思考累积（llm_reasoning 只广播不落盘，
-                                     // llm_done 收口时并入 assistant 记录——重放可回看）
+    std::ofstream out_{};            // 活跃会话 transcript 追加写（非活跃走 sinks_）
     // 子代理明细存档的写句柄与序号水位（宿主线程串行化，事件回调专用；
-    // 会话切换/删除时 close_agent_logs_ 统一收口）
+    // 会话删除时 close_agent_logs_ 统一收口）
     std::map<int, std::ofstream> agent_logs_;
     std::map<int, long long> agent_log_seq_;
     int pending_turn_ = -1;          // 待裁决提案的 turn_id
@@ -282,11 +298,31 @@ private:
     std::string host_workspace_;           // 宿主工作目录（新会话归属）
     bool ws_backfilled_ = false;           // 工作区补发一次性标志（tool_register 兜底）
 
+    // ---- 多会话并行记账（事件归属按 session 标；读写全在宿主线程）--------------
+    // turn_state 状态帧广播（SSE 瞬态不落盘）：侧栏徽标与前端 inFlight 的实时源
+    void broadcast_turn_state_(const std::string& sid);
+    // 会话在途 turn 收口（llm_done 终态/llm_error 两处调用）：running_ 减一，
+    // 归零 = 该会话空闲 ⇒ 非活跃 sink 句柄收口。返回 true = 恰好归零
+    bool chain_settle_(const std::string& owner);
+
+    // 会话 → 在途 turn 数（turn_input 发车 +1，llm_done 终态/llm_error 收口 -1；
+    // 0/缺省 = 该会话空闲）。多会话可同时 >0——真并行
+    std::map<std::string, int> running_;
+
+    // 会话 → 待裁决提案的 turn_id（提案事件随归属落；裁决即摘除）
+    std::map<std::string, int> pendings_;
+    // 非活跃会话的 transcript 追加句柄与 id 水位（懒开；水位在切离活跃会话时
+    // 按其镜像行数捕获，后台记录续号，切回时整卷重放恰好接续）
+    std::map<std::string, std::ofstream> sinks_;
+    std::map<std::string, long long> sink_ids_;
+    // 会话 → 当前轮深度思考累积（llm_reasoning 只广播不落盘，收口并入 assistant
+    // 记录——多会话并行流交错，必须按会话分桶）
+    std::map<std::string, std::string> reasoning_buf_;
+
     // ---- 文件树 watcher 状态（见 start_fs_watcher_）---------------------------
     HANDLE fs_watch_handle_ = nullptr;     // 主线程开/关；线程只持它调 ReadDirectoryChangesW
     std::thread fs_watch_thread_;
     std::atomic<bool> fs_watch_running_{false};
-    bool in_flight_ = false;   // turn 进行中（禁切换/新建）；读写全在宿主线程
 
     // ---- 插件 UI 贡献（vc.ui.register 累积；内存态，/api/ui/registry 数据源）----
     // 插件重发随 vc.ui.query 补拉兜底，重启后由各插件 activate 重建，无需落盘。

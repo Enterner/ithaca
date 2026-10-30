@@ -59,6 +59,7 @@ bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
     }
     auto child = std::make_unique<AgentCtx>();
     child->host_ = host_;
+    child->session_id_ = session_id_;   // 子代理事件的归属标随父（emit_subagent_ 走子自身）
     child->subagent_ = true;       // 免批 + 静默 + 不压缩不持久化 + 请求体带标志
     child->depth_ = depth_ + 1;
     child->system_prompt_ = type->prompt;

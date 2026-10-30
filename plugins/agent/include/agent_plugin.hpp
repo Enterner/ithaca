@@ -77,6 +77,17 @@ inline long long estimate_prompt_tokens(const std::string& body) {
     return static_cast<long long>(cjk + other / 3 + (cjk + other) / 16);
 }
 
+// state 文件路径 → 会话 id：<...>/<id>.state.json 的 <id>。事件尾部 session 标
+// 与 AgentPlugin 槽键的派生单点——写两份必然漂移
+inline std::string session_id_of_state(const std::string& path) {
+    std::string name = fs::path(path).filename().string();
+    const std::string suffix = ".state.json";
+    if (name.size() > suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+        name.erase(name.size() - suffix.size());
+    return name;
+}
+
 using nlohmann::json;
 
 // 工具级失败的标准回灌形态（ok:false + error——给模型的正常通路，非基础设施错误）
@@ -301,8 +312,10 @@ struct AgentCtx {
     // 异步长任务登记：run_id → 分发序号（结果等 vc.run.exit 归流后按序回卡）
     void register_run(int run_id, int index);
     static std::string trim(const std::string& s, std::size_t cap);
-    // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）
-    static std::string summarize_call(const std::string& tool, const json& args);
+    // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）。static 保持纯函数
+    // 可白盒测——工作区根由调用方传入（"." 形态的路径呈现需要它）
+    static std::string summarize_call(const std::string& tool, const json& args,
+                                      const std::string& ws_root);
     // apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空）
     static std::string summarize_apply_ops(const json& args);
     // 工具结果 → 人话摘要；失败点名首条错误；认不出的形态回退原 JSON 截断
@@ -403,13 +416,30 @@ struct AgentCtx {
     std::set<std::size_t> child_pends_;  // 在途子代理的 calls_ 下标（回调回灌结果并摘除）
     std::vector<AgentType> types_;       // 子代理类型清单（主会话每 turn 开始重载）
     std::string agent_dir_;              // 类型目录（<工作区>/.ithaca/agent；env ITHACA_AGENT_DIR 可覆盖）
-    // 本 turn 的槽订阅（run_line/run_exit；子会话另加 llm_done/llm_error）——
-    // begin_turn 换订（上 turn 槽已无事件源），ctx 析构随 RAII 释放
+    std::string ws_root_;                // 当前工作区根（env 起源 + workspace_set 热切跟随；
+                                         // 人话摘要的路径呈现用——"." 要译成真实目录）
+    std::string session_id_;             // 本槽归属会话 id（state 文件名派生）：事件尾部
+                                         // session 标的填充源（多会话并行的路由键）
+    // 本 turn 的槽订阅（run_line/run_exit + LLM 事件族——多会话并行后主会话请求
+    // 也按槽单播，槽订阅后补 session 标重播进广播通道供 UI 消费）——begin_turn
+    // 换订（上 turn 槽已无事件源），ctx 析构随 RAII 释放
     std::vector<nostos::abi::Host::Subscription> slot_subs_;
+
+    // 槽事件补标重播：布局拷贝槽载荷、覆写 session 标后转发广播。源字符串由
+    // provider 的 Scratch 保活到本次派发结束，嵌套 emit 内仍有效
+    template <typename E>
+    void retag_emit_(std::uint64_t evt, const E* e) {
+        nostos::kit::Scratch s;
+        E tag = *e;
+        tag.session = s.hold(session_id_);
+        host_.emit(evt, &tag);
+    }
 };  // AgentCtx
 
-// AgentPlugin：薄壳——订阅分发到 ctx_ 与子代理扇出（v1 单主槽；多会话槽只是
-// AgentPlugin 的多实例）
+// AgentPlugin：薄壳——订阅分发到多会话槽与子代理扇出。多会话并行：每个已加载
+// 会话一个 AgentCtx（map 按会话 id 键），turn 输入/裁决按事件尾部 session 标路由；
+// 事件路由键的回退 = active_（最近一次会话加载的槽，单驱动场景如 selftest 兼容）。
+// 会话工作区一致性由 webui 门卫保证（跨工作区并行切换被拒）——本插件不做校验。
 class AgentPlugin {
 public:
     static constexpr std::string_view name = "vc.agent";
@@ -423,13 +453,25 @@ public:
     void deactivate() noexcept;
 
 private:
-    AgentCtx ctx_;   // v1 单槽；多槽 = std::map<slot, AgentCtx>（方法已全部随 ctx 走）
+    // 会话槽创建：env 派生的初始态（工具清单/权限模式/窗口阈值/类型目录/系统
+    // 提示词）在此统一灌入——原 activate 的单槽初始化体
+    AgentCtx& ensure_ctx_(const std::string& id);
+    // 事件 session 标 → 槽：null/空回落 active_（单驱动兼容）；未知会话返回空
+    AgentCtx* route_(const char* session);
+
+    std::map<std::string, std::unique_ptr<AgentCtx>> ctxs_;
+    AgentCtx* active_ = nullptr;     // 最近一次会话加载的槽（回退路由目标）
+    nostos_poster poster_{};         // 全槽共享的提交通道（poster 无状态，句柄可复制）
+    nostos::abi::Host host_{};       // activate 期捕获：延迟创建的槽要灌 host 面
+    // 全局活值：事件先于槽创建到达的时序兜底（webui activate 的模式/窗口/工作区
+    // 回放先于首个 session_load——彼时 ctxs_ 为空，只记活值，ensure_ctx_ 套用）
+    std::string mode_live_{};        // 权限模式事件值（空 = 未收到，env 兜底）
+    long long window_live_ = 0;      // 模型上下文窗口事件值（0 = 未收到）
+    std::string ws_live_{};          // 工作区根事件值（空 = 未收到，env 兜底）
 
     nostos::abi::Host::Subscription sub_input_{};
     nostos::abi::Host::Subscription sub_decision_{};
     nostos::abi::Host::Subscription sub_cmd_{};    // 会话级命令（vc.session.cmd）
-    nostos::abi::Host::Subscription sub_done_{};    // 主会话槽（广播）；子会话走各自槽订阅
-    nostos::abi::Host::Subscription sub_error_{};   // 同上
     nostos::abi::Host::Subscription sub_session_{};
     nostos::abi::Host::Subscription sub_mode_{};
     nostos::abi::Host::Subscription sub_llm_set_{};     // 模型窗口事件（阶段二动态阈值）

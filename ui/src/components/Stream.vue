@@ -5,9 +5,11 @@
 // diff 着色走 diff.js 的 v-html（内容全部经 esc——信任级别与正文一致）。
 // 折叠块（思考/工具卡/run 兜底）统一走 FoldBlock 轮子（.fold 网格动画 + Chev
 // 旋转箭头 + 语义色脊柱）；编辑行的展开行留在汇总卡内不走轮子（卡片自带行几何）。
+// 渲染成本两面收口：md/diff 逐记录缓存（收口记录不可变，算一次挂对象上）+
+// 尾部窗口渐进挂载（历史窗口段——切会话/重放只挂最近一段，触顶扩窗补更早历史）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { S, isImageAtt, attUrl } from '../store'
-import { mdHtml, esc, toolLabel } from '../md'
+import { mdHtml, esc, toolLineHtml, toolName } from '../md'
 import { diffHtml, stripHeads } from '../diff'
 import Chev from './Chev.vue'
 import FoldBlock from './FoldBlock.vue'
@@ -49,12 +51,46 @@ watch(() => S.live && S.live.open, (v) => {
 onMounted(() => nextTick(scrollBottom))
 watch(() => S.curSession, () => nextTick(scrollBottom))
 
-function toolHtml(rec) {
-  const brief = rec.brief || ''
-  const label = toolLabel(rec.tool, brief)
-  // label 为空 = 摘要自含中文动词（read/list/search/run/recall/task），直接显示
-  // 短句；否则「中文标签 + 摘要」
-  return label ? '<b>' + esc(label) + '</b> ' + esc(brief) : esc(brief)
+// ---- 历史窗口（切会话/重放的卡顿治理）---------------------------------------
+// 对话流按「尾部窗口」挂载：重放/切换先只挂最近 WINDOW 条，上滚触顶再按 CHUNK
+// 补挂更早历史。全量挂载让长会话的切换 = 一次数千节点的同步 mount（明显卡顿）；
+// 窗口把首屏成本钉在常数上，读历史靠触顶扩窗补齐。锚点 = startIdx（渲染起始
+// 下标）：重放的「清空→成批进记录」迁移（old=0）时锚到尾部；之后只进不退——
+// 新记录追加不动锚点，正在读历史的人视口不漂移。
+const WINDOW = 120
+const CHUNK = 150
+const startIdx = ref(0)
+const shown = computed(() => {
+  const recs = S.records
+  if (startIdx.value <= 0) return recs
+  // 挂起等待行是动态状态行，出窗也要保持可见（起点回拉到它——它必然靠近尾部）
+  let waitAt = -1
+  for (let i = recs.length - 1; i >= 0; i--) if (recs[i]._wait) { waitAt = i; break }
+  const from = waitAt >= 0 ? Math.min(startIdx.value, waitAt) : startIdx.value
+  return from <= 0 ? recs : recs.slice(from)
+})
+watch(() => S.records.length, (n, old) => {
+  if (!n || !old) startIdx.value = Math.max(0, n - WINDOW)
+}, { immediate: true })   // 挂载时记录可能已整装（boot 重放先于组件）：立即锚一次
+function onScroll() {
+  const el = streamEl.value
+  if (!el || el.scrollTop > 2 || startIdx.value <= 0) return
+  const top = el.scrollTop, h = el.scrollHeight
+  startIdx.value = Math.max(0, startIdx.value - CHUNK)
+  nextTick(() => {   // 上方长出了内容：补同样的高度差，视口停留的记录不动
+    if (streamEl.value) streamEl.value.scrollTop = top + (streamEl.value.scrollHeight - h)
+  })
+}
+
+// ---- 逐记录渲染缓存 ----------------------------------------------------------
+// 收口记录与 diff 文本不可变（收口后只读），HTML 算一次挂在记录对象上：组件任何
+// 响应式变化都会整体重跑 v-for，无缓存 = 每次重渲染都对全部历史重算 marked/diff
+// ——长会话越用越卡、切回来更卡（明显卡顿的主源）。缓存字段带 _ 前缀，与交互
+// 态（_open 等）同一约定：宿主记录上的本地展示态。
+function msgHtml(rec) { return rec._mdh ??= mdHtml(rec.text || '') }
+function propDiffHtml(rec) { return rec._dh ??= diffHtml(multi(rec) ? stripHeads(rec.diff) : rec.diff) }
+function editDiff(f) {
+  return f._dh ??= diffHtml(f.applies.length === 1 ? f.applies[0].replace(/^── [^\n]*\n/, '') : f.applies.join(''))
 }
 // ---- 工具卡（单行收起 + 展开详情）--------------------------------------------
 // 展开详情 = 调用参数（args 原始 JSON，契约尾部追加字段；旧记录无此字段则无
@@ -90,11 +126,12 @@ function resRow(rec) {
                             : { text: '✗ exit ' + r.exit, warn: true })
   return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok, out: false } : null
 }
-// 每渲染周期每条调用卡只算一次结果行（模板里多处取用——直接调 resRow 会对
-// rec._runs 反复 reduce；Map 按 record 对象取，O(1)）
+// 每渲染周期每条可见调用卡只算一次结果行（模板里多处取用——直接调 resRow 会对
+// rec._runs 反复 reduce；Map 按 record 对象取，O(1)）。只扫窗口内记录：组件任何
+// 一处响应式变化都会让本 computed 重算，全量扫描会把重放变成 O(n²)
 const resRows = computed(() => {
   const m = new Map()
-  for (const rec of S.records) if (rec.type === 'tool_call') m.set(rec, resRow(rec))
+  for (const rec of shown.value) if (rec.type === 'tool_call') m.set(rec, resRow(rec))
   return m
 })
 function rowOf(rec) { return resRows.value.get(rec) ?? null }
@@ -147,11 +184,12 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
 </script>
 
 <template>
-  <div ref="streamEl" class="stream" @click="onStreamClick">
+  <div ref="streamEl" class="stream" @click="onStreamClick" @scroll="onScroll">
     <div class="flow">
       <div v-if="!S.records.length && !S.live" class="empty">启动后在这里看到对话流——输入任务开始。</div>
 
-      <template v-for="(rec, i) in S.records" :key="rec.id ?? 'r' + i">
+      <!-- 键：宿主记录用 'h'+id，伪记录用入库序号（窗口渲染下下标会漂移） -->
+      <template v-for="(rec, i) in shown" :key="rec.id !== undefined ? 'h' + rec.id : (rec._k ?? 'r' + i)">
         <template v-if="rec.type === 'user'">
           <!-- 附件挂在消息上方（ZCode 式）：图片直接出预览（图即全部语义），
                文档类保留文件名 chip；mime 为空 = 后端读取失败/非图片扩展名 -->
@@ -179,19 +217,21 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
             <div class="think-body">{{ rec.reasoning }}</div>
           </FoldBlock>
           <template v-if="rec.text">
-            <div class="msg a" v-html="mdHtml(rec.text || '')"></div>
+            <div class="msg a" v-html="msgHtml(rec)"></div>
           </template>
         </template>
 
         <template v-else-if="rec.type === 'tool_call' || rec.type === 'tool'">
           <!-- 配对调用 = 单行工具卡：调用摘要 + 结果缀（.procres 保留独立语义：
                结果摘要），默认收起、整行点击展开（参数 JSON + run 输出）。
-               无配对兜底结果行（type=tool）为纯展示头行 -->
+               运行中（结果未归位）复用思考行的流光/呼吸动画。无配对兜底结果行
+               （type=tool）为纯展示头行 -->
           <FoldBlock v-if="rec.type === 'tool_call'" :open="!!rec._open"
+                     :class="{ live: toolStat(rec).run }"
                      :clickable="hasToolDetail(rec)" :warn="toolStat(rec).warn" @toggle="toggleTool(rec)">
             <template #head>
               <span class="tico" :class="{ dim: rec._done }">⚙</span>
-              <span class="tlabel" v-html="toolHtml(rec)"></span>
+              <span class="tlabel" v-html="toolLineHtml(rec.tool, rec.brief, S.curWs)"></span>
               <Chev v-if="hasToolDetail(rec)" :open="!!rec._open" />
               <span class="spacer"></span>
               <span v-if="toolStat(rec).run" class="spinner" title="运行中"></span>
@@ -205,7 +245,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           </FoldBlock>
           <FoldBlock v-else :warn="toolFailed(rec)">
             <template #head>
-              <span class="tico">⚙</span><span class="tlabel" v-html="toolHtml(rec)"></span>
+              <span class="tico">⚙</span><span class="tlabel" v-html="toolLineHtml(rec.tool, rec.brief, S.curWs)"></span>
             </template>
           </FoldBlock>
         </template>
@@ -237,7 +277,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               <div class="fold" :class="{ open: f.open }">
                 <div class="fold-in">
                   <div class="ebody">
-                    <div class="diff" v-html="diffHtml(f.applies.length === 1 ? f.applies[0].replace(/^── [^\n]*\n/, '') : f.applies.join(''))"></div>
+                    <div class="diff" v-html="editDiff(f)"></div>
                   </div>
                 </div>
               </div>
@@ -299,13 +339,13 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         <template v-else-if="rec.type === 'proposal'">
           <div class="who">ithaca · 提案</div>
           <div class="card" :class="{ superseded: superseded(rec) }">
-            <div class="head"><b>{{ toolLabel(rec.tool || 'workspace.apply', '') || '编辑' }}</b><span class="stat">{{ statText(rec) }}</span></div>
+            <div class="head"><b>{{ toolName(rec.tool || 'workspace.apply') || '编辑' }}</b><span class="stat">{{ statText(rec) }}</span></div>
             <div v-if="multi(rec)" class="diff">
               <label v-for="p in rec._files" :key="p" class="fhead-row">
                 <input type="checkbox" v-model="rec._checked[p]"> {{ p }}
               </label>
             </div>
-            <div class="diff" v-html="diffHtml(multi(rec) ? stripHeads(rec.diff) : rec.diff)"></div>
+            <div class="diff" v-html="propDiffHtml(rec)"></div>
           </div>
         </template>
       </template>

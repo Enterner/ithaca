@@ -116,7 +116,7 @@ private:
     nostos_status chat_ex_(int request_id, const char* body_json);
     // slot：body 携带的路由键（agent 子任务 = 子会话槽 turn_no，非 0）。非 0 ⇒
     // 凭据快照按子档案取（完整时），事件按 slot 单播回发（子事件不进广播）。
-    nostos_status start_(int request_id, json messages, json tools, std::uint64_t slot);
+    nostos_status start_(int request_id, json messages, json tools, std::uint64_t slot, bool sub);
 
     // ---- 请求线程（src/stream.cpp）：只做 WinHTTP 与 poster_submit，绝不直接碰
     //      宿主 API。全部请求态（拼装/取消旗/句柄/凭据快照）随线程走——插件成员

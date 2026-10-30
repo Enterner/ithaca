@@ -8,8 +8,10 @@
 //
 // slot 路由约定（nostos on_slot/emit_slot，内核 58dc137 起）：ithaca 的 slot =
 // 会话槽 turn_no（agent 插件全局发号器，跨主/子会话不撞）。多实例私有事件
-// （子代理的 LLM 事件族、run.line/exit）按槽单播；主会话对外可见的事件留在
-// 广播通道（slot=0）——子代理不可见性由"订阅才可达"保证，不再靠载荷标志。
+// （LLM 事件族、run.line/exit——多会话并行后主会话请求同样按槽单播）按槽单播；
+// agent 槽订阅后补 **session 标**重播进广播通道（多会话并行：UI 按标路由到归属
+// 会话的数据面，消费方见 vc_events 各结构体的 session 尾部字段）——子代理不可
+// 见性由"订阅才可达"保证，不再靠载荷标志。
 #include <nostos/event.hpp>
 
 #include <cstdint>
@@ -26,6 +28,10 @@ struct TurnInput {
     // path 为工作区内相对路径，data_url 仅图片（image/*）携带（base64 内联）；
     // null/空 = 无附件（旧 tui 兼容，文本注记仍由发送方拼在 text 尾部）。
     const char* attachments_json = nullptr;  // 调用期有效，要留存必须拷贝
+    // 尾部追加（多会话并行）：归属会话 id——多会话槽下 agent 按它路由到对应
+    // AgentCtx；null/空 = 旧生产者组合，回落「最近一次会话加载」的槽（单驱动
+    // 语义）。调用期有效，要留存必须拷贝。
+    const char* session = nullptr;
 };
 
 // 用户对提案的裁决（tui → agent）。
@@ -35,12 +41,15 @@ struct TurnInput {
 //           null/空 = 全部文件（向后兼容：旧 tui 不设此字段）。
 // msg（尾部追加，M-W10 拒绝反馈）：decision=1 时随拒绝带给 agent 的用户留言
 //           （"拒绝并反馈"——ZCode 式：输入框文字即反馈）；null = 无留言。
+// session（尾部追加，多会话并行）：裁决目标会话——undo/cancel 也按它路由
+//           （多会话下「当前 turn」不再全局唯一）；null/空回落最近加载槽。
 struct TurnDecision {
     static constexpr std::string_view name = "vc.turn.decision";
     int turn_id = 0;
     int decision = 0;
     const char* paths_json = nullptr;  // 调用期有效，要留存必须拷贝
     const char* msg = nullptr;         // 调用期有效，要留存必须拷贝
+    const char* session = nullptr;     // 调用期有效，要留存必须拷贝
 };
 
 // 工具插件后到接入的提示。MVP 的发现走 config 显式清单，
@@ -58,6 +67,9 @@ struct LlmDelta {
     // 已废弃（slot 路由替代，布局保留）：子代理请求的事件现按 slot=turn_no 单播，
     // 不进广播通道——本字段恒为 0，生产者不再回填，消费方不得读取。
     int subagent = 0;
+    // 尾部追加（多会话并行）：归属会话 id——agent 槽订阅后补标重播进广播通道，
+    // 消费方（UI）按它路由到归属会话的数据面。null/空 = 未标注（回落活跃会话）。
+    const char* session = nullptr;
 };
 
 // 深度思考增量（推理模型如 deepseek-reasoner 的 reasoning_content 流）。
@@ -68,6 +80,8 @@ struct LlmReasoning {
     const char* text = nullptr;  // UTF-8，调用期有效
     // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
     int subagent = 0;
+    // 尾部追加（多会话并行）：语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 一轮对话正常结束。assistant_json = 完整的 assistant 消息（含可能的 tool_calls）：
@@ -86,6 +100,8 @@ struct LlmDone {
     const char* usage = nullptr;
     // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
     int subagent = 0;
+    // 尾部追加（多会话并行）：语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 一轮对话失败。code 沿用 nostos_status 值域；message 点名原因（调用期有效）。
@@ -96,6 +112,8 @@ struct LlmError {
     const char* message = nullptr;
     // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
     int subagent = 0;
+    // 尾部追加（多会话并行）：语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 工具调用/结果的展示事件（agent → tui）。
@@ -109,6 +127,8 @@ struct ToolCall {
     // 摘要，本字段供展开后的原始形态。null/空 = 无参数或旧生产者组合（消费方
     // 以非空探测，缺失时只显示摘要）。
     const char* args_json = nullptr;
+    // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 struct ToolResult {
     static constexpr std::string_view name = "vc.tool.result";
@@ -120,6 +140,8 @@ struct ToolResult {
     // ——消费方据此建立「调用行 ↔ run 输出」归属（真实退出码随 vc.run.exit 归流
     // 另行回卡）。前台执行与其他工具恒 0。
     long long run_id = 0;
+    // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 编辑提案 / 应用 / 撤销。diff 由 workspace 生成，agent 只转述。
@@ -133,6 +155,8 @@ struct EditProposed {
     // 当前消费方（webui/host）都不读它（批准卡形态靠 diff_text 首行解析）——
     // 契约面保留待用，生产者照常填充。
     const char* tool = nullptr;
+    // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 struct EditApplied {
     static constexpr std::string_view name = "vc.edit.applied";
@@ -146,11 +170,15 @@ struct EditApplied {
     // 被截断，统计以本字段为准——消费方不得从展示文本反解（截断砍掉的是文本尾行
     // 的统计，踩过：大 diff 的「本轮修改」卡恒 +0−0）。
     const char* files_json = nullptr;
+    // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 struct EditUndone {
     static constexpr std::string_view name = "vc.edit.undone";
     int turn_id = 0;
     int snapshot_depth = 0;  // 撤销后剩余的快照组数
+    // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 子进程执行（agent → runner；runner → agent/tui）。run_id 全链路关联。
@@ -172,12 +200,17 @@ struct RunLine {
     // 路由（slot 路由约定）：本事件按 slot = 发起 run 的会话槽 turn_id 单播——
     // 只有归属 ctx 收得到；主会话槽的行由 agent 重播到广播通道供 UI 消费。
     // 子代理槽的行不再出现在父会话 UI（slot 路由前本字段无隔离能力，踩过）。
+    // 尾部追加（多会话并行）：重播副本上的归属会话 id（slot 槽原始载荷不带，
+    // 由 agent 重播时补），语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 struct RunExit {
     static constexpr std::string_view name = "vc.run.exit";
     int run_id = 0;
     unsigned int exit_code = 0;
     // 路由：同 RunLine（slot = 发起 run 的会话槽 turn_id）。
+    // 尾部追加（多会话并行）：语义同 RunLine.session。
+    const char* session = nullptr;
 };
 
 // 状态栏级提示（任意 → tui）。level：0=trace 1=debug 2=info 3=warn 4=error。
@@ -196,6 +229,9 @@ struct Notice {
     const char* kind = nullptr;  // 调用期有效，要留存必须拷贝
     long long run_id = 0;
     int count = 0;
+    // 尾部追加（多会话并行）：归属会话 id（agent 的通告是 ctx 级的，随 ctx 走），
+    // 语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 // 会话切换（webui → agent）：加载指定 state 文件（M6 格式：messages/turns/usage），
@@ -301,6 +337,9 @@ struct SubagentEvent {
     int phase = 0;
     const char* tool = nullptr;
     const char* text = nullptr;
+    // 尾部追加（多会话并行）：父会话 id（子代理事件归属其父会话的数据面），
+    // 语义同 LlmDelta.session。
+    const char* session = nullptr;
 };
 
 inline constexpr std::uint64_t subagent_event = nostos::event_id<SubagentEvent>;
@@ -312,9 +351,11 @@ inline constexpr std::uint64_t mcp_status = nostos::event_id<McpStatus>;
 //（主动触发 turn 边界的折叠——LLM 摘要或机械 digest，与阈值自动压缩同一管线；
 //  摘要期间 turn 状态机保持占用，新输入照常排队）。仅 Idle 且主会话受理；
 //  其余情形忽略并通告。cmd 其他值 = 预留，消费方忽略。
+// session（尾部追加，多会话并行）：命令目标会话；null/空回落最近加载槽。
 struct SessionCmd {
     static constexpr std::string_view name = "vc.session.cmd";
     int cmd = 0;
+    const char* session = nullptr;  // 调用期有效，要留存必须拷贝
 };
 
 inline constexpr std::uint64_t session_cmd = nostos::event_id<SessionCmd>;

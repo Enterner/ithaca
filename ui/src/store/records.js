@@ -7,7 +7,13 @@ import { mdHtml } from '../md'
 import { diffFiles, diffStats, diffIsNew, parseAppliedDiff } from '../diff'
 import { loadSessions, enterDraft, resetView } from './sessions'
 
-function push(rec) { S.records.push(rec) }
+// 伪记录（无宿主 id 的本地/汇总/输出块记录）的稳定键：对话流按尾部窗口渲染，
+// 窗口起点随扩窗移动会让按下标派生的键漂移触发整段重挂——入库时发一次性序号
+let recSeq = 0
+function push(rec) {
+  if (rec.id === undefined) rec._k = ++recSeq
+  S.records.push(rec)
+}
 /** 本地伪记录：只进视图、不经宿主（发送链的前端提示，如创建失败回退）。 */
 export function pushLocal(text) { push({ type: 'local', text }) }
 
@@ -103,7 +109,7 @@ export function flushTurnEdits() {
   const files = [...X.turnEdits.entries()].map(([path, e]) =>
     ({ path, applies: e.applies, n: e.n, add: e.add, rem: e.rem, isNew: e.isNew, open: false }))
   // 汇总卡 = 记录流内的伪记录：结算时落位到当前位置（跟随自己那轮）
-  S.records.push({ type: 'turn_edits', turn: X.turnEditsTurn, files, revoked: false })
+  push({ type: 'turn_edits', turn: X.turnEditsTurn, files, revoked: false })
   X.turnEdits = new Map(); X.turnEditsTurn = 0
 }
 
@@ -118,8 +124,24 @@ let parkSse = false
 const parked = []
 let pollChain = Promise.resolve()
 
+// 后台 turn 链会打 session 标的事件类型（切走不杀 turn——链运行期事件按归属
+// 会话落盘广播）。非当前会话的带标事件不进当前视图，切回时 HTTP 重放补齐
+const TURN_TAGGED = new Set(['user', 'assistant', 'assistant_delta', 'assistant_reasoning',
+                             'tool_call', 'tool', 'run_line', 'run_exit', 'notice',
+                             'proposal', 'applied', 'undone', 'subagent', 'subagent_delta',
+                             'subagent_detail', 'error', 'turn_state'])
+
 /** SSE/重放的统一入口：所有宿主记录（含转态信号）都经此进状态机。 */
 export function render(rec) {
+  // turn_state 无论归属都消费：后台会话刷徽标行；当前会话对账 inFlight
+  if (rec.type === 'turn_state') {
+    S.bgRun[rec.session] = !!rec.working
+    const row = S.sessions.find((x) => x.id === rec.session)
+    if (row) { row.working = !!rec.working; row.pending = !!rec.pending }
+    if (rec.session === S.curSession) S.inFlight = !!rec.working
+    return
+  }
+  if (rec.session && rec.session !== S.curSession && TURN_TAGGED.has(rec.type)) return
   if (parkSse) { parked.push(rec); return }
   renderNow(rec)
 }

@@ -32,12 +32,33 @@ constexpr char kSystemPrompt[] =
 }  // namespace
 
 // 本槽事件订阅（slot 路由约定：slot = 会话槽 turn_no，见 contract/vc_events.hpp）。
-// 主会话槽的 run 事件重播到广播通道——webui/selftest 的消费路径迁移前后一致；
-// 重播在状态推进之前（保持迁移前 transcript 里 run_exit 先于工具结果卡的顺序）。
-// 子会话槽不重播：run 与 LLM 事件都只在归属槽可见，泄漏由"订阅才可达"结构性排除。
+// 多会话并行：LLM 事件族与 run 行/退出对主/子会话一律按槽单播（请求体 slot=turn_no）
+// ——主会话槽在状态机消费之外**补 session 标重播**进广播通道（UI 按标路由到归属
+// 会话的数据面；载荷字符串由 provider 的 Scratch 保活到本次派发结束，嵌套 emit
+// 内仍有效）；子会话槽不重播——不可见性由"订阅才可达"保证。
 void AgentCtx::subscribe_turn_slot_() {
     slot_subs_.clear();   // 上 turn 槽已无事件源（run 均归流收口后才收口 turn）
     const std::uint64_t slot = static_cast<std::uint64_t>(turn_no_);
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmDone*>(p);
+        on_done(*e);
+        if (!subagent_) retag_emit_(vc_api::llm_done, e);
+    }));
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmError*>(p);
+        on_llm_error(*e);
+        if (!subagent_) retag_emit_(vc_api::llm_error, e);
+    }));
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmDelta*>(p);
+        if (subagent_)
+            return emit_subagent_(turn_no_, 1, nullptr, e->text != nullptr ? e->text : "");
+        retag_emit_(vc_api::llm_delta, e);
+    }));
+    slot_subs_.push_back(host_.on_slot(vc_api::llm_reasoning, slot, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::LlmReasoning*>(p);
+        if (!subagent_) retag_emit_(vc_api::llm_reasoning, e);
+    }));
     slot_subs_.push_back(host_.on_slot(vc_api::run_line, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::RunLine*>(p);
         if (AgentCtx::AsyncRun* run = find_run(e->run_id);
@@ -46,7 +67,7 @@ void AgentCtx::subscribe_turn_slot_() {
             // 归因不靠猜）；UI 的 run_line 流保持原样，不受此标记影响
             run->output += (e->stream == 1 ? "[stderr] " : "") +
                            std::string(e->text) + "\n";
-        if (!subagent_) host_.emit(vc_api::run_line, p);
+        if (!subagent_) retag_emit_(vc_api::run_line, e);
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::run_exit, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::RunExit*>(p);
@@ -54,20 +75,20 @@ void AgentCtx::subscribe_turn_slot_() {
         if (run == nullptr) return;  // 非本 turn 的 run（取消后的迟到孤儿）：静默
         run->exited = true;
         run->exit_code = e->exit_code;
-        if (!subagent_) host_.emit(vc_api::run_exit, p);
+        if (!subagent_) retag_emit_(vc_api::run_exit, e);
         try_finish_tools();  // 收口门槛（子代理在途/decision 挂起）各 ctx 自查
     }));
-    if (!subagent_) return;  // 主会话 LLM 事件走广播（slot=0）；子会话需要本槽订阅
-    slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
-        on_done(*static_cast<const vc_api::LlmDone*>(p));
+    // 编辑应用/撤销：workspace 直接广播而它不识会话（工具 ABI 只传 turn_id）——
+    // 本槽按 turn_id 认领并补标重播（session 非空 = 重播副本，跳过防重入环）
+    slot_subs_.push_back(host_.on(vc_api::edit_applied, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::EditApplied*>(p);
+        if (subagent_ || e->turn_id != turn_no_ || e->session != nullptr) return;
+        retag_emit_(vc_api::edit_applied, e);
     }));
-    slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
-        on_llm_error(*static_cast<const vc_api::LlmError*>(p));
-    }));
-    // 流式增量转工作记录视图（广播，落不了盘也不需要——实时过程归前端子代理视图）
-    slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
-        const auto* e = static_cast<const vc_api::LlmDelta*>(p);
-        emit_subagent_(turn_no_, 1, nullptr, e->text != nullptr ? e->text : "");
+    slot_subs_.push_back(host_.on(vc_api::edit_undone, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::EditUndone*>(p);
+        if (subagent_ || e->turn_id != turn_no_ || e->session != nullptr) return;
+        retag_emit_(vc_api::edit_undone, e);
     }));
 }
 
@@ -181,9 +202,11 @@ void AgentCtx::send_chat_impl() {
         return b;
     };
     json body = make_body();
-    // 子会话请求带路由键：provider 据此改走子档案（vc.llm.set_active 尾部字段）
-    // 并把 LLM 事件按 slot 单播回发——不进广播通道，父会话天然不可见
-    if (subagent_) body["slot"] = turn_no_;
+    // 请求体带路由键：事件按槽单播回本槽（多会话并行下主会话同样需要——槽订阅
+    // 后补 session 标重播进广播通道）。子会话另带 subagent 标：provider 据此改走
+    // 子档案（vc.llm.set_active 尾部字段子三元组）；主会话不带，凭据走主档案。
+    body["slot"] = turn_no_;
+    if (subagent_) body["subagent"] = true;
     body_buf_ = body.dump();
     if (llm_ == nullptr || llm_->chat_ex == nullptr)
         return fail_turn("LLM 不可用");
@@ -342,7 +365,8 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
         if (diff_text.empty()) diff_text = dry_out;
         nostos::kit::Scratch prop_scratch;
         const vc_api::EditProposed proposal{
-            turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name)};
+            turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name),
+            prop_scratch.hold(session_id_)};
         host_.emit(vc_api::edit_proposed, &proposal);
         return true;  // ← 死锁纪律：绝不同步等待；挂起即返，循环尾不得再跑
     }
@@ -507,7 +531,7 @@ void AgentCtx::fail_turn(const std::string& why) {
         return;
     }
     const std::string msg = "turn #" + std::to_string(turn_no_) + " 失败: " + why;
-    const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str()};
+    const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str(), 0, session_id_.c_str()};
     host_.emit(vc_api::llm_error, &e);
     cleanup_turn_();
 }

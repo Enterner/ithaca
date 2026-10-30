@@ -73,7 +73,7 @@ void WebuiPlugin::stop_prober_() {
 // 宿主线程专用（poster 闭包与事件回调调用；prober 线程不触碰本函数）。
 void WebuiPlugin::persist_status_() {
     std::ofstream f(home_ / "status.json", std::ios::binary | std::ios::trunc);
-    if (f) f << json{{"working", in_flight_}, {"pending", pending_turn_ >= 0}}.dump();
+    if (f) f << json{{"working", !running_.empty()}, {"pending", !pendings_.empty()}}.dump();
 }
 
 /// GET /api/shell/sessions → 聚合会话清单（多实例壳模式）。数据全部来自磁盘：

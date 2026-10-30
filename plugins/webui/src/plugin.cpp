@@ -335,15 +335,15 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     }
     if (m == "GET" && t == "/api/sessions") {
         return defer_(req, [this](std::uint64_t conn) {
-            // 逐条补 working/pending（侧栏 ⟳/● 徽标的数据源）：单实例下只有
-            // 活跃会话可能在跑（in_flight_/pending_turn_ 是实例级状态），非活跃
-            // 条目恒 false。壳聚合端点（/api/shell/sessions）另有同名字段。
+            // 逐条补 working/pending（侧栏 ⟳/● 徽标的数据源）：按事件归属记账
+            // 判定——其他会话的 turn 在跑不影响本会话（真并行）。
+            // 壳聚合端点（/api/shell/sessions）另有同名字段。
             json rows = json::array();
             for (const auto& s : index_.value("sessions", json::array())) {
                 json row = s;
-                const bool active = row.value("id", "") == session_;
-                row["working"] = active && in_flight_;
-                row["pending"] = active && pending_turn_ >= 0;
+                const std::string sid = row.value("id", "");
+                row["working"] = running_.count(sid) > 0;
+                row["pending"] = pendings_.count(sid) > 0;
                 rows.push_back(std::move(row));
             }
             server_->respond(conn, json_resp(std::move(rows)));
