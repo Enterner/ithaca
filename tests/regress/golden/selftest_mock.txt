@@ -35,8 +35,8 @@ selftest[workspace] read 确认已删除: ✓
     done#3
     [tool] workspace.apply ok=1 ithaca_smoke/m3.txt +1 −1
     delta#4: M3 场景完成
-[INFO] ithaca.agent: turn #1 完成（tokens total 1100）
     done#4
+[INFO] ithaca.agent: turn #1 完成（tokens total 1100）
     done#5
     [tool] runner.run ok=1 已转后台（run#1）
     [tool] runner.run ok=0 exit 1｜BUILD FAILED 
@@ -46,8 +46,8 @@ selftest[workspace] read 确认已删除: ✓
     [tool] runner.run ok=1 已转后台（run#2）
     [tool] runner.run ok=1 exit 0｜BUILD OK
     delta#8: M5 场景完成
-[INFO] ithaca.agent: turn #2 完成（tokens total 3960）
     done#8
+[INFO] ithaca.agent: turn #2 完成（tokens total 3960）
     cancel#0: 当前会话中断
 [INFO] ithaca.agent: 已停用
 [INFO] ithaca.runner: 已停用

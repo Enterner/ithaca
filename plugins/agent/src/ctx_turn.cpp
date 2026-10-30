@@ -39,15 +39,35 @@ constexpr char kSystemPrompt[] =
 void AgentCtx::subscribe_turn_slot_() {
     slot_subs_.clear();   // 上 turn 槽已无事件源（run 均归流收口后才收口 turn）
     const std::uint64_t slot = static_cast<std::uint64_t>(turn_no_);
+    // done/error 的状态机推进推迟一拍（载荷深拷贝过 poster，与 dispatch_after_done_
+    // 同款纪律）：收口可能级联 cleanup→flush→begin_turn→槽重订——在槽派发栈内同步
+    // 退订/重订同一 (evt,slot) 通道会踩 raw 通道的非快照迭代（真实踩过 0xc0000005，
+    // 内核 raw 通道与类型化总线的 COW 纪律不一致，已记 nostos 观察）。重播（UI 侧）
+    // 保持同步——它不碰订阅面。turn_no_ 守卫丢弃重订后旧槽的迟到事件
     slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDone*>(p);
-        on_done(*e);
         if (!subagent_) retag_emit_(vc_api::llm_done, e);
+        const std::string aj = e->assistant_json != nullptr ? e->assistant_json : "";
+        const std::string us = e->usage != nullptr ? e->usage : "";
+        const auto beat = [this, turn = turn_no_, rid = e->request_id, aj, us] {
+            if (turn_no_ != turn) return;   // 重订后旧槽迟到事件：丢弃
+            const vc_api::LlmDone copy{rid, aj.c_str(), us.c_str(), 0, session_id_.c_str()};
+            on_done(copy);
+        };
+        if (poster_.post == nullptr) beat();
+        else if (nostos::kit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
-        on_llm_error(*e);
         if (!subagent_) retag_emit_(vc_api::llm_error, e);
+        const std::string msg = e->message != nullptr ? e->message : "";
+        const auto beat = [this, turn = turn_no_, rid = e->request_id, code = e->code, msg] {
+            if (turn_no_ != turn) return;   // 重订后旧槽迟到事件：丢弃
+            const vc_api::LlmError copy{rid, code, msg.c_str(), 0, session_id_.c_str()};
+            on_llm_error(copy);
+        };
+        if (poster_.post == nullptr) beat();
+        else if (nostos::kit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
