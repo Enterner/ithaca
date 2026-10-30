@@ -37,9 +37,9 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
     subs_.push_back(host.events().on<vc_api::LlmError>(
         [this](const vc_api::LlmError& e) {
             const std::string msg = e.message != nullptr ? e.message : "";
-            // M0 语义：用户取消经 llm_error 收口（"已被用户取消"）——这是预期
-            // 操作而非错误，单独记 cancel_seen_，不计入 error_count_
-            if (msg.find("已被用户取消") != std::string_view::npos) {
+            // M0 语义：用户取消经 llm_error 收口（哨兵文案「当前会话中断」）——
+            // 这是预期操作而非错误，单独记 cancel_seen_，不计入 error_count_
+            if (msg.find("当前会话中断") != std::string_view::npos) {
                 cancel_seen_ = true;
                 std::printf("    cancel#%d: %s\n", e.request_id, msg.c_str());
                 std::fflush(stdout);

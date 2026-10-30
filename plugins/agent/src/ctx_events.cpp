@@ -176,6 +176,7 @@ void AgentCtx::on_session_cmd(const vc_api::SessionCmd& c) {
 }
 
 void AgentCtx::on_session_cmd_impl(const vc_api::SessionCmd& c) {
+    if (c.cmd == 2) return revoke_interrupt_();
     if (c.cmd != 1) return;   // 预留命令值忽略（契约尾部追加语义）
     if (subagent_) return;    // 子会话无 UI 命令面
     if (state_ != State::Idle) {
@@ -231,11 +232,12 @@ void AgentCtx::on_decision_impl(const vc_api::TurnDecision& d) {
             queued_.clear();
         }
         // 收口事件由 agent 统一发（provider 各家都已取消静默）：transcript 由此
-        // 有终态记录，重放不会把「进行中」复活；webui 已在 d=4 时先行解锁
-        const std::string msg = "turn #" + std::to_string(turn_no_) + " 已被用户取消";
-        const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, msg.c_str(), 0, session_id_.c_str()};
+        // 有终态记录，重放不会把「进行中」复活；webui 已在 d=4 时先行解锁。
+        // 文案即 UI 中断卡的识别键（撤回按钮挂它上面），改动需同步 Stream.vue
+        const vc_api::LlmError e{0, NOSTOS_ERR_FAILED, "当前会话中断", 0,
+                                 session_id_.c_str()};
         host_.emit(vc_api::llm_error, &e);
-        cleanup_turn_();
+        cleanup_turn_(true);
         return;
     }
     if (state_ != State::AwaitingDecision) return;

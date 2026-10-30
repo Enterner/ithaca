@@ -48,7 +48,7 @@ selftest[workspace] read 确认已删除: ✓
     delta#8: M5 场景完成
   [日志 2] ithaca.agent: turn #2 完成（tokens total 3960）
     done#8
-    cancel#0: turn #3 已被用户取消
+    cancel#0: 当前会话中断
   [日志 2] ithaca.agent: 已停用
   [日志 2] ithaca.runner: 已停用
   [日志 2] ithaca.office: 已停用

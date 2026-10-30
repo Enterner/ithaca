@@ -199,8 +199,16 @@ struct AgentCtx {
     // 迟到的摘要回包按 request_id 失配丢弃。noexcept：兜底绝不成为新故障源，
     // fail_turn 链自身再抛就强制回 Idle（host_.log 不抛，可安全留痕）。
     void fail_unexpected_() noexcept;
-    // 状态机复位：持久化 + 清现场 + 压缩判定 + 回 Idle + flush 排队（收口事件归调用方）
-    void cleanup_turn_();
+    // 状态机复位：持久化 + 清现场 + 压缩判定 + 回 Idle + flush 排队（收口事件归调用方）。
+    // keep_partial = 主流式取消（用户裁决 d=4）：中断现场保留在上下文——未决调用注入
+    // 「已被用户取消」合成结果使序列配对合法，已完成结果原样保留（模型知道停在哪，
+    // 下轮可续）；默认 false = 截断悬挂回合（异常/失败收口的兜底，注入不可信的语境）
+    void cleanup_turn_(bool keep_partial = false);
+    // 取消现场配对（keep_partial 路径）：未决 tool_call 注入合成结果并回灌进历史
+    void settle_cancelled_calls_();
+    // 撤回中断回合（会话命令 cmd=2，中断卡 ↩ 按钮触发）：把取消现场从模型上下文
+    // 抹掉——只认尾部现场，文件副作用与 transcript 记录均不在撤回面
+    void revoke_interrupt_();
     // 清理悬挂的工具回合尾巴（provider 400 防护，见 ctx_turn.cpp 实现）
     void truncate_dangling_tool_exchange_();
 

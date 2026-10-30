@@ -93,7 +93,7 @@ test.describe("SUB2 取消：级联终态卡 + 状态翻转为已取消", () => 
         await page.locator(".subcard").click();
         await page.locator(".wcancel").click();
 
-        await expect(page.locator(".errcard", { hasText: "已被用户取消" }).first())
+        await expect(page.locator(".errcard", { hasText: "当前会话中断" }).first())
             .toBeVisible({ timeout: 15000 });
         await expect(page.locator(".subcard .stat", { hasText: "已取消 · 点击查看" }))
             .toBeVisible({ timeout: 15000 });

@@ -559,11 +559,14 @@ void AgentCtx::fail_unexpected_() noexcept {
 // 状态机复位（不含对外事件——收口事件由调用方决定发不发）：持久化 + 清工具现场
 // + 压缩判定（失败/取消收口同样过判定——上下文只增不减的反面）
 // + 回 Idle + 排队输入 flush（栈深有界）。
-void AgentCtx::cleanup_turn_() {
-    // 先清悬挂工具尾巴再持久化：异常/取消收口时 messages_ 可能停在分发中途，
-    // 带 tool_calls 的 assistant 没有全部应答就落盘，下次请求即 provider 400
-    // 且每轮复现成错误循环
-    truncate_dangling_tool_exchange_();
+void AgentCtx::cleanup_turn_(bool keep_partial) {
+    if (keep_partial)
+        settle_cancelled_calls_();   // 主流式取消：现场保留，注入合成结果恢复配对
+    else
+        // 先清悬挂工具尾巴再持久化：异常/失败收口时 messages_ 可能停在分发中途，
+        // 带 tool_calls 的 assistant 没有全部应答就落盘，下次请求即 provider 400
+        // 且每轮复现成错误循环
+        truncate_dangling_tool_exchange_();
     // 子代理级联收场（取消/失败同走此门）：在途子代理停掉并随现场销毁——它们
     // 是本 turn 的派生，父已终态则子无意义。子自己派的后台进程不追杀（runner
     // 自有超时），log 留痕。置 inflight_=-1 防 provider 迟到的取消回包误入路由。
@@ -608,6 +611,22 @@ void AgentCtx::cleanup_turn_() {
     if (maybe_compress_()) return;  // 命中判定：机械折叠收口，或摘要在途（异步收口）
     state_ = State::Idle;
     flush_queued_inputs_();
+}
+
+// 取消现场配对（主流式取消，语义见 agent_plugin.hpp 声明处）：未决调用注入
+// 合成结果（形态与拒绝反馈一致），已完成的调用保留真实结果；随后统一回灌进
+// 历史——assistant(tool_calls) 与 tool 消息恢复一一配对，下轮请求合法且带
+// 中断现场（模型知道停在哪，可续不重做；前缀缓存也因此不烧）
+void AgentCtx::settle_cancelled_calls_() {
+    for (auto& c : calls_) {
+        if (c.done) continue;
+        c.result = err_result("已被用户取消");
+        c.done = true;
+    }
+    for (const auto& c : calls_)
+        messages_.push_back(json{{"role", "tool"},
+                                 {"tool_call_id", c.call_id},
+                                 {"content", c.result}});
 }
 
 // 排队输入 flush：队首开新 turn，其余等该 turn 收口时再取（栈深有界——不递归

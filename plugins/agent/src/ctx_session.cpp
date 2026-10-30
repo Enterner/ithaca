@@ -107,6 +107,24 @@ void AgentCtx::persist_session_() {
     }
 }
 
+// 撤回中断回合（语义见 agent_plugin.hpp 声明处）。truncate 与异常兜底同一清理面：
+// 从尾部弹出 tool 结果段与悬挂 assistant，回到中断轮的 user 消息——下一请求前缀
+// 在撤回点截断（用户显式选择丢弃该段，缓存分叉即预期）
+void AgentCtx::revoke_interrupt_() {
+    if (subagent_) return;   // 子会话无 UI 命令面
+    if (state_ != State::Idle) {
+        notice("会话运行中，无法撤回中断现场");
+        return;
+    }
+    if (messages_.empty() || messages_.back().value("role", "") != "tool") {
+        notice("没有可撤回的中断现场（中断后已有新对话）");
+        return;
+    }
+    truncate_dangling_tool_exchange_();
+    persist_session_();
+    notice("已撤回中断回合的上下文（文件改动未回滚，需要时用撤销处理）");
+}
+
 // 任务卡建档（仅缺卡时插到 system 之后）：跨轮冻结是缓存前缀纪律——卡坐在
 // system 之后，逐轮重写会让其后整段历史前缀失效（Ark GLM 实测轮边界命中率塌到
 // 个位数）；锚点的吸收点在压缩折叠（replace_with_digest_ 切割前合成）。策略缝：

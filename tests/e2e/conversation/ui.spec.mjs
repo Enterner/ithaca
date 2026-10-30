@@ -82,9 +82,9 @@ test.describe("CONV5 停止生成", () => {
         await expect(stop).toBeVisible();
         await stop.click();
 
-        // 取消通告渲染（llm_error ⇒ error 记录 → 错误卡：turn #N 已被用户取消）
+        // 取消通告渲染（llm_error ⇒ error 记录 → 错误卡：当前会话中断 + ↩ 撤回按钮）
         // + 按钮回到发送态
-        await expect(page.locator(".errcard", { hasText: "已被用户取消" })).toBeVisible({ timeout: 15000 });
+        await expect(page.locator(".errcard", { hasText: "当前会话中断" })).toBeVisible({ timeout: 15000 });
         await expect(page.locator(".send-btn.stop")).toHaveCount(0);
         await expect(page.locator(".send-btn")).toBeVisible();
     });
