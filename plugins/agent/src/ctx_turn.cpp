@@ -218,19 +218,16 @@ void AgentCtx::send_chat_impl() {
         }
     }
     inflight_ = next_chat_seq();
-    // 请求体组装（折叠重建与首发共用一份口径）
+    // 请求体组装（折叠重建与首发共用一份口径）：slot/subagent 必须随体——预检
+    // 折叠重建的请求同样要走槽路由（踩过：重建体丢 slot ⇒ 响应按槽单播无人接收，
+    // turn 静默悬挂且无任何错误痕迹；窗口小到预检折叠常触发时必现）
     const auto make_body = [&] {
-        json b = {{"messages", messages_}};
+        json b = {{"messages", messages_}, {"slot", turn_no_}};
         if (!tools_.empty()) b["tools"] = tools_;
+        if (subagent_) b["subagent"] = true;
         return b;
     };
-    json body = make_body();
-    // 请求体带路由键：事件按槽单播回本槽（多会话并行下主会话同样需要——槽订阅
-    // 后补 session 标重播进广播通道）。子会话另带 subagent 标：provider 据此改走
-    // 子档案（vc.llm.set_active 尾部字段子三元组）；主会话不带，凭据走主档案。
-    body["slot"] = turn_no_;
-    if (subagent_) body["subagent"] = true;
-    body_buf_ = body.dump();
+    body_buf_ = make_body().dump();
     if (llm_ == nullptr || llm_->chat_ex == nullptr)
         return fail_turn("LLM 不可用");
     // 发送前预检：请求体粗估超生效阈值 ⇒ 就地机械折叠后重建请求体再发——单
