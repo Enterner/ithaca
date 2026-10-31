@@ -110,8 +110,8 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
-            env != nullptr && *env != '\0' ? env : ".")));
+        std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(
+            env != nullptr && *env != '\0' ? env : "."));
         // 权限模式默认值：webui 事件可热切；ITHACA_RUN_ALLOW
         // 白名单机制已移除（把关责任上移到权限模式与沙箱）
         mode_ = vc_api::normalize_permission_mode(
@@ -132,8 +132,7 @@ public:
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(
-                nostos::kit::win::utf8_to_wide(e->root)));
+            std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(e->root));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
         // 权限模式：full-auto ⇒ 命令执行（沙箱取舍见 activate 的 force_sandbox_
@@ -361,16 +360,8 @@ private:
         const auto reader = [this, entry](HANDLE h, int stream) {
             // 读取线程：只读 + 缓冲（mu 保护）——poster 投递集中在 poster 线程，
             // 消除「两读取线程并发过 poster 边界」的投递竞态（踩过：并发即崩）。
-            nostos::kit::LineSplitter splitter;
-            for (;;) {
-                std::string chunk;
-                if (!nostos::kit::PipedProcess::read_chunk(h, chunk)) break;
-                splitter.feed(chunk.data(), chunk.size(), [&](const std::string& line) {
-                    std::lock_guard<std::mutex> lock(entry->mu);
-                    entry->buffered.emplace_back(stream, line);
-                });
-            }
-            splitter.flush([&](const std::string& line) {
+            // 读循环拼装走 kit::read_lines（LineSplitter 在其内）
+            nostos::kit::read_lines(h, [entry, stream](const std::string& line) {
                 std::lock_guard<std::mutex> lock(entry->mu);
                 entry->buffered.emplace_back(stream, line);
             });

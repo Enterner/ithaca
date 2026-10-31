@@ -17,10 +17,11 @@
 //     （打日志继续，向后兼容）。
 //   · 相对路径一律相对 profile 文件目录解析——profile 与提示词/UI 一起搬不失效。
 //   · header-only：宿主唯一包含点 main.cpp，无独立编译单元。
+#include <nostos/kit/win.hpp>  // utf8_to_wide/wide_to_utf8（路径经宽字符 API 才不失真）
+                               // + ascii_lower：清单项折叠的 kit 单源（宿主不可 include 产品共享头）
 #include <nostos/nlohmann/json.hpp>
 
 #if defined(_WIN32)
-#include <nostos/kit/win.hpp>  // utf8_to_wide/wide_to_utf8：路径经宽字符 API 才不失真
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -87,12 +88,6 @@ inline std::string expand_env(const std::string& in) {
     }
     out += in.substr(pos);
     return out;
-}
-
-inline std::string ascii_lower(std::string s) {
-    for (char& c : s)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
-    return s;
 }
 
 // MSVC 的 fs::path(string) 按 ANSI 码页解释——profile 里的中文路径必须走宽字符
@@ -174,7 +169,7 @@ inline void apply_bool_off(const json& doc, std::initializer_list<const char*> p
 // 写 "plugin_dir": "plugins"）。
 inline std::string resolve_plugin(const std::string& entry, const fs::path& plugin_dir,
                                   const fs::path& profile_dir) {
-    const std::string lower = ascii_lower(entry);
+    const std::string lower = nostos::kit::win::ascii_lower(entry);
     // NOTE: 后缀比较必须先卡长度——短于后缀时 size()-N 下溢回绕成 SIZE_MAX，
     // 恰与 npos 相等，"mcp" 这类短名会被误判成路径
     const bool is_path = entry.find('/') != std::string::npos ||
@@ -203,7 +198,7 @@ inline fs::path locate(const std::string& arg, const fs::path& exe_dir_path) {
     };
     const fs::path direct = path_from_utf8(arg);
     if (usable(direct)) return direct.lexically_normal();
-    std::string name = ascii_lower(arg);
+    std::string name = nostos::kit::win::ascii_lower(arg);
     if (name.size() > 5 && name.rfind(".json") == name.size() - 5)
         name = name.substr(0, name.size() - 5);   // "docs.json" 与 "docs" 同义
     const std::string fname = name + ".json";

@@ -48,8 +48,8 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
-            env != nullptr && *env != '\0' ? env : "."));
+        jail_ = std::make_unique<nostos::kit::PathJail>(
+            env != nullptr && *env != '\0' ? env : ".");
         // 发布失败 = 激活失败（对齐 workspace/runner 与 ctx_basic 的裁决：表不在
         // 却报就绪的带病继续没有消费方受益）
         if (vcplugin::publish_tool_table(host_, table_, this, vcoffice::kToolSvc,
@@ -67,7 +67,7 @@ public:
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(e->root));
+            jail_ = std::make_unique<nostos::kit::PathJail>(e->root);
             host_.log(2, "ithaca.office: 工作区已热切为 " + std::string(e->root));
         }));
         return NOSTOS_OK;
@@ -146,36 +146,35 @@ private:
     static json fail(const std::string& error) { return json{{"ok", false}, {"error", error}}; }
 
     json read_tool(const json& args) {
-        std::wstring full;
-        std::string norm, err;
-        if (!jail_->resolve(args.value("path", ""), full, norm, err))
-            return fail("路径被拒: " + err);
-        const std::string ext_lower = vcws::ascii_lower(fs::path(norm).extension().string());
+        nostos::kit::PathJail::Resolved r;
+        if (!jail_->resolve(args.value("path", ""), r))
+            return fail("路径被拒: " + r.err);
+        const std::string ext_lower = vcws::ascii_lower(fs::path(r.norm).extension().string());
         // 本插件只收文档格式：文本文件归 workspace.read（域边界清晰，误指路径
         // 时错误直接教模型换对工具）。扩展名清单是共享件（read_paged.hpp）
         if (!vcws::is_document_ext(ext_lower))
             return fail("office.read 只读办公文档（docx/pptx/xlsx/pdf/doc/ppt/"
-                        "xls），文本文件用 workspace.read: " + norm);
+                        "xls），文本文件用 workspace.read: " + r.norm);
         std::error_code ec;
-        const auto sz = fs::file_size(full, ec);
+        const auto sz = fs::file_size(r.full, ec);
         // 查询失败放行：不存在/权限失败由下方 ifstream 打开失败如实上报（错误
         // 口径单一）；只挡"确实大"的文件——整读 slurp 无分页，护栏必须在读之前
         if (!ec && sz > vcoffice::docs::kArchiveCap)
             return fail("文档过大（" + std::to_string(sz / (1024 * 1024)) +
-                        "MB > 64MB 上限）: " + norm);
+                        "MB > 64MB 上限）: " + r.norm);
         std::string bytes;
         {
             // 二进制整读（抽取器自己解容器，不走 workspace 的文本 Store）
-            std::ifstream in(full, std::ios::binary);
-            if (!in) return fail("文件不存在或不可读: " + norm);
+            std::ifstream in(r.full, std::ios::binary);
+            if (!in) return fail("文件不存在或不可读: " + r.norm);
             bytes.assign(std::istreambuf_iterator<char>(in),
                          std::istreambuf_iterator<char>());
         }
         vcoffice::docs::DocText d = vcoffice::docs::extract(
             reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size(),
-            ext_lower, full);
+            ext_lower, r.full);
         if (!d.ok) return fail(d.error);
-        return vcws::read_paged(std::move(d.text), norm, args, d.truncated, d.kind);
+        return vcws::read_paged(std::move(d.text), r.norm, args, d.truncated, d.kind);
     }
 
     // ---- 状态 ---------------------------------------------------------------------

@@ -2,8 +2,8 @@
 //
 // 翻译单元职责地图（按功能切片，类声明为本文件）：
 //   src/plugin.cpp     —— 生命周期（activate/deactivate）、HTTP 路由 handle、
-//                         通用工具（parse_body_/json_resp/query_val/mime_of/file_/
-//                         broadcast_）+ NOSTOS_PLUGIN 入口
+//                         通用工具（parse_body_/json_resp/mime_of/file_/
+//                         broadcast_；query 解码用内核 Request::query 单源）+ NOSTOS_PLUGIN 入口
 //   src/picker.cpp     —— 原生选目录对话框（IFileDialog + CBT 置顶钩子）+ /api/pick-folder
 //   src/events.cpp     —— 事件总线订阅（15 个事件回调 → 落盘 + SSE 广播）
 //   src/sessions.cpp   —— 会话注册表/transcript 持久化 + /api/session* + 上下文构成端点
@@ -155,10 +155,6 @@ private:
     }
 
     static std::string mime_of(const fs::path& p);
-    // query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含
-    // 加号）。/api/fs/list、/api/fs/read、/api/attachment 三个带参 GET 共用：同一
-    // 解码规则写多份必然漂移
-    static std::string query_val(const std::string& target, const char* key);
     http::Response file_(const std::string& rel);
     void broadcast_(json rec);
 
@@ -183,7 +179,7 @@ private:
     // SSE 广播；行号 seq 单调续接，前端历史+实时合并不重不漏）。owner = 父会话
     void agent_log_append_(const std::string& owner, int turn_id, const json& rec);
     void close_agent_logs_();
-    json api_agent_log_(const std::string& target);   // 数据源：路由 defer 包装
+    json api_agent_log_(int turn);   // 数据源：路由 defer 包装（turn 由路由层 req.query 解出）
 
     // ---- 配置（src/config.cpp）----------------------------------------------------
 

@@ -323,7 +323,9 @@ int main(int argc, char** argv) {
 #endif
     }
 #if defined(_WIN32)
-    host.abi_bridge().set_post_wake(nullptr, nullptr);  // 先摘钩再关句柄（防御纵深）
+    // teardown 契约（内核 set_post_wake 注释）：先摘钩再关句柄——hook 指向的
+    // wake_event 必须比桥活得久，摘钩收窄窗口、关句柄前摘钩保序
+    host.abi_bridge().set_post_wake(nullptr, nullptr);
     CloseHandle(wake_event);
 #endif
 

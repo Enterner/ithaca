@@ -5,7 +5,7 @@
 
 #include "mcp_plugin.hpp"
 
-#include <nostos/kit/piped_process.hpp>  // kit::LineSplitter：流式行分帧（全仓唯一实现）
+#include <nostos/kit/piped_process.hpp>  // kit::read_lines：读循环拼装（行分帧在其内）
 
 namespace vc_mcp {
 namespace {
@@ -93,21 +93,11 @@ void McpSession::feed(const std::string& line) {   // 读线程：分发响应
 void McpSession::start_reader() {
     alive.store(true);
     reader = std::thread([this] {
-#ifdef _WIN32
-        // 行分帧用 kit::LineSplitter（全仓唯一流式切行实现；runner 同款）
-        nostos::kit::LineSplitter splitter;
-        std::string chunk;
-        for (;;) {
-            chunk.clear();
-            if (!nostos::kit::PipedProcess::read_chunk(proc.stdout_read(), chunk)) break;
-            splitter.feed(chunk.data(), chunk.size(), [this](const std::string& line) {
-                if (!line.empty()) feed(line);
-            });
-        }
-        splitter.flush([this](const std::string& line) {
+        // 行分帧走 kit::read_lines（读循环拼装单源；runner 同款）。非 Windows 下
+        // read_chunk 恒 false ⇒ 拼装件立即返回，alive 清旗路径不变
+        nostos::kit::read_lines(proc.stdout_read(), [this](const std::string& line) {
             if (!line.empty()) feed(line);
         });
-#endif
         alive.store(false);
         // 退出清算：在途请求的 promise 若无人完成，request() 会干等满超时且误诊
         // 为「超时」（实际进程已死，agent turn 白卡两分钟）——reader 退出（EOF =

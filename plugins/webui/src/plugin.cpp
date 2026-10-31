@@ -312,9 +312,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     }
     if (m == "POST" && t == "/api/config") return api_config_save_(req);
     if (m == "GET" && t.rfind("/api/transcript", 0) == 0) {
-        long after = 0;
-        const auto q = req.target.find("after=");   // 从原始 target 解析（t 已剥 query）
-        if (q != std::string::npos) after = std::atol(req.target.c_str() + q + 6);
+        const long after = std::atol(req.query("after").c_str());
         return defer_(req, [this, conn = req.conn_id, after](std::uint64_t) {
             json arr = json::array();
             for (std::size_t i = static_cast<std::size_t>(after); i < records_.size(); ++i)
@@ -328,9 +326,9 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
             server_->respond(conn, json_resp(session_meta_()));
         });
     }
-    if (m == "GET" && t.rfind("/api/agent-log", 0) == 0) {
-        return defer_(req, [this, target = req.target](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_agent_log_(target)));
+    if (m == "GET" && t == "/api/agent-log") {
+        return defer_(req, [this, turn = std::atoi(req.query("turn").c_str())](std::uint64_t conn) {
+            server_->respond(conn, json_resp(api_agent_log_(turn)));
         });
     }
     if (m == "GET" && t == "/api/sessions") {
@@ -409,34 +407,6 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
 json WebuiPlugin::parse_body_(const std::string& body) {
     json d = json::parse(body, nullptr, false);
     return (!d.is_discarded() && d.is_object()) ? d : json::object();
-}
-
-// query 参数提取 + %XX 解码（encodeURIComponent 形态；'+' 保留——文件名可含加号）
-std::string WebuiPlugin::query_val(const std::string& target, const char* key) {
-    const std::size_t q = target.find(std::string(key) + "=");
-    if (q == std::string::npos) return "";
-    std::size_t e = target.find('&', q);
-    if (e == std::string::npos) e = target.size();
-    std::string raw = target.substr(q + std::string(key).length() + 1, e - q - std::string(key).length() - 1);
-    std::string out;
-    for (std::size_t i = 0; i < raw.size(); ++i) {
-        if (raw[i] == '%' && i + 2 < raw.size()) {
-            auto hex = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            const int hi = hex(raw[i + 1]), lo = hex(raw[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>(hi * 16 + lo));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(raw[i]);
-    }
-    return out;
 }
 
 http::Response WebuiPlugin::json_resp(json obj, int status) {

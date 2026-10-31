@@ -97,7 +97,7 @@ json WebuiPlugin::attachments_payload_(const json& rel_paths) {
 /// host_workspace_ 是宿主线程数据面 ⇒ select 线程只解析 query，取根/归界/补发
 /// 全在宿主线程闭包。
 http::Response WebuiPlugin::api_attachment_(const http::Request& req) {
-    const std::string rel = query_val(req.target, "path");
+    const std::string rel = req.query("path");
     return defer_(req, [this, rel](std::uint64_t conn) {
         if (host_workspace_.empty())
             return respond_err_(conn, "附件图片不存在", 404);

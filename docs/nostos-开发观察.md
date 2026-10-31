@@ -4,45 +4,48 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：多会话并行 · 2026-10-30；观察 1–4 自前批次携带，仍开放）
+## 当前发现（批次：内核观察实施 · 2026-11-01；观察 6/7 方向维持，观察 9 剩两半）
 
-**本批次无内核侧触发**：真并行（两会话同时跑 turn）全部落在产品层——契约尾部
-追加 session 归属标（16 个事件结构体）、agent 多会话槽（每会话一个 AgentCtx，
-请求体 slot=turn_no 槽路由 + 槽订阅补标重播）、webui 每会话数据面（sinks/running/
-pendings 按归属记账）。内核机制面零改动即支撑了并行：slot 路由（58dc137）、
-poster owner（8bdae22）、provider 并发请求皆复用。**svc 命名实例挂账的边界确认**：
-工作区/runner/office 的单 jail 是跨工作区并行的真墙（webui 门卫按运行池工作区
-一致性拦截），多工作区并行才需要内核侧命名实例——本批以「同工作区池内并行」
-交付，svc 单槽观察维持不立项。既有观察无新增消费点。
+审核批次（2026-10-31）挂出的观察 1–4 与 8/10 本批随内核 kit 落地、产品仓同步消费
+（见落地状态）；观察 5 经内核复核归因不成立（闭环记录见落地状态）。仍开放的只剩：
 
-**观察 1：kit::win 缺 ASCII 大小写折叠件**（触发场景：全库审查清点小写化循环，
-找到 7 处手写——context.hpp 的 provider 错误文案折叠、workspace/office/webui 的
-扩展名折叠 ×4、webui config 的名称去重折叠 ×2、host/profile.hpp 的清单项折叠；
-应用侧 6 处已收编到产品共享件 `vcws::ascii_lower`）。host 的 profile.hpp
-不能 include 插件域共享头，只能保留第 7 份——ASCII 折叠是平台无关的通用原语，
-归 kit::win（与 utf8_to_wide 同层）可让宿主/插件/内核三域共用一份。
+**观察 6：槽订阅「四件套」样板无 SDK 打包**（触发场景：agent 审核——8 条槽订阅
+每条手写 poster 推迟一拍 + turn 守卫 + 载荷字符串深拷贝 + 补 session 标重播
+（ctx_turn.cpp subscribe_turn_slot_），poster_submit_owner/invalidate_owner 还须
+跨文件手工配对，漏一半即悬垂闭包）。切缝判据：推迟一拍 + 载荷保活是 ABI 逼出的
+机制（可收 kit 原语），补 session 标重播是会话路由的应用语义（留插件）；owner
+配对的收编方向 = 随上下文销毁路径统一承担。未实施——等 agent 之外出现第二形态
+再定打包面，不为单一消费方预建抽象。
 
-**观察 2：kit::win_http 可附 WinHTTP 错误码 → 人话映射**（触发场景：全库审查
-发现 webui `winhttp_error_text_` 与 llm_cloud `last_error_text` 逐字同构 5 分支，
-前者注释自认「复制而非共享——两插件无公共 TU」；插件逐个审查批次在 llm_cloud
-再次撞见同款双份，观察仍开放）。错误文案语义归属 WinHTTP 平台层，收 kit 最顺。
+**观察 7：svc 表槽的 JSON 调用五步样板与 emit Scratch 保活无便利件**（触发场景：
+agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参（ctx_strategy 全文件
+与 mission/recall/classify_error 各点），出参生命周期口径两插件各说各话；emit 侧
+局部 Scratch + 逐字段 hold 共 7 处，漏 hold 即悬垂）。方向：kit 槽调用助手
+（scratch 保活，C ABI 不动）。未实施——kit::Scratch 已是调用点表达，助手的价值
+密度待第二个表服务（非工具表）出现再验证。
 
-**观察 3：win::http_fetch 的 URL crack 结果可暴露结构化出参**（触发场景：全库
-审查发现 llm_cloud stream.cpp 的 `parse_endpoint` 手写 WinHttpCrackUrl 四段解析，
-与 http_fetch 内部同款样板；http_fetch 现只收 URL 串，crack 结果（host/port/
-path/secure）不外露，流式客户端无法复用其解析）。
+**观察 9 残余（teardown 契约本批落地，余两半维持方向）**：LazyGate 重估靠宿主
+在装载后与主循环每拍两处手工 pump_into（漏一处 PENDING 插件静默永不激活）——
+方向：依赖重估挂进 drain/post_wake 接缝；插件集合托管容器（load→submit→pump→
+逆序收口一体）——方向：参数化原语而非宿主框架，装配决策（装载哪些/懒激活条件）
+留宿主。
 
-**观察 4：kit::http Request 缺 query 解析**（触发场景：webui 手写 %XX 解码器
-（现收编为插件内通用工具 query_val，三端点共用）；新增 /api/attachment 端点
-时再次需要同款解析——transcript 的 `find("after=")`、agent-log 的 `find("?turn=")`
-两处手挖依旧，共 5 个消费点。Request.target 原样保留（含 query）、无结构化取值
-面，每个带参端点各自手搓）。方向：Request 增 query(name) 或解析好的键值表——
-URL 解码语义单点，'+' 不折叠为空格等口径也随之固定。
+**svc 单槽维持不立项**：跨工作区并行的真墙是 workspace/runner/office 的单 jail
+（webui 门卫按运行池工作区一致性拦截），多工作区并行才需要命名实例。
 
 **不立项记录**：webui 的 base64 编解码（60 行标准实现，唯一消费方；结构审查后
 已隔离进 attachments.cpp 附件管线切片）；JSON 文件 temp+rename 原子落盘样板
 （agent/webui 共 4 处，应用层文件 IO 不归内核）；ctx_basic 与 agent 的回灌/回查/
 摘要/阈值镜像——产品侧已收编为 context.hpp 共享纯函数，无内核缺口。
+
+**不立项记录（审核批次新增，产品侧 shared/ 收编方向）**：llm_cloud/llm_mock 六段
+孪生代码（post_delta/post_done/回收三连/cancel 骨架/chat_ex 提取，约 80 行——
+shared/vcplugin 可收 llm_worker.hpp，runner 的回收样板可成第三消费方）；workspace/
+office 的 object_with 与 tool_execute 守门样板（tool_table.hpp 章程内，恰好 2 消费
+方）；webui 挂起-补响应四件套组合出口（defer_+fail_suspended_+respond_err_+异常
+钩子约 50 行胶水，当前单消费方——若 runner/mcp 出现同形态再议 kit::http）；内核
+tframe 同款断言框架产品自备 62 行（tests/unit/ithaca_test_framework.hpp——刻意
+边界纪律，成本极低，不折腾）。
 
 **挂账：runner shell 路线调研与 MXC 观察项（2026-10-27，仍有效）**
 
@@ -70,6 +73,7 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-01 | 审核批次观察 1–4/8/10（能力层缺口）+ 观察 9 的 teardown 契约 + 观察 5 归疑复核 | 已落地（内核：kit::win 补 `ascii_lower`；win_http 补 `crack_url`/`UrlParts` 与 `winhttp_error_text`、http_fetch 内部 crack 同源化；kit::http `Request::query(name)`（%XX 解码、'+' 保留、名字精确匹配）；piped_process 补 `read_lines` 读循环拼装件；PathJail 增 UTF-8 根构造与 `Resolved` 聚合出参；HostBridge 析构兜底摘唤醒钩 + set_post_wake 写明 teardown 契约；EventHub 头注释补「类型化/广播 raw/slot 三路派发同为快照迭代」的重入声明。产品仓消费迁移：host profile 折叠件改走 kit（第 7 份副本退役）；llm_cloud 端点解析/错误人话改走 kit；webui query_val 退役（5 消费点改 Request::query）+ 错误人话改走 kit；runner/mcp 读循环收进 read_lines；workspace/office/runner 的 PathJail 构造与 office resolve 改用新形态；agent ctx_turn.cpp 的崩溃归因注释更正（快照迭代自 58dc137 即在，真实依据是载荷寿命 + 因果序两契约，纪律维持）。观察 5 闭环：a18232f 的「raw 槽通道非快照迭代」归因复核不成立——内核三路派发自 58dc137 起均为快照迭代；0xc0000005 的修复实际来自载荷深拷贝 + 推迟一拍（符合 ABI 两契约），精确根因未重新确立，不再挂账。工作树待提交） |
 | 2026-10-30 | 外来线程日志格式分裂（触发场景：多会话并行后控制台同屏两种前缀——宿主线程走宿主 sink `[日志 N]`，插件自建 worker/io 线程无 TLS 桥走内核 log_thunk 兜底 `[nostos][N]`+stderr） | 已落地（内核 host_api.hpp：HostBridge 构造注册进程级主桥、析构摘除，log_thunk 兜底回落主桥——外来线程日志与宿主 sink 同格式同流，stderr 兜底仅存于装配/拆卸窗口；产品侧 host sink 升级为标准日志行「时间戳 [级别名] 消息」，回归归一口径补行级时间戳。工作树待提交） |
 |------|------|------|
 |------|------|------|

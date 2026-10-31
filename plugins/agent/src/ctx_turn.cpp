@@ -40,10 +40,13 @@ void AgentCtx::subscribe_turn_slot_() {
     slot_subs_.clear();   // 上 turn 槽已无事件源（run 均归流收口后才收口 turn）
     const std::uint64_t slot = static_cast<std::uint64_t>(turn_no_);
     // done/error 的状态机推进推迟一拍（载荷深拷贝过 poster，与 dispatch_after_done_
-    // 同款纪律）：收口可能级联 cleanup→flush→begin_turn→槽重订——在槽派发栈内同步
-    // 退订/重订同一 (evt,slot) 通道会踩 raw 通道的非快照迭代（真实踩过 0xc0000005，
-    // 内核 raw 通道与类型化总线的 COW 纪律不一致，已记 nostos 观察）。重播（UI 侧）
-    // 保持同步——它不碰订阅面。turn_no_ 守卫丢弃重订后旧槽的迟到事件
+    // 同款纪律）：收口可能级联 cleanup→flush→begin_turn→槽重订。内核派发是快照
+    // 迭代（类型化/广播/slot 三路同律——栈内退订/重订本就内存安全），推迟一拍的
+    // 依据是两条 ABI 纪律：载荷字符串调用期有效，过 poster 的状态机推进必须持
+    // 拷贝；嵌套 emit 的跨订阅者因果序内核不内建（EventHub 头注释）——收口移出
+    // 派发栈，兄弟订阅者先见完整事件再见证态后果。真实踩过: 0xc0000005（探针
+    // 复现，本纪律修复；当时的"raw 通道非快照迭代"归因经内核复核不成立）。
+    // 重播（UI 侧）保持同步——它不碰订阅面。turn_no_ 守卫丢弃重订后旧槽的迟到事件
     slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDone*>(p);
         if (!subagent_) retag_emit_(vc_api::llm_done, e);

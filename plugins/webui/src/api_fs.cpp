@@ -19,16 +19,16 @@ namespace vc_webui {
 /// query 的 %XX 解码。直调工具表——跨线程安全由 workspace 的全工具串行锁保证
 /// （调用在宿主线程闭包内）。
 http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
-    const std::string rel = query_val(req.target, "path");
-    const std::string depth_s = query_val(req.target, "depth");
+    const std::string rel = req.query("path");
+    const std::string depth_s = req.query("depth");
     const json args = json{{"path", rel},
                            {"depth", depth_s.empty() ? 1 : std::clamp(std::atoi(depth_s.c_str()), 1, 6)},
-                           {"pattern", query_val(req.target, "pattern")},
+                           {"pattern", req.query("pattern")},
                            // 树视图要逐文件列名,而 list 工具的默认视图是 aggregate
                            // (每目录一条汇总、文件只计数——模型侧骨架视图),对树
                            // 不可用,故钉死 flat,不吃 query 透传。
                            {"mode", "flat"},
-                           {"per_dir", std::atoi(query_val(req.target, "per_dir").c_str())}};
+                           {"per_dir", std::atoi(req.query("per_dir").c_str())}};
     return defer_(req, [this, args = std::move(args)](std::uint64_t conn) {
         json r = call_tool_json_(tools_, "list", args.dump());
         // 黑名单：一级目录名精确匹配（树视图噪音；agent 的 list 工具不受影响）
@@ -57,7 +57,7 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
 /// 并原样透传：jail 越界防护、NUL 拒二进制、UTF-8 校验、256KB 封顶（truncated
 /// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（见上）。
 http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
-    const std::string rel = query_val(req.target, "path");
+    const std::string rel = req.query("path");
     const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
     // 扩展名清单是共享件（workspace/read_paged.hpp），与 office/workspace 同源
     const bool doc = vcws::is_document_ext(ext_lower);

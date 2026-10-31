@@ -101,8 +101,8 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<nostos::kit::PathJail>(nostos::kit::win::utf8_to_wide(
-            env != nullptr && *env != '\0' ? env : "."));
+        jail_ = std::make_unique<nostos::kit::PathJail>(
+            env != nullptr && *env != '\0' ? env : ".");
         store_ = std::make_unique<vcws::DiskStore>();
 
         if (vcplugin::publish_tool_table(host, table_, this, vcws::kToolSvc,
@@ -124,7 +124,7 @@ public:
             if (jail_ != nullptr && jail_->root() == next) return;   // 同值热切幂等（backfill 补发）
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<nostos::kit::PathJail>(next);
+            jail_ = std::make_unique<nostos::kit::PathJail>(e->root);
             // 快照栈随根清空：FileSnap.full 是旧根解析的绝对路径，undo_write 直写
             // 该路径全程不再过新 jail——不清栈则切根后撤销会对旧工作区做 jail 外写
             snaps_ = vcws::SnapshotStack{};

@@ -179,10 +179,7 @@ void WebuiPlugin::close_agent_logs_() {
 
 /// GET /api/agent-log?turn=N → 子代理工作明细存档（JSONL 解析数组）。右栏过程
 /// 视图点开时按需拉取；无会话/无存档返回空数组（老会话的明细仍在主 transcript）。
-json WebuiPlugin::api_agent_log_(const std::string& target) {
-    int turn = 0;
-    if (const auto q = target.find("?turn="); q != std::string::npos)
-        turn = std::atoi(target.c_str() + q + 6);
+json WebuiPlugin::api_agent_log_(int turn) {
     json records = json::array();
     if (!session_.empty() && turn > 0) {
         std::error_code ec;

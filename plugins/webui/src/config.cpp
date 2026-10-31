@@ -438,18 +438,6 @@ void WebuiPlugin::post_llm_set_active_() {
 
 // ---- 供应商模型清单拉取（OpenAI 兼容 GET /models）---------------------------
 
-// WinHTTP 失败 → 人话（与 llm_cloud 的 last_error_text 同口径；复制而非共享——
-// 两插件无公共 TU）。错误码显式传入：调用点已离开失败现场，GetLastError 不可再读。
-static std::string winhttp_error_text_(unsigned long gle) {
-    switch (gle) {
-        case ERROR_WINHTTP_TIMEOUT: return "超时";
-        case ERROR_WINHTTP_NAME_NOT_RESOLVED: return "域名解析失败";
-        case ERROR_WINHTTP_CANNOT_CONNECT: return "无法连接（断网，或本地代理未启动）";
-        case ERROR_WINHTTP_CONNECTION_ERROR: return "与服务器的连接被重置";
-        default: return "WinHTTP 错误 " + std::to_string(gle);
-    }
-}
-
 /// POST /api/provider/models {name, base_url, api_key?} → 请求平台的 OpenAI 兼容
 /// GET /models，模型 ID 清单经 SSE provider_models 事件回设置面（自动填充模型
 /// 表）。key 定位在宿主线程闭包（留空 = 按名取已存——前端掩码拿不到明文），
@@ -490,7 +478,7 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
             .timeouts = {5000, 5000, 10000, 30000},
         });
         if (!reply.sent || reply.status == 0) {
-            result["error"] = winhttp_error_text_(reply.gle);
+            result["error"] = win::winhttp_error_text(reply.gle);   // 失败码人话（kit 单源）
         } else {
             const json doc = json::parse(reply.body, nullptr,
                                          /*allow_exceptions=*/false);
