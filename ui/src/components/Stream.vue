@@ -289,7 +289,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
         </template>
 
         <template v-else-if="rec.type === 'undone'">
-          <div class="toolline">↩ 已撤销（剩 {{ rec.depth }} 组快照）</div>
+          <div class="toolline">↩ 已撤销</div>
         </template>
 
         <template v-else-if="rec.type === 'run_out'">
@@ -337,7 +337,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               （图标无文字，交互语义在 tooltip）；不适格（已续聊）由服务端通告 -->
           <div class="errcard" :title="'错误码 ' + rec.code">⚠ {{ rec.msg }}<button
               v-if="rec.msg === '当前会话中断' && !rec._revoked" class="rc-btn"
-              title="撤回本轮全部痕迹——模型上下文与显示记录一并回退（文件改动不回滚，需要时用撤销处理）"
+              title="撤回本轮"
               @click.stop="revokeInterrupt(rec)">↩</button></div>
         </template>
         <template v-else-if="rec.type === 'local'">

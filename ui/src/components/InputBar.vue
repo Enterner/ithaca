@@ -9,6 +9,7 @@ import { S, send, decide, setMode, setModel, fmtCtx, liveStart, api,
          isImageAtt, attUrl } from '../store'
 import Cdl from './Cdl.vue'
 import ContextCard from './ContextCard.vue'
+import { confirmDialog } from '../confirm.js'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
 // 盾勾=编辑放行、叹号=全自动——语义与图3（Codex 式模式选择器）对齐。
@@ -20,9 +21,24 @@ const PMODE_ICONS = {
 }
 const pmodeItems = [
   { value: 'suggest', label: '逐条批准', desc: '编辑与命令逐条批准', icon: PMODE_ICONS.suggest },
-  { value: 'auto-edit', label: '自动编辑', desc: '编辑免批、命令逐条批准', icon: PMODE_ICONS['auto-edit'] },
-  { value: 'full-auto', label: '完全访问', desc: '减少确认次数，沙箱把关', icon: PMODE_ICONS['full-auto'] },
+  { value: 'auto-edit', label: '自动编辑', desc: '工作区内编辑免批；命令与工作区外改动逐条批准', icon: PMODE_ICONS['auto-edit'] },
+  { value: 'full-auto', label: '完全访问', desc: '整台电脑全权访问、不再审批（谨慎）', icon: PMODE_ICONS['full-auto'] },
 ]
+// full-auto 危险模式二次确认（主流 agent 的 dangerous-mode 通告对齐）：受控绑定
+//（不挂 v-model）——确认通过才更新 S.pmode 并落服务端，取消则零副作用免回滚
+async function onPickPmode(v) {
+  if (v === 'full-auto' && S.pmode !== 'full-auto') {
+    const ok = await confirmDialog({
+      title: '开启完全访问？',
+      content: 'agent 将可以读写整台电脑的任意文件夹、执行任意命令，且不再逐条审批。确认开启？',
+      positive: '开启',
+      type: 'warning',
+    })
+    if (!ok) return
+  }
+  S.pmode = v
+  setMode(v)
+}
 const pmIcon = computed(() => PMODE_ICONS[S.pmode])
 // 模型选择器：全部「已启用供应商 × 启用模型」按供应商分组（设置过的 api 只要
 // 打开都可切）。项值编码 {provider, model}（JSON 串做键——模型 id 跨供应商可重名，
@@ -214,14 +230,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
     <div class="inbox" :class="{ drop: dropHot }">
     <div v-if="heroNote" class="uploadhint">{{ heroNote }}</div>
     <div v-if="uploadHint" class="uploadhint">{{ uploadHint }}</div>
-    <div v-if="dropHot" class="drophint">松开以附加文件（将存入工作区 .ithaca/uploads）</div>
+    <div v-if="dropHot" class="drophint">松开以附加文件</div>
     <div v-if="S.attachments.length" class="atchips">
       <span v-for="(a, i) in S.attachments" :key="a.path" class="atchip"
             :class="{ imgch: isImageAtt(a) }" :title="a.name + '（' + a.path + '）'">
         <!-- 图片 = 缩略图即全部语义（文件名只进 title）；文档类保留文件名 chip -->
         <img v-if="isImageAtt(a)" class="thumb" :src="attUrl(a.path)" :alt="a.name">
         <span v-else class="nm">📄 {{ a.name }}</span>
-        <span class="x" title="移除（文件保留在工作区）" @click="S.attachments.splice(i, 1)">×</span>
+        <span class="x" title="移除" @click="S.attachments.splice(i, 1)">×</span>
       </span>
     </div>
     <div v-if="S.pending" class="ddock">
@@ -246,7 +262,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
           <Cdl :items="plusItems" v-model="plusVal" placeholder="+" @select="onMenu" />
         </span>
         <span class="pm" title="权限模式：suggest=编辑与命令逐条批准；auto-edit=编辑免批、命令逐条批准；full-auto=全自动">
-          <Cdl :items="pmodeItems" v-model="S.pmode" :amber="true" :lead-icon="pmIcon" @select="setMode" />
+          <Cdl :items="pmodeItems" :model-value="S.pmode" :amber="true" :lead-icon="pmIcon" @select="onPickPmode" />
         </span>
       </div>
       <input ref="fileEl" type="file" multiple style="display:none" @change="onFilesChosen">

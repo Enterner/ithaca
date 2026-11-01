@@ -61,7 +61,7 @@ function fail(msg) {
       <img v-if="blobUrl && blobKind === 'img'" class="ov-frame" :src="blobUrl"
            :alt="S.viewer.path" draggable="false">
       <embed v-else-if="blobUrl" class="ov-frame" :src="blobUrl" type="application/pdf">
-      <div v-if="!blobUrl && !failed" class="cv-state">转换中…（首次打开需数秒，再次打开走缓存）</div>
+      <div v-if="!blobUrl && !failed" class="cv-state">转换中…</div>
       <div v-if="failed" class="cv-state cv-err">{{ errMsg }}</div>
     </div>
   </div>

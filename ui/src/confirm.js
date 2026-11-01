@@ -12,9 +12,13 @@ const { dialog } = createDiscreteApi(['dialog'], {
   },
 })
 
-export function confirmDialog({ title, content, positive = '删除', negative = '取消' }) {
+export function confirmDialog({ title, content, positive = '删除', negative = '取消',
+                                type = 'error' }) {
+  // type：error（删除类，红叉红钮）/ warning（危险但非破坏，琥珀警示）——
+  // full-auto 开启这类「授权放大」用 error 的红叉语义错位（不是出了错）
+  const show = type === 'warning' ? dialog.warning : dialog.error
   return new Promise((resolve) => {
-    dialog.error({
+    show({
       title, content, positiveText: positive, negativeText: negative,
       onPositiveClick: () => resolve(true),
       onNegativeClick: () => resolve(false),

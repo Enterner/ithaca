@@ -79,7 +79,9 @@ input, textarea, select { font: inherit; }
    两侧都给会翻倍) */
 .maincard.with-files { margin-right: 0; }
 @media (prefers-reduced-motion: reduce) { .maincard { transition: none; } }
-.topbar { display: flex; align-items: center; gap: 14px; padding: 9px 18px;
+/* 顶栏与文件树头固定等高——两浮卡的分隔线横向对齐（内容高度随子件漂移必错位，
+   踩过：mini-btn 30px 对 12px 标题行高差 13px） */
+.topbar { display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 44px;
           border-bottom: 1px solid var(--line); flex: none; }
 .topbar .kv { color: var(--dim); } .topbar .kv b { color: var(--text); font-weight: 600; }
 .topbar .spacer { flex: 1; }
@@ -506,7 +508,7 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
    追赶光标（不跟手，踩过）；左栏无宽度过渡故无需同款 */
 .fileside.dragging { transition: none; }
 @media (prefers-reduced-motion: reduce) { .fileside { transition: none; } }
-.fs-head { display: flex; align-items: center; gap: 6px; padding: 9px 12px 7px;
+.fs-head { display: flex; align-items: center; gap: 6px; padding: 0 12px; height: 44px;
            font-size: 12px; color: var(--dim); border-bottom: 1px solid var(--line); flex: none; }
 .fs-head .fs-title { font-weight: 600; color: var(--text); letter-spacing: .5px; }
 .fs-count { margin-left: auto; color: var(--dim2); font-size: 11px; }

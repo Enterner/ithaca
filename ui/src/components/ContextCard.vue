@@ -140,17 +140,15 @@ const cachePct = computed(() =>
       <div class="usage">
         <div class="urow">
           <span class="ulab">输入</span><b class="un">{{ usage.seen ? fmt(usage.prompt) : '—' }}</b>
-          <small v-if="usage.cache" class="uextra"
-                 title="缓存率 = 会话内逐轮（命中/输入）的平均，未回报轮不计入">缓存命中 {{ cachePct }}%</small>
+          <small v-if="usage.cache" class="uextra">缓存命中 {{ cachePct }}%</small>
         </div>
         <div class="urow">
           <span class="ulab">输出</span><b class="un">{{ usage.seen ? fmt(usage.completion) : '—' }}</b>
-          <small v-if="S.rate" class="uextra"
-                 title="会话内输出时段的平均（轮间空闲与首字等待不计；只统计本次打开以来的流式）">平均 {{ S.rate }} tok/s</small>
+          <small v-if="S.rate" class="uextra">平均 {{ S.rate }} tok/s</small>
         </div>
       </div>
       <div class="foot">
-        <span><span class="est">分段估算</span><template v-if="!ctxCard.measured">（无实测回报，总量同为估算）</template></span>
+        <span><span class="est">分段估算</span></span>
         <span>余量 <b :class="{ red: ctxHot }">{{ fmt(Math.max(0, ctxSizeOf(S.model) - ctxCard.total)) }} tok</b></span>
       </div>
     </div>

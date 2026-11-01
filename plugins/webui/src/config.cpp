@@ -128,7 +128,10 @@ bool WebuiPlugin::persist_config_() {
 json WebuiPlugin::config_public_() {
     // 供应商两层配置：providers 按模式单侧下发（mock=测试内置合成项；cloud=
     // 用户配置项）——面板/模型下拉只显示当前模式一项（产品拍板）；api_key
-    // 掩码（不出前端，只给 has_key 供"已设置/未设置"显示）。
+    // 原样下发，设置面板预填 password 输入框回显掩码点（产品拍板改口径：
+    // 本地桌面应用，key 本就以明文躺在用户盘的 config.json，回环不出本机；
+    // 旧「掩码不出前端」下已存 key 只能落占位符，与刚输入的形态分裂）。
+    // has_key 仍单独给：无 key 时输入框显示「未设置」占位。
     const bool mock = llm_mode_ == "mock";
     json providers = json::array();
     std::string current;
@@ -137,7 +140,6 @@ json WebuiPlugin::config_public_() {
         const std::string type = p.value("type", "cloud");
         if (mock ? type != "mock" : type != "cloud") continue;
         json q = p;
-        q.erase("api_key");
         q["has_key"] = !p.value("api_key", "").empty();
         providers.push_back(q);
     }
@@ -172,10 +174,10 @@ json WebuiPlugin::config_public_() {
 
 // 供应商数组校验与清洗（api_config_save_ 第一段提纯）：名称非空/≤64/去重（大小
 // 写不敏感）、type 只许 cloud（mock 内置不接受外部写入）、模型 id 同规 + context
-// ≥1024、至多 32 供应商 × 32 模型；api_key 留空 = 按名保留旧值（key 不出前端，
-// 前端回传必为空）；sub_model 引用存在性后置校验（目标供应商须在本次清单内且
-// 模型启用——悬空引用运行期静默回落主模型，保存时拦截让用户当场看到）。
-// 失败返回 false 且 err 点名。
+// ≥1024、至多 32 供应商 × 32 模型；api_key 留空 = 按名保留旧值（面板预填回显后
+// 回传非空即原值落盘，仅新增供应商未填时为空）；sub_model 引用存在性后置校验
+// （目标供应商须在本次清单内且模型启用——悬空引用运行期静默回落主模型，保存时
+// 拦截让用户当场看到）。失败返回 false 且 err 点名。
 static bool validate_providers(const json& in, const json& existing, json& cleaned,
                                std::string& err) {
     const auto old_key_of = [&existing](const std::string& name) -> std::string {

@@ -106,7 +106,7 @@ export async function decide(d, paths, msg) {
 /**
  * 模型热切：provider 缺省 = 当前供应商内切换；带 provider = 跨供应商热切
  * （后端校验存在并启用，随 /api/model 一并持久化 + 凭据/窗口热切）。
- * 成功后回拉配置对齐（current/model/掩码），失败静默——后端会落盘通告。
+ * 成功后回拉配置对齐（current/model），失败静默——后端会落盘通告。
  */
 export async function setModel(model, provider) {
   const body = { model }
@@ -135,7 +135,7 @@ export async function saveConfig(providers, current) {
   }
   const r = await api('/api/config', body)
   if (!r.ok) return { ok: false, error: r.error }
-  await reloadConfig()   // 与后端对齐（掩码/回落）
+  await reloadConfig()   // 与后端对齐（回落）
   loadSessions()   // 成功反馈 = 面板关闭；不向对话流插行
   return { ok: true }
 }

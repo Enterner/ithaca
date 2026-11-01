@@ -1,5 +1,5 @@
 // tests/e2e/config/api.spec.mjs —— 配置契约（API 层）：
-// api_key 只写不读（has_key 掩码下发、明文仅落盘）/ 留空按名保留旧值 /
+// api_key 回环下发（面板预填回显掩码点；has_key 仍单独给）/ 留空按名保留旧值 /
 // 未知模型自动建档 / SSE 长连接存活（kit::http reap 豁免的回归护栏）。
 // cloud 模式用例以 ITHACA_LLM_ACTIVE="" 覆盖 fixture 的 mock 缺省：providers
 // 按模式单侧下发，mock 模式下 POST providers 被整体忽略，key 往返必须跑在
@@ -32,14 +32,13 @@ async function cloudHostWithKey(host) {
 test.describe("配置契约（cloud 模式）", () => {
     test.use({ hostCfg: { extraEnv: { ITHACA_LLM_ACTIVE: "" } } });
 
-    test("CFG1 配置往返：api_key 只写不读——has_key 掩码下发，明文只进 config.json", async ({ host }) => {
+    test("CFG1 配置往返：api_key 回环下发（预填回显口径）——值保真 + has_key 同步 + 明文落盘", async ({ host }) => {
         await cloudHostWithKey(host);
         const { body: cfg } = await getJson(host.base, "/api/config");
         const cloud = cfg.providers.find((p) => p.name === CLOUD.name);
         expect(cloud, "POST 的 cloud 供应商在 GET 中可见").toBeTruthy();
         expect(cloud.has_key).toBe(true);
-        expect(JSON.stringify(cfg)).not.toContain("sk-e2e-test-key");
-        expect(JSON.stringify(cfg)).not.toContain('"api_key"');
+        expect(cloud.api_key, "回环下发保真（面板预填回显的判源）").toBe("sk-e2e-test-key");
         const cfgFile = fs.readFileSync(path.join(host.home, "config.json"), "utf8");
         expect(cfgFile).toContain("sk-e2e-test-key");
     });

@@ -122,7 +122,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
            style="flex:none; display:flex; flex-direction:column;
                   background:var(--panel); border-right:1px solid var(--line); position:relative;">
       <div id="brand" style="display:flex; align-items:center; gap:4px;">
-        <div style="flex:1; min-width:0;">Ithaca<small>终端编程代理</small></div>
+        <div style="flex:1; min-width:0;">Ithaca</div>
         <button class="side-toggle" title="折叠会话栏 (Ctrl+B)" @click="toggleSide">⟨</button>
       </div>
       <button class="new-chat" @click="newSession()">+ 新会话</button>

@@ -1,7 +1,8 @@
 <script setup>
 // 设置弹窗：标签页结构（模型接入 / MCP 工具 / 插件贡献）。
 // 模型接入 = 供应商两层配置（第一层=供应商列表/详情，第二层=模型编辑对话框）。
-// 语义对齐后端 /api/config：api_key 不回显（留空=按名保留）、内置供应商名称只读不可删。
+// 语义对齐后端 /api/config：api_key 回环下发、password 框预填回显掩码点
+// （留空=按名保留旧值，清空输入框保存不产生删除语义）、内置供应商名称只读不可删。
 // MCP 工具页 = McpSettings 组件（server 两层配置，保存 → mcp 插件热重载）。
 // 插件贡献页 = PluginSettings（各插件 vc.ui.register 的 schema 动态生成，
 // 有插件注册时 tab 才出现——零硬编码，新插件自带 UI 即插即现）。
@@ -25,7 +26,7 @@ const mEdit = ref(null)       // {mi}  mi=-1 新增
 const mId = ref(''), mCtx = ref(''), mErr = ref('')
 const mSub = ref('')          // 子 agent 模型选中值（JSON 串 {provider,model}；'' = 默认自己）
 const mSubDangling = ref('')  // 失效引用的展示名（供应商/模型已删；保存时后端会拦截）
-const keyInputs = reactive({})   // 临时输入的 key（不回显，仅保存时带上）
+const keyInputs = reactive({})   // 输入框当前 key（开面板预填已存值回显掩码点；保存时非空者按名并入）
 
 const presetSel = ref('')
 // 下拉选项 + 「当前套用模板」的显示口径：选完不复位（用户要求能看到当前用的
@@ -88,9 +89,14 @@ watch(() => S.provModelsEvt, (e) => {
 
 async function openPanel() {
   // 从 store 深拷贝。toRaw 先脱响应式代理再 structuredClone——S.providers 是
-  // Vue 响应式 Proxy，直接 structuredClone 抛 DataCloneError（面板永不开，踩过）；
-  // api_key 输入框恒空（后端掩码，留空=保留旧值）
-  detail.value = structuredClone(toRaw(S.providers)).map(p => ({ ...p, api_key: '', models: p.models || [] }))
+  // Vue 响应式 Proxy，直接 structuredClone 抛 DataCloneError（面板永不开，踩过）。
+  // keyInputs 每开面板重置并按名预填已存 key——password 框回显掩码点（后端
+  // api_key 回环下发）；保存非空者并入、清空 = 不并入，后端按名保留旧值
+  for (const k in keyInputs) delete keyInputs[k]
+  detail.value = structuredClone(toRaw(S.providers)).map(p => {
+    keyInputs[p.name || ''] = p.api_key || ''
+    return { ...p, models: p.models || [] }
+  })
   curName.value = S.current
   provSel.value = Math.max(0, detail.value.findIndex(p => p.name === S.current))
   inferPreset()   // 模板选择器显示与当前 base_url 匹配的平台（切换供应商时经 watch 跟随）
@@ -184,7 +190,8 @@ function saveModel() {
   mDlg.value = false
 }
 async function onSave() {
-  // 临时输入的 key 按名并入（留空 = 后端按名保留旧值）
+  // 输入框 key 按名并入（预填回显的原值与刚输入的新值同路；清空 = 不并入，
+  // 后端按名保留旧值——保存不产生删除语义）
   for (const p of detail.value) {
     const k = keyInputs[p.name]
     if (k) p.api_key = k
@@ -262,7 +269,7 @@ async function onSave() {
             <span>模型列表</span>
             <span>
               <span v-if="cur().type !== 'mock'" class="addm" style="margin-right:10px"
-                    title="按 Base URL + API Key 请求平台 GET /models（OpenAI 兼容），合并进列表"
+                    title="从平台拉取模型列表并合并"
                     @click="fetchModels">{{ fetchingModels ? '⟳ 获取中…' : '⟳ 从 API 获取' }}</span>
               <span class="addm" @click="openModelDlg(-1)">＋ 添加模型</span>
             </span>

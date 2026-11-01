@@ -44,6 +44,8 @@ export function cfgFromServer(cfg) {
   S.providers = (cfg.providers || []).map(p => ({
     name: p.name || '', type: p.type || 'cloud', builtin: !!p.builtin,
     base_url: p.base_url || '', enabled: p.enabled !== false, has_key: !!p.has_key,
+    // api_key 回环下发：设置面板预填 password 框回显掩码点（后端口径见 config.cpp）
+    api_key: p.api_key || '',
     // Array.isArray 防御：旧启动器（ConvertTo-Json 低 Depth）会把 models 压成字符串
     models: (Array.isArray(p.models) ? p.models : []).map(m => ({
       id: m.id, context: m.context || DEFAULT_CONTEXT, enabled: m.enabled !== false,
