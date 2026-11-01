@@ -19,9 +19,9 @@ void AgentCtx::load_session_state_(const std::string& path) {
     session_id_ = vc_agent::session_id_of_state(path);
     // raw 外置目录随会话走（与会话切换同源）：多会话共享宿主时归档名会跨会话
     // 撞车——归档名加会话 stem 前缀隔离（同一 parent/raw 内 ref 仍为裸文件名）
-    const fs::path sp(path);
-    raw_dir_ = (sp.parent_path() / "raw").string();
-    raw_prefix_ = sp.filename().string().substr(0, sp.filename().string().find('.')) + "_";
+    auto [dir, prefix] = vcagent::raw_spool_paths(path);
+    raw_dir_ = std::move(dir);
+    raw_prefix_ = std::move(prefix);
     std::error_code ec;
     fs::create_directories(raw_dir_, ec);
     std::ifstream in(session_path_, std::ios::binary);

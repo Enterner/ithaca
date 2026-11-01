@@ -20,7 +20,7 @@ std::string AgentCtx::spool_raw(const std::string& tool, const std::string& resu
     try {
         const std::string name = raw_prefix_ + "t" + std::to_string(turn_no_) + "_" +
                                  std::to_string(++g_raw_seq) + "_" +
-                                 tool_last(tool) + ".json";
+                                 vcagent::tool_last(tool) + ".json";
         std::ofstream f(fs::path(raw_dir_) / name, std::ios::binary | std::ios::trunc);
         if (!f) return {};
         f << result;

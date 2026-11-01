@@ -1,6 +1,6 @@
 #pragma once
 // vckit —— Windows 平台件：UTF-8 ↔ 宽字符转换、CreateProcessW
-// 环境块构建、可中断睡眠、ASCII 小写折叠。
+// 环境块构建、可中断睡眠。
 //
 // 产品级共享件（宿主/壳/插件经裸名 "vckit/win.hpp" 共用）。
 // header-only，只依赖 Win32（仅 Windows 生效；其它平台一律返回空/空转）。
@@ -55,16 +55,6 @@ inline std::string wide_to_utf8(const wchar_t* text) {
     (void)text;
     return {};
 #endif
-}
-
-// ASCII 小写折叠（窄字符匹配的 case-insensitive 底座：扩展名/清单项/子串过滤）。
-// 只折叠 A-Z、无 locale 依赖；本函数平台无关，全仓唯一出处——宿主/壳/插件经
-// 本头共用，不复制算法（第二份必漂移）。宽字符路径口径（Windows FS 语义）用
-// towlower，另见 path_jail 的 under_root。
-inline std::string ascii_lower(std::string s) {
-    for (char& c : s)
-        if (c >= 'A' && c <= 'Z') c += 32;
-    return s;
 }
 
 // 可中断睡眠：total 时长内按 slice 分片 Sleep，cancel 置位即提前返回。后台线程的

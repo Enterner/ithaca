@@ -18,7 +18,6 @@
 // 本文件是 header-only；非 Windows 平台 start 恒为 false（TODO: 需要时补 posix 分支，
 // 与 process.hpp 同批）。
 
-#include <chrono>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -67,8 +66,8 @@ private:
 struct PipedSpawnOptions {
     std::string cwd_utf8;              // 空 = 继承父进程工作目录
     bool create_no_window = true;      // 无控制台窗口（后台捕获形态）
-    bool stdin_pipe = false;           // true = 建 stdin 管道（写端归父，经 stdin_write/
-                                       // write_stdin/close_stdin）；缺省继承父 stdin
+    bool stdin_pipe = false;           // true = 建 stdin 管道（写端归父，经 write_stdin
+                                       // 投喂，收尾关写端送 EOF）；缺省继承父 stdin
     // 环境块覆盖：键值均 UTF-8。非空时与父环境块按名合并（同名覆盖）后整块传入；
     // 空 = 原样继承父环境（不构造环境块）。构建机制（合并/按名排序/双 NUL 收尾，
     // 排序是 CreateProcessW 的硬要求）收编在 win::build_env_block_w 单一出处。
@@ -77,26 +76,16 @@ struct PipedSpawnOptions {
 
 // start 产物的一组句柄（release_handles 的返回形态）：供把生命周期移交调用方
 // 自管容器。句柄语义见各字段。
-// NOTE: 消费纪律——五句柄三个面：读面 stdout_read/stderr_read、树杀面 job（含
-// process 的退出码/等待）、写面 stdin_write（仅 stdin_pipe=true 时非空）。容器化
-// 消费方若只收四句柄（无 stdin 位），必须先 take_stdin_write 把写面取出再消费
-// 其余——写端留在原地被丢弃 = 匿名管道无 EOF（读端读取线程永挂）+ 句柄泄漏。
-// 写面「写完即关送 EOF」的推迟写形态（先起读取线程排水、再同步写 stdin 并关闭）
-// 就靠它把写端从移交集合里摘出来自管。
+// NOTE: 消费纪律——五句柄三面：读面 stdout_read/stderr_read、树杀面 job、写面
+// stdin_write（仅 stdin_pipe=true 时非空）。整体 adopt 五收五；「写完即关送
+// EOF」是读端收尾的前提——写端留在原地被丢弃 = 匿名管道无 EOF（读端读取
+// 线程永挂）+ 句柄泄漏。
 struct PipedHandles {
     void* process = nullptr;      // Windows：HANDLE（可 TerminateProcess/GetExitCodeProcess）
     void* stdout_read = nullptr;  // Windows：HANDLE（可 ReadFile；EOF = 写端全关）
     void* stderr_read = nullptr;
     void* job = nullptr;          // Windows：HANDLE（KILL_ON_JOB_CLOSE，可能为 null）
     void* stdin_write = nullptr;  // Windows：HANDLE（可 WriteFile；仅 stdin_pipe=true 时非空）
-
-    // 取走 stdin 写端（取出置空）——「容器只收读面/树杀面、写面自管推迟写」的
-    // 消费形态入口。
-    void* take_stdin_write() {
-        void* h = stdin_write;
-        stdin_write = nullptr;
-        return h;
-    }
 };
 
 class PipedProcess {
@@ -223,12 +212,8 @@ public:
 #endif
     }
 
-    native_handle process_handle() const { return process_; }
     native_handle stdout_read() const { return stdout_read_; }
     native_handle stderr_read() const { return stderr_read_; }
-    native_handle stdin_write() const { return stdin_write_; }
-    native_handle job_handle() const { return job_; }
-    std::uint32_t pid() const noexcept { return pid_; }
 
     // 阻塞读一段输出（任一流可用；EOF/错误 ⇒ false，读取循环据此收尾）。
     static bool read_chunk(native_handle read_end, std::string& out) {
@@ -249,7 +234,7 @@ public:
 
     // 全量写一段 stdin（同步匿名管道的 WriteFile 阻塞至全部进缓冲：子进程不读而
     // 缓冲写满时阻塞——写读次序的权衡归调用方）。false = 未以 stdin_pipe 拉起，或
-    // 管道已断/已关（进程退出、close_stdin 之后）。
+    // 管道已断或写端已关（进程退出/收尾关闭之后）。
     bool write_stdin(const char* data, std::size_t n) {
 #if defined(_WIN32)
         if (stdin_write_ == nullptr) return false;
@@ -265,15 +250,6 @@ public:
 #endif
     }
 
-    // 关闭 stdin 写端：子进程从此读到 EOF（管道化 stdin 的常规收尾——写端不关，
-    // 读取方永远等不到输入结束）。幂等；之后 write_stdin 恒 false。
-    void close_stdin() {
-#if defined(_WIN32)
-        if (stdin_write_ != nullptr) CloseHandle(stdin_write_);
-        stdin_write_ = nullptr;
-#endif
-    }
-
     // 终止进程树：Job 在则 TerminateJobObject（含孙进程），否则退回
     // TerminateProcess（只直接子进程）。
     void terminate_tree() {
@@ -283,51 +259,6 @@ public:
             return;
         }
         if (process_ != nullptr) ::TerminateProcess(process_, 1);
-#endif
-    }
-
-    // 阻塞等待退出；返回退出码（无法等待时返回 0xFFFFFFFF）。
-    std::uint32_t wait() {
-#if defined(_WIN32)
-        if (process_ == nullptr) return 0xFFFFFFFFu;
-        ::WaitForSingleObject(process_, INFINITE);
-        return exit_code();
-#else
-        return 0xFFFFFFFFu;
-#endif
-    }
-
-    // 限时等待；超时返回 false（进程仍在跑）。
-    bool wait_for(std::chrono::milliseconds timeout) {
-#if defined(_WIN32)
-        if (process_ == nullptr) return true;
-        return ::WaitForSingleObject(process_, static_cast<DWORD>(timeout.count())) ==
-               WAIT_OBJECT_0;
-#else
-        (void)timeout;
-        return true;
-#endif
-    }
-
-    std::uint32_t exit_code() const {
-#if defined(_WIN32)
-        if (process_ == nullptr) return 0xFFFFFFFFu;
-        DWORD code = 0xFFFFFFFFu;
-        ::GetExitCodeProcess(process_, &code);
-        return static_cast<std::uint32_t>(code);
-#else
-        return 0xFFFFFFFFu;
-#endif
-    }
-
-    bool running() const {
-#if defined(_WIN32)
-        if (process_ == nullptr) return false;
-        DWORD code = 0;
-        if (!::GetExitCodeProcess(process_, &code)) return false;
-        return code == STILL_ACTIVE;
-#else
-        return false;
 #endif
     }
 

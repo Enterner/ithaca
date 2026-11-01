@@ -111,7 +111,6 @@ inline constexpr int kMaxChildRounds = 30;
 // 经 vc.llm.set_active 子档案下发），类型不设 model 字段。
 struct AgentType {
     std::string name;
-    std::string description;         // 进 task 工具自述的类型说明
     std::vector<std::string> tools;  // 工具集白名单（去 ithaca.tool. 前缀的集合名）；空 = 继承父全量
     std::string prompt;              // 正文 = 子代理的 system prompt
 };
@@ -308,7 +307,6 @@ struct AgentCtx {
 
     bool discover_tools();
     const Bound* find_bound(const std::string& full_name) const;
-    static std::string tool_last(const std::string& full_name);
     std::string exec(const Bound& b, const std::string& tool, const json& args);
     void exec_undo();
     void emit_tool_call(const std::string& name, const json& args);

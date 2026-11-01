@@ -44,13 +44,6 @@ namespace {
 using nlohmann::json;
 using namespace vcagent;  // context.hpp 纯函数层（plan_compress/compact_result/…）
 
-// 工具全名 → 末段（"office.read" → "read"）。与 agent 的分派口径一致：
-// compact_result 与归档命名都按末段取形态。
-std::string tool_last(const std::string& full) {
-    const auto dot = full.rfind('.');
-    return dot == std::string::npos ? full : full.substr(dot + 1);
-}
-
 class BasicCtxPlugin {
 public:
     static constexpr std::string_view name = "vc.ctx.basic";
@@ -115,10 +108,9 @@ private:
 
     // 外置目录派生（与会话装载同源）：agent 的折叠原文归档同落此目录，ref 互认
     void rederive_raw_(const std::string& session_path) {
-        const fs::path sp(session_path);
-        raw_dir_ = (sp.parent_path() / "raw").string();
-        const std::string fn = sp.filename().string();
-        raw_prefix_ = fn.substr(0, fn.find('.')) + "_";
+        auto [dir, prefix] = vcagent::raw_spool_paths(session_path);
+        raw_dir_ = std::move(dir);
+        raw_prefix_ = std::move(prefix);
         std::error_code ec;
         fs::create_directories(raw_dir_, ec);
     }
@@ -208,7 +200,7 @@ private:
         const std::string content = args.value("body", std::string());
         const std::string tool = args.value("tool", "");
         return json{{"content", vcagent::ingest_tool_result(
-            tool_last(tool), tool, content,
+            vcagent::tool_last(tool), tool, content,
             [&](const std::string& last, const std::string&, const std::string& body) {
                 return spool_(args.value("turn", 0),
                               static_cast<int>(args.value("seq", 0)), last, body);

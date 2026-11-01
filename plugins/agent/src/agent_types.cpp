@@ -1,6 +1,7 @@
 // 子代理类型注册表（plugin/agent 的类型切片）。
-// 类型 = <工作区>/.ithaca/agent/<名>.md：frontmatter 两键（description / tools）
-// + 正文 = 子代理 system prompt；文件名（去扩展名）即类型名。每个主会话 turn
+// 类型 = <工作区>/.ithaca/agent/<名>.md：frontmatter 解析 tools 键（description
+// 等其余键忽略——类型说明没有读取面）+ 正文 = 子代理 system prompt；文件名（去
+// 扩展名）即类型名。每个主会话 turn
 // 开始按目录快照重载（热编辑即生效）；目录缺失/单文件解析失败只降级不报错——
 // 内置 general 恒在，最坏形态 = 只有 general 可派。
 // 类型不设 model：子代理模型由配置链路决定（主模型 sub_model → set_active 子档案）。
@@ -58,7 +59,6 @@ bool parse_agent_md(const std::string& body, AgentType& out) {
                     if (colon != std::string::npos) {
                         const std::string key = trim_md(line.substr(0, colon));
                         const std::string val = trim_md(line.substr(colon + 1));
-                        if (key == "description") out.description = val;
                         if (key == "tools") tools_line = val;
                     }
                 }
@@ -79,7 +79,6 @@ void AgentCtx::load_agent_types_() {
     types_.clear();
     AgentType general;
     general.name = "general";
-    general.description = "通用子代理（继承主会话工具面）";
     general.prompt = kGeneralPrompt;
     types_.push_back(std::move(general));
 

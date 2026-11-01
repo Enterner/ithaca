@@ -25,6 +25,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace vcagent {
@@ -312,11 +313,28 @@ inline std::string compact_result(const std::string& tool, const json& r,
            ",\"ok\":true,\"note\":\"已最小化，原始结果外置\"" + ref_field(ref) + "}";
 }
 
+// 工具全名 → 末段（agent 与 ctx_basic 的唯一分派口径）：按**首个**点切段。
+// toolset 段自身可含点（MCP 工具名形如 mcp.fs__notes.read，工具名带点），取首点
+// 之后才保证两插件产出同一形态——取末段（rfind）会命中工具名内部的点，compact
+// 分档与归档命名随之分裂，A/B 一致性被破坏（踩过: 两插件各写一份、取法漂移）。
+inline std::string tool_last(const std::string& full_name) {
+    const std::size_t dot = full_name.find('.');
+    return dot == std::string::npos ? full_name : full_name.substr(dot + 1);
+}
+
+// 会话文件 → raw 外置落点（agent 归档与 ctx_basic 回查共用，ref 互认的唯一派生
+// 规则）：目录 = 会话同级 raw/；前缀 = 文件名首点前 stem + '_'（多会话共享宿主
+// 时防跨会话撞名，同一 raw/ 内 ref 仍为裸文件名）。
+inline std::pair<std::string, std::string> raw_spool_paths(const std::string& session_path) {
+    const std::filesystem::path sp(session_path);
+    const std::string fn = sp.filename().string();
+    return {(sp.parent_path() / "raw").string(), fn.substr(0, fn.find('.')) + "_"};
+}
+
 // ---- 回灌管线（agent 内置与 ctx_basic 策略镜像共用一份；两路产出必须逐字节
 // 一致——插件在/不在输出逐字对齐是 A/B 验收口径，算法只许有一份）----------------
 
-// 超内联上限的结果外置 + 最小充分记录。last = 工具名末段（分派与归档命名口径，
-// 由调用方按各自 tool_last 语义派生）；spool(last, full_name, body) → 归档 ref
+// 超内联上限的结果外置 + 最小充分记录。last = vcagent::tool_last(full_name)（分派与归档命名口径）；spool(last, full_name, body) → 归档 ref
 //（空 = 外置失败，内联截断兜底），外置目录与命名归调用方。recall 回包本身是
 // JSON——直接 trim 会劈在 content 字符串中间产生非法 JSON tool 消息（踩过），
 // 在 content 值内截断后重打包保持合法。内联豁免按工具分档（量级理由见各 Cap

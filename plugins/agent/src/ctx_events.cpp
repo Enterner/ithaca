@@ -93,7 +93,7 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
             c.call_id = tc.value("id", std::string{});
             if (tc.contains("function") && tc["function"].is_object()) {
                 c.full_name = tc["function"].value("name", std::string{});
-                c.tool = tool_last(c.full_name);  // "workspace.read" → "read"（踩过: 漏设 ⇒ 空工具名）
+                c.tool = vcagent::tool_last(c.full_name);  // "workspace.read" → "read"（踩过: 漏设 ⇒ 空工具名）
                 const std::string a = tc["function"].value("arguments", std::string{});
                 json parsed = json::parse(a, nullptr, false);
                 if (parsed.is_object()) c.args = parsed;

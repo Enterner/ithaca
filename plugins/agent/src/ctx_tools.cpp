@@ -88,11 +88,6 @@ const AgentCtx::Bound* AgentCtx::find_bound(const std::string& full_name) const 
     return nullptr;
 }
 
-std::string AgentCtx::tool_last(const std::string& full_name) {
-    const std::size_t dot = full_name.find('.');
-    return dot == std::string::npos ? full_name : full_name.substr(dot + 1);
-}
-
 std::string AgentCtx::exec(const Bound& b, const std::string& tool, const json& args) {
     args_buf_ = args.dump();
     const char* out = nullptr;
@@ -129,14 +124,14 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // 参数摘要人话化（op 清单/读哪个文件/搜什么词，原始 JSON 对人不可读）；
     // 解析不出 ⇒ 空，回退原 JSON 截断（前向兼容未知工具）
     vc_agent::Scratch scratch;
-    std::string brief = summarize_call(tool_last(name), args, ws_root_);
+    std::string brief = summarize_call(vcagent::tool_last(name), args, ws_root_);
     if (brief.empty()) brief = trim(args.dump(), 200);
     if (subagent_) {   // 子代理工作记录：广播给 UI（落 transcript），不进任何上下文
         emit_subagent_(turn_no_, 2, name.c_str(), brief);
         return;
     }
     // task 调用卡不落对话流：spawn 卡与其同信息，一次派发只显示一张卡
-    if (tool_last(name) == "task") return;
+    if (vcagent::tool_last(name) == "task") return;
     // 参数原始形态（UI 展开详情的数据源，ToolCall 尾部追加字段）：compact dump +
     // 8KB 护栏，按码点切防劈开 UTF-8；截断尾巴带标记，前端解析不了按原文显示
     std::string args_json = args.dump();
@@ -150,12 +145,12 @@ void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
 void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::string& brief) {
     if (subagent_) {   // 子代理工作记录：同 emit_tool_call
         emit_subagent_(turn_no_, 3, name.c_str(),
-                       std::string(ok ? "" : "✗ ") + summarize_result(tool_last(name), brief));
+                       std::string(ok ? "" : "✗ ") + summarize_result(vcagent::tool_last(name), brief));
         return;
     }
     // task 完成结果卡不落对话流：报告经上下文回灌，收口状态由收口卡（phase 4/5）
     // 承载——只保留拒绝/失败结果卡（spawn 被护栏拒掉时的唯一可见反馈）
-    if (tool_last(name) == "task" && ok) return;
+    if (vcagent::tool_last(name) == "task" && ok) return;
     // 结果摘要人话化；后台受理 ack 的归属信号随事件下发（ToolResult 尾部追加
     // run_id 字段）——消费方按字段建「调用行 ↔ run」映射，不从 brief 文案反解。
     // 仅 ack 形态（run_id>0 且无 exit_code）填充
@@ -167,7 +162,7 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
             ack_run = r.value("run_id", 0LL);
     }
     const vc_api::ToolResult e{turn_no_, scratch.hold(name), ok ? 1 : 0,
-                               scratch.hold(summarize_result(tool_last(name), brief)),
+                               scratch.hold(summarize_result(vcagent::tool_last(name), brief)),
                                ack_run, scratch.hold(session_id_)};
     host_.emit(vc_api::tool_result, &e);
 }

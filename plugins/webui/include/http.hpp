@@ -38,9 +38,6 @@ struct Request {
     // Server::respond(conn_id, resp) 补发。同步响应不读此值。
     std::uint64_t conn_id = 0;
 
-    // 大小写无关地取一个头；没有返回空串。
-    std::string header(std::string_view name) const;
-
     // query 参数的解码值：target 的 '?' 之后按 '&' 分段、'=' 切名值、名字**精确**
     // 匹配（不是子串查找——"path" 不得命中 "xpath="）。名字与值都做 %XX 解码
     // （非法序列原样保留）；'+' 保留不折叠为空格——文件名/base64 可含加号，
@@ -51,7 +48,7 @@ struct Request {
 
 // ---- 响应 -------------------------------------------------------------------
 
-// 三种体：内存体（页面/JSON）、文件区间（流式）、空体（HEAD / 204）。
+// 三种体：内存体（页面/JSON）、文件区间（流式）、空体（204 等）。
 struct Response {
     int status = 200;
     std::string content_type = "text/plain; charset=utf-8";
@@ -61,8 +58,6 @@ struct Response {
     std::string file_path;         // 非空 ⇒ 文件体（服务器按 offset/length 流式发送）
     std::uint64_t file_offset = 0;
     std::uint64_t file_length = 0;
-
-    bool head_only = false;        // HEAD：只发头（Content-Length 仍按真实长度给）
 
     // SSE：回应 text/event-stream 头并**保持连接**；此后 Server::broadcast 会把
     // 每条消息以 "data: <text>\n\n" 推给所有 SSE 连接。body/file_* 被忽略。
@@ -87,8 +82,6 @@ public:
     virtual ~Handler() = default;
     virtual Response handle(const Request& request) = 0;
 
-    // 每轮循环调用一次（可用于把统计搬到别处、清理过期状态）。
-    virtual void on_tick() {}
 };
 
 // ---- 服务器 -----------------------------------------------------------------
@@ -106,20 +99,6 @@ struct ServerOptions {
     std::chrono::milliseconds stall_timeout{15000};       // 完全无进展 ⇒ 丢弃
                                                           // （SSE 长连接豁免：空闲是常态）
     std::chrono::milliseconds poll_interval{200};         // select 超时（也决定 stop 的响应延迟）
-};
-
-struct ServerStats {
-    std::uint64_t requests = 0;
-    std::uint64_t bytes_sent = 0;
-    std::uint64_t stalled_dropped = 0;
-    std::uint64_t rejected = 0;      // 超出 max_clients / max_streams
-    std::uint64_t bad_requests = 0;  // 解析失败 / 请求过大
-    // handler 在 select 线程持 clients_mu_ 同步执行，其回调链里的 broadcast 属同
-    // 线程非递归锁二次进入，闸门直接丢弃并计数——正常恒 0，非 0 即 handler 回调
-    // 链里有广播（跨线程锁序问题闸门不管，由消费方锁序纪律维持）。
-    std::uint64_t reentrant_broadcasts = 0;
-    std::size_t active_clients = 0;
-    std::size_t active_streams = 0;
 };
 
 // 监听 127.0.0.1:<port>（port == 0 时由系统分配，用 port() 读回）。
@@ -149,8 +128,6 @@ public:
     // 补发路径只拿连接表锁：挂起模型下补发方此前已做完消费方数据面操作、不持
     // 任何插件侧锁，与 select 线程的快进快出 handler 构成单向锁序。
     void respond(std::uint64_t conn_id, const Response& response);
-
-    ServerStats stats() const noexcept;
 
 private:
     struct Impl;

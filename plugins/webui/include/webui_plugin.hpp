@@ -23,7 +23,7 @@
 // 线程纪律（全量单线程化）：Handler::handle 在 select 线程上只做解析、校验、
 // 投递与挂起返回——静态文件与 /events 零共享态，同步直答；其余端点经 defer_
 // 把业务体投宿主线程后挂起，真响应走本插件 http 件的挂起-补响应原语补发。数据面触碰
-// （records_/session_/pending_turn_/index_/out_/agent_logs_*/ui_registry_/
+// （records_/session_/index_/out_/agent_logs_*/ui_registry_/
 // config_ 等）全部收敛宿主线程：poster 闭包与事件回调同经宿主排水串行化，
 // 无共享无锁。prober 线程自持 probe_mu_ 守护探测缓存。
 // 例外：两条一次性 detach 线（供应商模型清单、选目录对话框）——网络往返/模态
@@ -318,7 +318,6 @@ private:
     // 会话删除时 close_agent_logs_ 统一收口）
     std::map<int, std::ofstream> agent_logs_;
     std::map<int, long long> agent_log_seq_;
-    int pending_turn_ = -1;          // 待裁决提案的 turn_id
     json index_ = json::object();          // 会话注册表（工作区分组的元数据源，落盘 index.json）
     std::string host_workspace_;           // 宿主工作目录（新会话归属）
     bool ws_backfilled_ = false;           // 工作区补发一次性标志（tool_register 兜底）

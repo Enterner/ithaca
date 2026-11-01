@@ -177,13 +177,6 @@ std::string response_head(const Response& response, std::size_t content_length) 
 
 }  // namespace
 
-std::string Request::header(std::string_view name) const {
-    const std::string wanted = lower(name);
-    for (const auto& header : headers)
-        if (header.name == wanted) return header.value;
-    return {};
-}
-
 std::string Request::query(std::string_view name) const {
     const auto q = target.find('?');
     if (q == std::string::npos) return {};
@@ -385,7 +378,6 @@ struct Server::Impl {
                 }
                 reap();
             }
-            handler_->on_tick();
         }
         std::lock_guard<std::mutex> lock(clients_mu_);
         for (auto& client : clients_) close_socket(client.fd);
@@ -401,7 +393,6 @@ struct Server::Impl {
                 return;
             }
             if (clients_.size() >= options_.max_clients) {
-                rejected_.fetch_add(1);
                 close_socket(fd);  // 太多连接：直接关，不排队
                 continue;
             }
@@ -470,12 +461,10 @@ struct Server::Impl {
                 return std::string{};
             }();
             if (!length_text.empty()) return;  // 半包：等下一轮
-            bad_requests_.fetch_add(1);
             respond(client, Response::status_page(400, "请求无法解析"));
             return;
         }
         client.request_done = true;
-        requests_.fetch_add(1);
         dispatch(client, request);
     }
 
@@ -495,9 +484,8 @@ struct Server::Impl {
         }
 
         // 并发流上限在这里统一兜住：handler 不需要（也不该）自己数。
-        if (!response.file_path.empty() && !response.head_only) {
+        if (!response.file_path.empty()) {
             if (active_streams_.load() >= options_.max_streams) {
-                rejected_.fetch_add(1);
                 Response busy = Response::status_page(503, "并发流已达上限，稍后重试");
                 busy.headers.push_back({"Retry-After", "1"});
                 respond(client, busy);
@@ -522,23 +510,21 @@ struct Server::Impl {
             !response.file_path.empty() ? static_cast<std::size_t>(response.file_length)
                                         : response.body.size();
         client.out += response_head(response, content_length);
-        if (!response.head_only) {
-            if (!response.file_path.empty()) {
-                auto file = std::make_unique<std::ifstream>(response.file_path, std::ios::binary);
-                if (!file->good()) {
-                    client.out.clear();
-                    respond(client, Response::status_page(500, "打不开文件"));
-                    return;
-                }
-                file->seekg(static_cast<std::streamoff>(response.file_offset), std::ios::beg);
-                client.file = std::move(file);
-                client.remaining = response.file_length;
-                client.is_stream = true;
-                active_streams_.fetch_add(1);
-                fill_file(client);
-            } else {
-                client.out += response.body;
+        if (!response.file_path.empty()) {
+            auto file = std::make_unique<std::ifstream>(response.file_path, std::ios::binary);
+            if (!file->good()) {
+                client.out.clear();
+                respond(client, Response::status_page(500, "打不开文件"));
+                return;
             }
+            file->seekg(static_cast<std::streamoff>(response.file_offset), std::ios::beg);
+            client.file = std::move(file);
+            client.remaining = response.file_length;
+            client.is_stream = true;
+            active_streams_.fetch_add(1);
+            fill_file(client);
+        } else {
+            client.out += response.body;
         }
         client.last_progress = std::chrono::steady_clock::now();
         // flush 的排空路径内部已调 maybe_finish；提前返回（半途/断开）时
@@ -552,7 +538,6 @@ struct Server::Impl {
             const int sent = ::send(client.fd, client.out.data(), static_cast<int>(want), 0);
             if (sent > 0) {
                 client.out.erase(0, static_cast<std::size_t>(sent));
-                bytes_sent_.fetch_add(static_cast<std::uint64_t>(sent));
                 client.last_progress = std::chrono::steady_clock::now();
                 continue;
             }
@@ -593,22 +578,20 @@ struct Server::Impl {
                                        // 不受停滞回收（踩过: 插件侧 webui——SSE 空闲 15s 被掐断，页面实时通道周期性死亡）。
             if (client.suspended) continue;  // 挂起等补发：无进展是常态（宿主线程在算），不受停滞回收
             if (now - client.last_progress > options_.stall_timeout) {
-                stalled_dropped_.fetch_add(1);
                 close_client(client);
             }
         }
         clients_.erase(std::remove_if(clients_.begin(), clients_.end(),
                                       [&](Client& client) { return client.fd == kInvalidSocket; }),
                        clients_.end());
-        active_clients_.store(clients_.size());
     }
 
     // UI/宿主线程调用：给所有 SSE 连接追加一帧。慢客户端跳过（不阻塞广播方）。
     void broadcast(std::string_view text) {
-        if (g_handler_depth != 0) {  // 派发中线程重入 ⇒ 丢弃（挂死形态见闸门注释）
-            reentrant_broadcasts_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
+        // handler 在 select 线程持 clients_mu_ 同步执行，其回调链里的 broadcast 属
+        // 同线程非递归锁二次进入——直接丢弃。正常不发生；发生即 handler 回调链
+        // 里有广播，跨线程锁序问题闸门不管，由消费方锁序纪律维持。
+        if (g_handler_depth != 0) return;
         std::string frame = "data: ";
         frame.append(text);
         frame += "\n\n";
@@ -616,8 +599,7 @@ struct Server::Impl {
         for (auto& client : clients_) {
             if (!client.sse || client.dead || client.fd == kInvalidSocket) continue;
             if (client.out.size() >= options_.buffer_cap) {
-                stalled_dropped_.fetch_add(1);  // 背压闸门：这个浏览器跟不上了
-                continue;
+                continue;  // 背压闸门：这个浏览器跟不上了
             }
             client.out += frame;
             // NOTE: 追加后立即 flush——背压闸门量的必须是「客户端真正消化不了」
@@ -655,14 +637,8 @@ struct Server::Impl {
     std::vector<Client> clients_;
 
     std::atomic<bool> stopping_{false};
-    std::atomic<std::uint64_t> requests_{0};
-    std::atomic<std::uint64_t> bytes_sent_{0};
-    std::atomic<std::uint64_t> stalled_dropped_{0};
-    std::atomic<std::uint64_t> rejected_{0};
-    std::atomic<std::uint64_t> bad_requests_{0};
-    std::atomic<std::uint64_t> reentrant_broadcasts_{0};
+    // 功能原子（非统计）：并发文件流计数，max_streams 限流与 stop 清零用。
     std::atomic<std::size_t> active_streams_{0};
-    std::atomic<std::size_t> active_clients_{0};
 };
 
 Server::Server(std::uint16_t port, Handler& handler, ServerOptions options, std::string* error)
@@ -685,18 +661,5 @@ void Server::respond(std::uint64_t conn_id, const Response& response) {
     if (impl_) impl_->respond_conn(conn_id, response);
 }
 
-ServerStats Server::stats() const noexcept {
-    ServerStats stats;
-    if (!impl_) return stats;
-    stats.requests = impl_->requests_.load();
-    stats.bytes_sent = impl_->bytes_sent_.load();
-    stats.stalled_dropped = impl_->stalled_dropped_.load();
-    stats.rejected = impl_->rejected_.load();
-    stats.bad_requests = impl_->bad_requests_.load();
-    stats.reentrant_broadcasts = impl_->reentrant_broadcasts_.load();
-    stats.active_clients = impl_->active_clients_.load();
-    stats.active_streams = impl_->active_streams_.load();
-    return stats;
-}
 
 }  // namespace vc_webui::http

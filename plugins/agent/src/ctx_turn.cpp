@@ -434,7 +434,7 @@ void AgentCtx::append_results_and_continue_impl() {
             content = strategy_ingest_(ctx.full_name, content, ci);
         } else {
             content = vcagent::ingest_tool_result(
-                tool_last(ctx.full_name), ctx.full_name, content,
+                vcagent::tool_last(ctx.full_name), ctx.full_name, content,
                 [&](const std::string&, const std::string& full, const std::string& body) {
                     return spool_raw(full, body);
                 });
