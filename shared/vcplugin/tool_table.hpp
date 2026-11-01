@@ -3,7 +3,7 @@
 // workspace/office/runner/mcp）。只收编无争议的机制样板：出参缓冲的「调用期
 // 有效」契约与发布三连。工具语义（list 自述 JSON / execute 分派）与 ToolRegister
 // 通告的取舍留各插件——基类继承刻意不做：C ABI 插件生态的惯例是样板收薄 helper、
-// 行为留插件（对齐 kit::active_gate 的组合式先例）。
+// 行为留插件（对齐 vckit::active_gate 的组合式先例）。
 //
 // 出参契约（vc_tool.hpp 布局纪律）：list/execute 的出参 JSON 指针只在调用期
 // 有效——消费方（agent/webui）同步拷贝；实现方把结果写进自己持有的存活缓冲。
@@ -13,7 +13,7 @@
 
 #include <nostos/abi/plugin.hpp>
 
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include <string>
 

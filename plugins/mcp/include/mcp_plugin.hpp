@@ -4,7 +4,7 @@
 //   src/plugin.cpp   —— 生命周期（activate/reload_async_/deactivate）、状态回发
 //                       落盘（emit_status_）+ NOSTOS_PLUGIN 入口
 //   src/session.cpp  —— stdio 传输与 JSON-RPC 会话（McpSession 方法定义；子进程
-//                       原语 kit::PipedProcess，命令行拼装/引号策略在此）
+//                       原语 vckit::PipedProcess，命令行拼装/引号策略在此）
 //   src/config.cpp   —— config.json 读取与 server 拉起握手（initialize + tools/list）
 //   src/tools.cpp    —— 统一工具表（list/execute thunk）+ 会话查找
 //
@@ -31,11 +31,11 @@
 #include "vc_tool.hpp"  // vc_api::ToolTable：统一工具表契约（publish 给宿主）
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/piped_process.hpp>  // kit::PipedProcess：子进程原语（三管道 +
-                                         // Job 树杀 + env 块合并，Win32 细节在 kit）
-#include <nostos/kit/poster.hpp>  // nostos_poster + poster_submit：状态回发 defer
+#include <vckit/piped_process.hpp>  // vckit::PipedProcess：子进程原语（三管道 +
+                                         // Job 树杀 + env 块合并，Win32 细节在 vckit）
+#include <vckit/poster.hpp>  // nostos_poster + poster_submit：状态回发 defer
 
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -62,9 +62,9 @@ inline constexpr int kCallTimeoutMs = 120000;  // tools/call 超时（MVP 固定
 
 struct McpSession {
     std::string name;                  // 配置名（工具全名 mcp.<name>__<tool>）
-    // 子进程原语（kit）：管道/Job 树杀/env 块的 Win32 细节全在 kit，插件只管
+    // 子进程原语（kit）：管道/Job 树杀/env 块的 Win32 细节全在 vckit，插件只管
     // 拉起参数与会话语义；句柄随对象析构收口（shared_ptr 保证析构晚于在飞调用）
-    nostos::kit::PipedProcess proc;
+    vckit::PipedProcess proc;
     std::thread reader;
     std::thread stderr_drain;
     std::atomic<long long> next_id{1};

@@ -34,7 +34,7 @@ void WebuiPlugin::start_turn_(const std::string& text, const std::string& attach
     ++running_[owner];
     persist_status_();   // turn 开始（聚合徽标同步）
     persist_(rec, owner);   // 只落盘；广播 defer 到宿主线程
-    nostos::kit::poster_submit(poster_, [this, text, rec, att_json = attachments_json,
+    vckit::poster_submit(poster_, [this, text, rec, att_json = attachments_json,
                                          owner, pool_start]() mutable {
         reasoning_buf_.erase(owner);   // 轮边界兜底：取消/异常残留的思考不串进新轮
         rec["session"] = owner;

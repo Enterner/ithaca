@@ -58,7 +58,7 @@ void AgentCtx::subscribe_turn_slot_() {
             on_done(copy);
         };
         if (poster_.post == nullptr) beat();
-        else if (nostos::kit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
+        else if (vckit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
@@ -70,7 +70,7 @@ void AgentCtx::subscribe_turn_slot_() {
             on_llm_error(copy);
         };
         if (poster_.post == nullptr) beat();
-        else if (nostos::kit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
+        else if (vckit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
@@ -310,8 +310,8 @@ void AgentCtx::dispatch_after_done_() {
         if (state_ == State::TurnActive && turn_no_ == turn) dispatch_loop();
     };
     const nostos_status st =
-        subagent_ ? nostos::kit::poster_submit_owner(poster_, this, body)
-                  : nostos::kit::poster_submit(poster_, body);
+        subagent_ ? vckit::poster_submit_owner(poster_, this, body)
+                  : vckit::poster_submit(poster_, body);
     if (st != NOSTOS_OK) dispatch_loop();
 }
 
@@ -378,7 +378,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
             diff_text = "── " + ctx.full_name + "（命令批准）\n" +
                         dry["would_run"].get<std::string>() + "\n";
         if (diff_text.empty()) diff_text = dry_out;
-        nostos::kit::Scratch prop_scratch;
+        vc_agent::Scratch prop_scratch;
         const vc_api::EditProposed proposal{
             turn_no_, diff_text.c_str(), prop_scratch.hold(ctx.full_name),
             prop_scratch.hold(session_id_)};
@@ -607,9 +607,9 @@ void AgentCtx::cleanup_turn_(bool keep_partial) {
         }
         // 子 ctx 随现场销毁：销毁前作废各自名下的未执行投递（dispatch 推迟一拍
         // 的 owner 绑定闭包）——迟到的旧闭包随任务一起回收，不落已析构对象。
-        // 零值 poster（未领取）走 kit 助手的 BAD_STATE 短路，无需预判
+        // 零值 poster（未领取）走 vckit 助手的 BAD_STATE 短路，无需预判
         for (auto& c : children_)
-            nostos::kit::poster_invalidate_owner(poster_, c.get());
+            vckit::poster_invalidate_owner(poster_, c.get());
         children_.clear();
         child_pends_.clear();
         // 逐子代理的取消卡已承载终态，聚合通告不再发（纯刷屏）

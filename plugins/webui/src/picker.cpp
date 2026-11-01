@@ -1,11 +1,11 @@
 // 原生选目录对话框（plugin/webui 的 UI 原语切片，唯一实现翻译单元）；
-// UTF-8 ↔ 宽字符转换用 nostos::kit::win（全仓唯一实现）。
+// UTF-8 ↔ 宽字符转换用 vckit::win（全仓唯一实现）。
 // 对话框定位状态与置顶钩子为本文件私有。/api/pick-folder 端点（独立线程弹对话
 // 框 + 测试钩子）同在本文件——端点与对话框原语同域。
 
 #include "webui_plugin.hpp"
 
-#include <nostos/kit/win.hpp>  // nostos::kit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
+#include <vckit/win.hpp>  // vckit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
 
 #include <objbase.h>   // CoInitializeEx/CoTaskMemFree：选目录线程的 COM 初始化
 #include <shlobj.h>    // SHCreateItemFromParsingName：选目录对话框起始目录
@@ -27,7 +27,7 @@ std::string pick_folder_dialog(const std::string& title,
     DWORD opts = 0;
     if (SUCCEEDED(fd->GetOptions(&opts)))
         fd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    fd->SetTitle(nostos::kit::win::utf8_to_wide(title.empty() ? "选择工作文件夹" : title).c_str());
+    fd->SetTitle(vckit::win::utf8_to_wide(title.empty() ? "选择工作文件夹" : title).c_str());
     fd->SetOkButtonLabel(L"选择文件夹");
     HHOOK cbt = SetWindowsHookExW(WH_CBT,
     [](int code, WPARAM wp, LPARAM lp) -> LRESULT {
@@ -41,7 +41,7 @@ std::string pick_folder_dialog(const std::string& title,
 
     if (!initial_dir.empty()) {
         IShellItem* item = nullptr;
-        if (SUCCEEDED(SHCreateItemFromParsingName(nostos::kit::win::utf8_to_wide(initial_dir).c_str(), nullptr,
+        if (SUCCEEDED(SHCreateItemFromParsingName(vckit::win::utf8_to_wide(initial_dir).c_str(), nullptr,
                                                   IID_PPV_ARGS(&item))) && item) {
             fd->SetDefaultFolder(item);
             item->Release();
@@ -52,7 +52,7 @@ std::string pick_folder_dialog(const std::string& title,
         if (SUCCEEDED(fd->GetResult(&sel)) && sel) {
             PWSTR ws = nullptr;
             if (SUCCEEDED(sel->GetDisplayName(SIGDN_FILESYSPATH, &ws))) {
-                result = nostos::kit::win::wide_to_utf8(ws);
+                result = vckit::win::wide_to_utf8(ws);
                 CoTaskMemFree(ws);
             }
             sel->Release();
@@ -70,7 +70,7 @@ http::Response WebuiPlugin::api_pick_folder_(const http::Request& req) {
     // UI 自动化测试钩子：设置 ITHACA_TEST_PICK_PATH ⇒ 跳过原生对话框，沿同一
     // folder_picked 事件路径返回（poster defer 广播）
     if (const char* v = std::getenv("ITHACA_TEST_PICK_PATH"); v != nullptr && *v != '\0') {
-        nostos::kit::poster_submit(poster_, [this, p = std::string(v)] {
+        vckit::poster_submit(poster_, [this, p = std::string(v)] {
             broadcast_({{"type", "folder_picked"}, {"path", p}});
         });
         return json_resp({{"ok", true}, {"path", std::string(v)}});

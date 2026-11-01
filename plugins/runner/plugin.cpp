@@ -13,7 +13,7 @@
 //   · 超时（默认 600s，上限 1h）⇒ kill_tree 整树终止 + 截断通告。
 //
 // 线程：每条 run 三个自有线程（两路读取 + 一路等待/回收），事件全部经
-// kit::poster_submit 回宿主线程；deactivate 终止全部子进程并 join——无悬空。
+// vckit::poster_submit 回宿主线程；deactivate 终止全部子进程并 join——无悬空。
 // 输出经 UTF-8 合法性清洗（子进程字节流不保证 UTF-8，JSON 序列化要求合法）。
 #include "iface.hpp"
 
@@ -24,13 +24,13 @@
 
 #include "vcplugin/tool_table.hpp"  // vcplugin：工具表出参契约/发布三连（四插件单源）
 
-#include <nostos/kit/path_jail.hpp>   // cwd 容纳检查（安全原语在 kit 单源）
+#include <vckit/path_jail.hpp>   // cwd 容纳检查（安全原语在 vckit 单源）
 #include "vcws/text.hpp"  // vcws::utf8_sanitize：子进程输出进 JSON 前的 UTF-8 净化（全仓唯一实现）
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/piped_process.hpp>
-#include <nostos/kit/poster.hpp>
-#include <nostos/kit/win.hpp>
+#include <vckit/piped_process.hpp>
+#include <vckit/poster.hpp>
+#include <vckit/win.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -39,7 +39,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include <string>
 #include <string_view>
 #include <thread>
@@ -73,7 +73,7 @@ inline std::string oem_to_utf8_(const std::string& raw) {
     std::wstring wide(static_cast<std::size_t>(need), L'\0');
     ::MultiByteToWideChar(CP_OEMCP, 0, raw.c_str(), static_cast<int>(raw.size()),
                           wide.data(), need);
-    return nostos::kit::win::wide_to_utf8(wide.c_str());
+    return vckit::win::wide_to_utf8(wide.c_str());
 }
 
 // Git Bash 定位（非沙箱 shell 优先级最高）：env 显式指定 → PATH git 推导
@@ -110,7 +110,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(
+        std::atomic_store(&jail_, std::make_shared<vckit::PathJail>(
             env != nullptr && *env != '\0' ? env : "."));
         // 权限模式默认值：webui 事件可热切；把关责任在权限模式与沙箱
         mode_ = vc_api::normalize_permission_mode(
@@ -131,7 +131,7 @@ public:
             if (e->root == nullptr || *e->root == '\0') return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(e->root));
+            std::atomic_store(&jail_, std::make_shared<vckit::PathJail>(e->root));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
         // 权限模式：full-auto ⇒ 命令执行（沙箱取舍见 activate 的 force_sandbox_
@@ -157,7 +157,7 @@ public:
         }
         vcplugin::notify_tool_register(host_, vcrun::kToolSvcName);
         host.log(2, "ithaca.runner: 就绪（权限模式 " + mode_ + "，jail 根 = " +
-                        nostos::kit::win::wide_to_utf8(
+                        vckit::win::wide_to_utf8(
                             std::atomic_load(&jail_)->root().c_str()) + "）");
         return NOSTOS_OK;
     }
@@ -252,7 +252,7 @@ private:
         if (cmd.empty()) return tool_error("command_line 为空");
 
         // cwd：jail 内相对路径（空 = 根）
-        const std::shared_ptr<nostos::kit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
+        const std::shared_ptr<vckit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
         std::wstring cwd_wide = jail->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
             // 纯点/斜杠路径（"."、" ./ "类）在 PathJail 折叠后为空，语义 = 根本身；
@@ -272,7 +272,7 @@ private:
             return json{{"ok", true},
                         {"dry_run", true},
                         {"would_run", cmd},
-                        {"cwd", nostos::kit::win::wide_to_utf8(cwd_wide.c_str())}};
+                        {"cwd", vckit::win::wide_to_utf8(cwd_wide.c_str())}};
 
         const int timeout_ms =
             std::min(std::max(args.value("timeout_ms", kDefaultTimeoutMs), 1000), kMaxTimeoutMs);
@@ -305,12 +305,12 @@ private:
         // 本线程阻塞在写、子命令阻塞在写 stdout 无人排水）⇒ 600s 超时。写端先
         // 取走自管——bash -s 读到 EOF 才执行脚本，写完必须即关送 EOF
         HANDLE bash_stdin = nullptr;
-        nostos::kit::PipedProcess p;
+        vckit::PipedProcess p;
         if (!bash.empty()) {
-            nostos::kit::PipedSpawnOptions o;
-            o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd_wide.c_str());
+            vckit::PipedSpawnOptions o;
+            o.cwd_utf8 = vckit::win::wide_to_utf8(cwd_wide.c_str());
             o.stdin_pipe = true;
-            if (!p.start(nostos::kit::win::wide_to_utf8(bash.c_str()) +
+            if (!p.start(vckit::win::wide_to_utf8(bash.c_str()) +
                              " --norc --noprofile -s",
                          o, err)) {
                 return tool_error(err);
@@ -322,7 +322,7 @@ private:
             // 与 echo/dir 等 cmd 内建一律不解析（踩过: "python -c … && echo b"
             // 的 && 被 python 当 argv 吞掉）——cmd 路径统一经 /d /s /c 包装
             const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
-            if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child,
+            if (!vcrun::spawn(vckit::win::utf8_to_wide(shell_cmd), cwd_wide, *child,
                               err, sandboxed_, &degraded)) {
                 // 逃生舱（Claude Code unsandboxed-retry 的降级版）：沙箱路径任何失败
                 // 都不回死错误——结构化提示回灌给 agent 自我纠正，与读错误自修同构
@@ -336,7 +336,7 @@ private:
             degrade_warned_ = true;   // 每进程一次：日志 + 对话流通告——听得见的降级
             host_.log(3, "ithaca.runner: full-auto 沙箱在本机不可用（SECURITY_CAPABILITIES "
                          "被拒——Windows build 26200 回归）——本次及后续命令降级为非沙箱执行");
-            nostos::kit::poster_submit(poster_, [this] {
+            vckit::poster_submit(poster_, [this] {
                 const vc_api::Notice e{
                     3, "⚠ full-auto 沙箱在本机 Windows 上不可用（AppContainer 进程创建被"
                        "拒）——已降级为非沙箱执行；如需命令审批请切换 suggest/auto-edit", 1};
@@ -357,8 +357,8 @@ private:
         const auto reader = [this, entry](HANDLE h, int stream) {
             // 读取线程：只读 + 缓冲（mu 保护）——poster 投递集中在 poster 线程，
             // 消除「两读取线程并发过 poster 边界」的投递竞态（踩过: 并发即崩）。
-            // 读循环拼装走 kit::read_lines（LineSplitter 在其内）
-            nostos::kit::read_lines(h, [entry, stream](const std::string& line) {
+            // 读循环拼装走 vckit::read_lines（LineSplitter 在其内）
+            vckit::read_lines(h, [entry, stream](const std::string& line) {
                 std::lock_guard<std::mutex> lock(entry->mu);
                 entry->buffered.emplace_back(stream, line);
             });
@@ -401,7 +401,7 @@ private:
             if (line.size() > kLineCap) line = vcws::trim_utf8(line, kLineCap) + "…";
             if (entry->bytes.fetch_add(line.size() + 1) > kOutputCap) {
                 if (!entry->truncated.exchange(true)) {
-                    nostos::kit::poster_submit(poster_, [this, run_id, slot] {
+                    vckit::poster_submit(poster_, [this, run_id, slot] {
                         const vc_api::RunLine e{
                             run_id, 0, "（输出超过上限，后续内容已丢弃）"};
                         host_.emit_slot(vc_api::run_line, slot, &e);
@@ -409,14 +409,14 @@ private:
                 }
                 return;
             }
-            nostos::kit::poster_submit(poster_, [this, run_id, slot, stream, line = std::move(line)] {
+            vckit::poster_submit(poster_, [this, run_id, slot, stream, line = std::move(line)] {
                 const vc_api::RunLine e{run_id, stream, line.c_str()};
                 host_.emit_slot(vc_api::run_line, slot, &e);
             });
         };
         // 退出码回灌（双流 EOF 与宽限期两条收口路共用）
         const auto emit_exit = [this, run_id, slot](DWORD code) {
-            nostos::kit::poster_submit(poster_, [this, run_id, slot, code] {
+            vckit::poster_submit(poster_, [this, run_id, slot, code] {
                 const vc_api::RunExit e{run_id, code};
                 host_.emit_slot(vc_api::run_exit, slot, &e);
             });
@@ -466,7 +466,7 @@ private:
                 // 在沙箱低盒令牌下初始化必挂——裸退出码 -65536 对模型不可读，
                 // 就地补一行指向可用替代（python/工作区工具已验证可用）
                 if (code == 0xC0000142u) {
-                    nostos::kit::poster_submit(poster_, [this, run_id, slot] {
+                    vckit::poster_submit(poster_, [this, run_id, slot] {
                         const vc_api::RunLine e{
                             run_id, 0, "（进程初始化失败 0xC0000142——MSYS/Git 系工具"
                                        "在沙箱内不可用；改用 python 或工作区工具）"};
@@ -494,7 +494,7 @@ private:
             if (!killed && std::chrono::steady_clock::now() >= deadline) {
                 entry->child->kill_tree();   // 整树终止：cmd /c 链孙进程一并死（孤儿持管道写端会让宽限期路径滞留条目）
                 killed = true;
-                nostos::kit::poster_submit(poster_, [this, run_id, slot] {
+                vckit::poster_submit(poster_, [this, run_id, slot] {
                     const vc_api::RunLine e{run_id, 0, "（超时，已强制终止）"};
                     host_.emit_slot(vc_api::run_line, slot, &e);
                 });
@@ -507,7 +507,7 @@ private:
         // （长驻进程的内存与句柄缓慢增长）。deactivate 先行 clear 时 find 落空即
         // no-op；abandoned 条目（读取线程已 detach）不擦——擦除即对已弃线程 UAF。
         if (!abandoned)
-            nostos::kit::poster_submit(poster_, [this, run_id] {
+            vckit::poster_submit(poster_, [this, run_id] {
                 std::lock_guard<std::mutex> lock(runs_mu_);
                 const auto it = runs_.find(run_id);
                 if (it == runs_.end()) return;
@@ -526,7 +526,7 @@ private:
 
     // PathJail 只读不可变：workspace_set 热切（宿主线程）与 run_tool（agent 线程）
     // 并发访问 ⇒ shared_ptr 原子换装，取局部副本后解引用
-    std::shared_ptr<nostos::kit::PathJail> jail_;
+    std::shared_ptr<vckit::PathJail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
     bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关，取舍见 activate）
     std::atomic<bool> sandboxed_{false};   // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控；

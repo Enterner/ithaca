@@ -26,8 +26,7 @@ nostos_plugin_module(llm_cloud_plugin
     src/request.cpp
     src/stream.cpp
     src/events.cpp)
-# kit：nlohmann/json（请求体/响应块编解码）；winhttp：系统 TLS 客户端（Tier 2，零第三方）
-target_link_libraries(llm_cloud_plugin PRIVATE nostos::kit)
+# winhttp：系统 TLS 客户端（零第三方）
 if(WIN32)
     target_link_libraries(llm_cloud_plugin PRIVATE winhttp)
 endif()

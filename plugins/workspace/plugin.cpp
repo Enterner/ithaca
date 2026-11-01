@@ -22,13 +22,13 @@
 #include "diff.hpp"
 #include "edit.hpp"
 #include "fs.hpp"
-#include <nostos/kit/path_jail.hpp>
+#include <vckit/path_jail.hpp>
 #include "vcws/read_paged.hpp"
 #include "snapshots.hpp"
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/regex.hpp>   // search 的正则（有界 NFA——std::regex 的回溯可被挂死）
-#include <nostos/kit/win.hpp>
+#include "regex.hpp"   // search 的正则（有界 NFA——std::regex 的回溯可被挂死）
+#include <vckit/win.hpp>
 
 #include <algorithm>  // std::count/clamp/max：read 行统计、search 行号与分页参数收敛
 #include <cstdlib>
@@ -89,7 +89,7 @@ std::string entry_rel(const fs::directory_entry& it, const std::string& rel_pref
     const fs::file_type ft = it.status(se).type();
     if (se || ft == fs::file_type::symlink || ft == fs::file_type::junction) return {};
     const std::string name =
-        nostos::kit::win::wide_to_utf8(it.path().filename().c_str());
+        vckit::win::wide_to_utf8(it.path().filename().c_str());
     return rel_prefix.empty() ? name : rel_prefix + "/" + name;
 }
 
@@ -101,7 +101,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<nostos::kit::PathJail>(
+        jail_ = std::make_unique<vckit::PathJail>(
             env != nullptr && *env != '\0' ? env : ".");
         store_ = std::make_unique<vcws::DiskStore>();
 
@@ -114,17 +114,17 @@ public:
         // 热接入提示（发现的主通道是 agent 的配置清单；这是给面板/日志看的）
         vcplugin::notify_tool_register(host_, vcws::kToolSvcName);
         host.log(2, "ithaca.workspace: 就绪，jail 根 = " +
-                        nostos::kit::win::wide_to_utf8(jail_->root().c_str()));
+                        vckit::win::wide_to_utf8(jail_->root().c_str()));
 
         // 工作区热切——重建 PathJail 边界，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
-            const std::wstring next = nostos::kit::win::utf8_to_wide(e->root);
+            const std::wstring next = vckit::win::utf8_to_wide(e->root);
             if (jail_ != nullptr && jail_->root() == next) return;   // 同值热切幂等（backfill 补发）
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<nostos::kit::PathJail>(e->root);
+            jail_ = std::make_unique<vckit::PathJail>(e->root);
             // 快照栈随根清空：FileSnap.full 是旧根解析的绝对路径，undo_write 直写
             // 该路径全程不再过新 jail——不清栈则切根后撤销会对旧工作区做 jail 外写
             snaps_ = vcws::SnapshotStack{};
@@ -403,7 +403,7 @@ private:
         if (query.empty()) return fail("query 为空");
         const bool use_re = args.value("regex", false);
         const bool icase = args.value("ignore_case", false);
-        nostos::kit::Regex re;
+        vcws::Regex re;
         std::string lit = query;
         if (use_re) {
             std::string re_err;
@@ -429,7 +429,7 @@ private:
 
     // 命中迭代：regex（有界 NFA，icase 内建于编译选项）或字面子串（icase 走小写
     // 副本）。cb 返回 false = 停止迭代（命中上限/停止旗）
-    void each_hit(const std::string& content, bool use_re, const nostos::kit::Regex* re,
+    void each_hit(const std::string& content, bool use_re, const vcws::Regex* re,
                   const std::string& lit, const std::function<bool(std::size_t)>& cb) const {
         if (use_re) {
             re->find_all(content,
@@ -442,7 +442,7 @@ private:
     }
 
     void walk_search(const fs::path& dir, const std::string& rel_prefix, int depth,
-                     int max_hits, bool use_re, const nostos::kit::Regex* re,
+                     int max_hits, bool use_re, const vcws::Regex* re,
                      const std::string& lit, bool lower_hay) {
         if (stop_ || depth <= 0) {
             if (depth <= 0) truncated_ = true;
@@ -647,7 +647,7 @@ private:
     // ---- 状态 ---------------------------------------------------------------------
 
     nostos::abi::Host host_{};
-    std::unique_ptr<nostos::kit::PathJail> jail_;
+    std::unique_ptr<vckit::PathJail> jail_;
     std::unique_ptr<vcws::TextStore> store_;  // DiskStore；单测走 MemoryStore 的纯逻辑头
     vcws::SnapshotStack snaps_;
     std::vector<nostos::abi::Host::Subscription> subs_;  // 工作区热切订阅

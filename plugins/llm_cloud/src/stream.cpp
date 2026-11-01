@@ -1,12 +1,12 @@
 // plugin/llm_cloud · 请求线程：WinHTTP 全套 + SSE 逐行拼装 → post_*。全部请求态
-// （拼装/取消旗/句柄/凭据快照）随线程走；端点解析/错误人话走 kit::win_http 单源
+// （拼装/取消旗/句柄/凭据快照）随线程走；端点解析/错误人话走 vckit::win_http 单源
 // （webui 同款消费），句柄 RAII 收在本 TU 匿名 ns。登记 → src/request.cpp；回流 →
 // src/events.cpp。
 
 #include "llm_cloud_plugin.hpp"
 #include "../sse.hpp"  // vcllm::SseParser 等纯逻辑件（tests/unit 直接引用，留插件根）
 
-#include <nostos/kit/win_http.hpp>  // crack_url/UrlParts + winhttp_error_text（单源）
+#include <vckit/win_http.hpp>  // crack_url/UrlParts + winhttp_error_text（单源）
 
 #include <chrono>  // 请求耗时日志
 #include <cctype>
@@ -71,7 +71,7 @@ void CloudPlugin::run_request_(int rid, json messages, json tools, std::string m
     }
     // 回收：经 poster 回宿主线程 join + 擦表——worker 自 erase 会析构
     // joinable thread ⇒ terminate；宿主线程 join 已近完成的线程合法且短暂
-    nostos::kit::poster_submit(poster_, [this, rid] {
+    vckit::poster_submit(poster_, [this, rid] {
         std::lock_guard<std::mutex> lock(requests_mu_);
         const auto it = requests_.find(rid);
         if (it != requests_.end()) {
@@ -96,9 +96,9 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                               StreamState& st,
                               const std::atomic<bool>& stopping, std::atomic<HINTERNET>& active,
                               int& http_code, std::string& err) {
-    nostos::kit::win::UrlParts ep;
+    vckit::win::UrlParts ep;
     unsigned long crack_gle = 0;
-    if (!nostos::kit::win::crack_url(base_wide, ep, crack_gle)) {
+    if (!vckit::win::crack_url(base_wide, ep, crack_gle)) {
         err = "API 地址无法解析（检查 ITHACA_API_BASE）";
         return false;
     }
@@ -109,13 +109,13 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
     if (session.h == nullptr)  // 老系统不支持自动代理：回退默认代理
         session.h = WinHttpOpen(L"ithaca/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (session.h == nullptr) { err = nostos::kit::win::winhttp_error_text(GetLastError()); return false; }
+    if (session.h == nullptr) { err = vckit::win::winhttp_error_text(GetLastError()); return false; }
     HandleRAII conn{WinHttpConnect(session.h, ep.host.c_str(), ep.port, 0)};
-    if (conn.h == nullptr) { err = "连接失败: " + nostos::kit::win::winhttp_error_text(GetLastError()); return false; }
+    if (conn.h == nullptr) { err = "连接失败: " + vckit::win::winhttp_error_text(GetLastError()); return false; }
     HandleRAII req{WinHttpOpenRequest(conn.h, L"POST", ep.path.c_str(), nullptr,
                                       WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                       ep.secure ? WINHTTP_FLAG_SECURE : 0)};
-    if (req.h == nullptr) { err = nostos::kit::win::winhttp_error_text(GetLastError()); return false; }
+    if (req.h == nullptr) { err = vckit::win::winhttp_error_text(GetLastError()); return false; }
     // 首字节窗 300s：thinking 模型读大上下文后服务端可能长时间不吐首字节，
     // 固定短窗会掐死合法长思考轮（踩过: 122s 无数据 ⇒ 请求失败，同任务另一轮
     // 顺利通过——纯时序非确定性，不是模型/网络异常）。收到响应头后恢复 120s：
@@ -171,11 +171,11 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                             static_cast<LPVOID>(const_cast<char*>(body_str.data())),
                             static_cast<DWORD>(body_str.size()),
                             static_cast<DWORD>(body_str.size()), 0)) {
-        err = "发送请求失败: " + nostos::kit::win::winhttp_error_text(GetLastError());
+        err = "发送请求失败: " + vckit::win::winhttp_error_text(GetLastError());
         return false;
     }
     if (!WinHttpReceiveResponse(req.h, nullptr)) {
-        err = "接收响应失败: " + nostos::kit::win::winhttp_error_text(GetLastError());
+        err = "接收响应失败: " + vckit::win::winhttp_error_text(GetLastError());
         return false;
     }
     // 响应头已到 ⇒ 流式期恢复常规接收窗（增量间隔超 120s 才判死）
@@ -200,14 +200,14 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
         if (stopping.load()) { err = "请求已取消"; return false; }
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(req.h, &available)) {
-            err = "读取流失败: " + nostos::kit::win::winhttp_error_text(GetLastError());
+            err = "读取流失败: " + vckit::win::winhttp_error_text(GetLastError());
             return false;
         }
         if (available == 0) break;  // 服务器关流（未见 [DONE] 也按完成处理——容错）
         std::string chunk(available, '\0');
         DWORD got = 0;
         if (!WinHttpReadData(req.h, chunk.data(), available, &got)) {
-            err = "读取流失败: " + nostos::kit::win::winhttp_error_text(GetLastError());
+            err = "读取流失败: " + vckit::win::winhttp_error_text(GetLastError());
             return false;
         }
         chunk.resize(got);

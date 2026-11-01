@@ -119,7 +119,7 @@ void AgentCtx::exec_undo() {
 
 void AgentCtx::emit_subagent_(int turn_id, int phase, const char* tool,
                               const std::string& text) {
-    nostos::kit::Scratch scratch;
+    vc_agent::Scratch scratch;
     const vc_api::SubagentEvent e{turn_id, phase, tool, scratch.hold(text),
                                   scratch.hold(session_id_)};
     host_.emit(vc_api::subagent_event, &e);
@@ -128,7 +128,7 @@ void AgentCtx::emit_subagent_(int turn_id, int phase, const char* tool,
 void AgentCtx::emit_tool_call(const std::string& name, const json& args) {
     // 参数摘要人话化（op 清单/读哪个文件/搜什么词，原始 JSON 对人不可读）；
     // 解析不出 ⇒ 空，回退原 JSON 截断（前向兼容未知工具）
-    nostos::kit::Scratch scratch;
+    vc_agent::Scratch scratch;
     std::string brief = summarize_call(tool_last(name), args, ws_root_);
     if (brief.empty()) brief = trim(args.dump(), 200);
     if (subagent_) {   // 子代理工作记录：广播给 UI（落 transcript），不进任何上下文
@@ -159,7 +159,7 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
     // 结果摘要人话化；后台受理 ack 的归属信号随事件下发（ToolResult 尾部追加
     // run_id 字段）——消费方按字段建「调用行 ↔ run」映射，不从 brief 文案反解。
     // 仅 ack 形态（run_id>0 且无 exit_code）填充
-    nostos::kit::Scratch scratch;
+    vc_agent::Scratch scratch;
     long long ack_run = 0;
     {
         const json r = json::parse(brief, nullptr, /*allow_exceptions=*/false);
@@ -174,7 +174,7 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
 
 void AgentCtx::notice(const std::string& text) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
-    nostos::kit::Scratch scratch;
+    vc_agent::Scratch scratch;
     const vc_api::Notice e{2, scratch.hold(text), 0, nullptr, 0, 0,
                            scratch.hold(session_id_)};
     host_.emit(vc_api::notice, &e);
@@ -184,7 +184,7 @@ void AgentCtx::notice_meta(const std::string& text, std::string_view kind,
                            long long run_id, int count) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
     const std::string k(kind);   // 事件载荷调用期有效——拷贝保活到 emit 返回
-    nostos::kit::Scratch scratch;
+    vc_agent::Scratch scratch;
     const vc_api::Notice e{2, scratch.hold(text), 0, k.c_str(), run_id, count,
                            scratch.hold(session_id_)};
     host_.emit(vc_api::notice, &e);

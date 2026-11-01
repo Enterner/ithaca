@@ -4,7 +4,7 @@
 // 线程入口）、通用工具（parse_body_/json_resp/mime_of/file_/broadcast_）与
 // NOSTOS_PLUGIN 入口。其余端点与后台线程按职责切片，地图见 include/webui_plugin.hpp。
 //
-// 总职责：kit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
+// 总职责：vckit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
 // JSONL 持久化 + SSE 广播；输入/裁决经 poster 回总线。会话持久化的两层：
 //   · transcript.jsonl（本插件写，展示事件流，每条 flush）
 //   · state.json（agent 写，LLM 上下文；路径由启动器按活跃会话给定）
@@ -178,7 +178,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     if (session_.empty() && std::getenv("ITHACA_WORKSPACE_DIR") == nullptr &&
         config_.value("workspace", "") != "") {
         const std::string ws0 = config_.value("workspace", "");
-        nostos::kit::poster_submit(poster_, [this, ws0] {
+        vckit::poster_submit(poster_, [this, ws0] {
             const vc_api::WorkspaceSet e{ws0.c_str()};
             host_.emit(vc_api::workspace_set, &e);
         });
@@ -187,7 +187,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     {
         const std::string mode = vc_api::normalize_permission_mode(
             config_.value("permission_mode", "auto-edit"));
-        nostos::kit::poster_submit(poster_, [this, mode] {
+        vckit::poster_submit(poster_, [this, mode] {
             const vc_api::PermissionMode e{mode.c_str()};
             host_.emit(vc_api::permission_mode, &e);
         });

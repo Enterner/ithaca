@@ -6,7 +6,7 @@
 //（agent 压缩按工具名末段分派摘要分支、前端徽标读 doc 字段），形状分叉即事故，
 // 所以管线只此一份；文档扩展名清单同理（workspace 守卫 / office 受理 / webui
 // /api/fs/read 分流三处消费，各抄一份必然漂移）。
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 

@@ -28,6 +28,7 @@ target_link_libraries(ithaca_host PRIVATE nostos::loader)  # loader = 框架里�
 
 target_include_directories(ithaca_host PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../contract"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../shared"
     "${NOSTOS_ROOT}/include")
 
 if(MSVC)

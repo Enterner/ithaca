@@ -32,8 +32,8 @@
 // 接受；官方只发类型库不发 C++ 头，late binding 是零依赖自动化的标准路。
 #include "vcoffice/iface.hpp"  // vcoffice::PreviewDoneFn：回调签名单源
 
-#include <nostos/kit/win.hpp>  // nostos::kit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
-#include <nostos/nlohmann/json.hpp>
+#include <vckit/win.hpp>  // vckit::win：UTF-8 ↔ 宽字符（全仓唯一实现）
+#include "nlohmann/json.hpp"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -410,10 +410,10 @@ private:
     }
 
     static std::string wide_to_utf8_(const std::wstring& w) {
-        return nostos::kit::win::wide_to_utf8(w.c_str());
+        return vckit::win::wide_to_utf8(w.c_str());
     }
     static std::wstring utf8_to_wide_(const std::string& s) {
-        return nostos::kit::win::utf8_to_wide(s.c_str());
+        return vckit::win::utf8_to_wide(s.c_str());
     }
 
     // 存量同名进程 PID 快照（工具链快照；映像名比较大小写不敏感——大小写随启动方）

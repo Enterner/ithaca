@@ -33,10 +33,10 @@
 
 #include "WebView2.h"
 
-#include <nostos/kit/win.hpp>  // utf8_to_wide/wide_to_utf8（小文件读写的编码转换）
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（探测/停机通知）
+#include <vckit/win.hpp>  // utf8_to_wide/wide_to_utf8（小文件读写的编码转换）
+#include <vckit/win_http.hpp>  // 一发 HTTP 请求小件（探测/停机通知）
 
-namespace win = nostos::kit::win;
+namespace win = vckit::win;
 
 #include <string>
 #include <thread>
@@ -115,7 +115,7 @@ void LogLine(const std::wstring& msg) {
 }
 
 // ---- 小文件读写（UTF-8 ⇄ wide；manifest/port/index 皆小文件）----------------
-// 编码转换走 kit::win（与全仓同一份实现）
+// 编码转换走 vckit::win（与全仓同一份实现）
 std::wstring ReadSmallFile(const std::wstring& path) {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, 0, nullptr);
@@ -222,7 +222,7 @@ std::wstring ExtractSessionBlock(const std::wstring& index_text, const std::wstr
     return L"";
 }
 
-// ---- HTTP（短超时，worker 线程专用；一发请求小件见 kit/win_http.hpp）--------
+// ---- HTTP（短超时，worker 线程专用；一发请求小件见 vckit/win_http.hpp）--------
 bool HttpGetOk(UINT port, const wchar_t* path) {
     const std::wstring url =
         std::wstring(L"http://127.0.0.1:") + std::to_wstring(port) + path;
@@ -296,7 +296,7 @@ void WorkerLoop(HWND hwnd) {
             else
                 it = health_miss.erase(it);
         }
-        nostos::kit::win::sleep_interruptible(std::chrono::milliseconds(2000),
+        vckit::win::sleep_interruptible(std::chrono::milliseconds(2000),
                                               std::chrono::milliseconds(100), g_run);
     }
 }
@@ -373,7 +373,7 @@ void SpawnInstance(size_t idx) {
         {L"ITHACA_SHELL_MANIFEST", g_data + L"\\shell-manifest.txt"},
         {L"ITHACA_LLM_ACTIVE", g_mock_mode ? L"mock" : L"cloud"},   // 模式显式化（webui 面板单侧显示的依据）
     };
-    std::wstring env = nostos::kit::win::build_env_block_w(host_env);
+    std::wstring env = vckit::win::build_env_block_w(host_env);
 
     const std::wstring log = it.home + L"\\host.log";
     HANDLE host_log = CreateFileW(log.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,

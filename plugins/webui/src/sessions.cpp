@@ -387,7 +387,7 @@ void WebuiPlugin::switch_to_(const std::string& id) {
     if (ws_changed) host_workspace_ = ws;
     // 广播与 emit 投宿主线程排水（activate 期 server 未建 = 广播 no-op，
     // SSE 客户端连上后由 /api/transcript 重放补齐——不丢事实）
-    nostos::kit::poster_submit(poster_, [this, path = sp.string(), id, ws, ws_changed] {
+    vckit::poster_submit(poster_, [this, path = sp.string(), id, ws, ws_changed] {
         // 会话边界：旧会话残留的思考不串进新会话收口记录
         reasoning_buf_.erase(id);
         broadcast_({{"type", "session"}, {"id", id}, {"workspace", ws}});

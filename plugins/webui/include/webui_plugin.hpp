@@ -15,14 +15,14 @@
 //                         附件图片字节出口）
 //   src/api_fs.cpp     —— 工作区代理端点（文件树/查看器/MCP 状态）
 //
-// 总职责：kit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
+// 总职责：vckit::http serve SPA + REST + SSE；订阅事件总线（tui 同款事件面）⇒
 // JSONL 持久化 + SSE 广播；输入/裁决经 poster 回总线。会话持久化的两层：
 //   · transcript.jsonl（本插件写，展示事件流，每条 flush）
 //   · state.json（agent 写，LLM 上下文；路径由启动器按活跃会话给定）
 //
 // 线程纪律（全量单线程化）：Handler::handle 在 select 线程上只做解析、校验、
 // 投递与挂起返回——静态文件与 /events 零共享态，同步直答；其余端点经 defer_
-// 把业务体投宿主线程后挂起，真响应走 kit 挂起-补响应原语补发。数据面触碰
+// 把业务体投宿主线程后挂起，真响应走本插件 http 件的挂起-补响应原语补发。数据面触碰
 // （records_/session_/pending_turn_/index_/out_/agent_logs_*/ui_registry_/
 // config_ 等）全部收敛宿主线程：poster 闭包与事件回调同经宿主排水串行化，
 // 无共享无锁。prober 线程自持 probe_mu_ 守护探测缓存。
@@ -39,8 +39,8 @@
 #include "vcoffice/iface.hpp"  // vcoffice::PreviewTable：/api/fs/preview 的预览转换表
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/http.hpp>
-#include <nostos/kit/poster.hpp>  // poster_submit：多个翻译单元共用
+#include "http.hpp"
+#include <vckit/poster.hpp>  // poster_submit：多个翻译单元共用
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -48,8 +48,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>  // HANDLE：fs_watcher 状态成员（宏守卫自带——kit/win.hpp 曾经
-                      // 前置供 NOMINMAX，下沉到消费 TU 后守卫跟到这里）
+#include <windows.h>  // HANDLE：fs_watcher 状态成员（LEAN_AND_MEAN/NOMINMAX 宏守卫在本 TU 自带，
+                      // 不依赖 vckit/win.hpp 前置）
 
 #include <atomic>
 #include <cstdint>
@@ -58,7 +58,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include <string>
 #include <string_view>
 #include <thread>
@@ -67,13 +67,13 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-namespace http = nostos::kit::http;
+namespace http = vc_webui::http;
 
 namespace vc_webui {
 
 using json = nlohmann::json;
 
-// ---- 原生选目录对话框（UI 原语，自内核 kit::win 下沉到唯一消费方；置顶修复随迁）--
+// ---- 原生选目录对话框（UI 原语，自内核 vckit::win 下沉到唯一消费方；置顶修复随迁）--
 
 // 弹出"选择文件夹"对话框（IFileDialog + FOS_PICKFOLDERS：Vista 现代样式，
 // Explorer 同款面包屑/侧栏/搜索；老 SHBrowseForFolderW 是 Win95 树形对话框）。
@@ -121,12 +121,12 @@ private:
     // NOTE: 闭包异常经 poster 的异常钩子就地兜成 500 补发——poster 吞异常且挂起
     // 连接豁免 stall 超时，不补即永久占一个连接槽（max_clients 占满 = 整个服务
     // 停摆）；磁盘字段类型漂移（json::value<T> 严格取值抛 type_error）是真实
-    // 触发源。钩子原语在内核（kit poster_submit 第三参），本插件只提供补发出口。
+    // 触发源。钩子原语在 vckit::poster_submit（第三参 on_error），本插件只提供补发出口。
     template <typename F>
         requires std::is_void_v<std::invoke_result_t<F&, std::uint64_t>>
     http::Response defer_(const http::Request& req, F&& fn) {
         const std::uint64_t conn = req.conn_id;
-        const nostos_status st = nostos::kit::poster_submit(
+        const nostos_status st = vckit::poster_submit(
             poster_, [this, conn, fn = std::forward<F>(fn)]() mutable { fn(conn); },
             [this, conn](std::exception_ptr e) {
                 try {

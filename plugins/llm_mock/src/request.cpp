@@ -44,7 +44,7 @@ nostos_status MockPlugin::chat_(int request_id, const char* /*messages 或 body�
 // worker 收尾回收：经 poster 回宿主线程 join + 擦表（自 erase 会析构
 // joinable thread => terminate；与 llm_cloud 同款纪律）
 void MockPlugin::finish_request_(int rid) {
-    nostos::kit::poster_submit(poster_, [this, rid] {
+    vckit::poster_submit(poster_, [this, rid] {
         std::lock_guard<std::mutex> lock(requests_mu_);
         const auto it = requests_.find(rid);
         if (it != requests_.end()) {

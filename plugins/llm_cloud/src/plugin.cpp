@@ -4,7 +4,7 @@
 
 #include "llm_cloud_plugin.hpp"
 
-#include <nostos/kit/win.hpp>  // utf8_to_wide（env 与热切的宽字符转换）
+#include <vckit/win.hpp>  // utf8_to_wide（env 与热切的宽字符转换）
 
 #include <cstdlib>
 #include <set>
@@ -22,7 +22,7 @@ nostos_status CloudPlugin::activate(const nostos::abi::Host& host) {
     table_.info = &CloudPlugin::info_thunk;
     table_.chat_ex = &CloudPlugin::chat_ex_thunk;
     table_.set_model = &CloudPlugin::set_model_thunk;
-    // provider 热切：机制收编 kit::active_gate（竞争样板单源）——env 门首发 +
+    // provider 热切：机制收编 vckit::active_gate（竞争样板单源）——env 门首发 +
     // vc.llm.set_active 热切，载荷落地（凭据/端点/子档案）在 classify 的 mine 分支
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host.log(4, "ithaca.llm.cloud: 领取 poster 失败（宿主 ABI 过旧或未实现）");
@@ -33,13 +33,13 @@ nostos_status CloudPlugin::activate(const nostos::abi::Host& host) {
         [this](const void* p) {
             const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
             if (e->provider == nullptr || std::string_view(e->provider) != "cloud")
-                return nostos::kit::active_gate::prefer::other;
+                return vckit::active_gate::prefer::other;
             apply_profile_(e->key != nullptr ? std::string(e->key) : "",
                            e->base_url != nullptr ? std::string(e->base_url) : "",
                            e->sub_model != nullptr ? std::string(e->sub_model) : "",
                            e->sub_key != nullptr ? std::string(e->sub_key) : "",
                            e->sub_base_url != nullptr ? std::string(e->sub_base_url) : "");
-            return nostos::kit::active_gate::prefer::mine;
+            return vckit::active_gate::prefer::mine;
         },
         [this] {
             if (host_.publish(vc_api::llm, &table_) != NOSTOS_OK) {
@@ -83,20 +83,20 @@ void CloudPlugin::apply_profile_(const std::string& key, const std::string& base
         std::lock_guard<std::mutex> lock(model_mu_);
         if (!key.empty()) {
             key_ = key;
-            key_wide_ = nostos::kit::win::utf8_to_wide(key);
+            key_wide_ = vckit::win::utf8_to_wide(key);
         }
         if (!base_url.empty()) {
             base_utf8_ = base_url;
-            base_wide_ = nostos::kit::win::utf8_to_wide(base_url);
+            base_wide_ = vckit::win::utf8_to_wide(base_url);
         }
         const bool sub_ok =
             !sub_model.empty() && !sub_key.empty() && !sub_base_url.empty();
         if (sub_ok) {
             sub_model_ = sub_model;
             sub_key_ = sub_key;
-            sub_key_wide_ = nostos::kit::win::utf8_to_wide(sub_key);
+            sub_key_wide_ = vckit::win::utf8_to_wide(sub_key);
             sub_base_utf8_ = sub_base_url;
-            sub_base_wide_ = nostos::kit::win::utf8_to_wide(sub_base_url);
+            sub_base_wide_ = vckit::win::utf8_to_wide(sub_base_url);
         } else {
             sub_model_.clear();
             sub_key_.clear();
@@ -149,10 +149,10 @@ void CloudPlugin::load_env_() {
     } else {
         base_utf8_ = vc_api::kDefaultCloudBaseUrl;
     }
-    base_wide_ = nostos::kit::win::utf8_to_wide(base_utf8_);
+    base_wide_ = vckit::win::utf8_to_wide(base_utf8_);
     if (const char* v = std::getenv("ITHACA_MODEL"); v != nullptr && *v != '\0') model_ = v;
     else model_ = "deepseek-flash";
-    key_wide_ = nostos::kit::win::utf8_to_wide(key_);
+    key_wide_ = vckit::win::utf8_to_wide(key_);
 }
 
 }  // namespace vc_llm_cloud

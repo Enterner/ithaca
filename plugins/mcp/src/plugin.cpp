@@ -101,7 +101,7 @@ void McpPlugin::emit_status_() {
     }
     // 回发经 poster：调用方可能在后台线程（直接 emit 违反线程纪律）。
     // 快照按值捕获——下一次回发可能已重写状态，事件携带的必须是本次看到的。
-    nostos::kit::poster_submit(poster_, [this, snapshot] {
+    vckit::poster_submit(poster_, [this, snapshot] {
         const vc_api::McpStatus e{snapshot.c_str()};
         host_.emit(vc_api::mcp_status, &e);
     });

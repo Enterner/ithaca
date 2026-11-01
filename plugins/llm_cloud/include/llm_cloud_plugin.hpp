@@ -19,7 +19,7 @@
 //   ITHACA_API_BASE   默认 https://api.deepseek.com（OpenAI 兼容端均可）
 //   ITHACA_MODEL      默认 deepseek-flash
 //
-// 线程纪律：chat() 起请求线程（标签制：多请求可并发在途，各自独立线程/连接/拼装态）；线程内只做 WinHTTP 读写 + kit::poster_submit——一切
+// 线程纪律：chat() 起请求线程（标签制：多请求可并发在途，各自独立线程/连接/拼装态）；线程内只做 WinHTTP 读写 + vckit::poster_submit——一切
 // 宿主 API（emit/log）都在 poster 任务（宿主线程带桥）里发生。cancel：按 rid 置停止
 // 位 + 跨线程关请求句柄（WinHTTP 的阻塞读写会立即带错误返回），请求线程随后以
 // 「已取消」的 error 事件收尾——没有悬空请求，没有悬空线程。
@@ -29,10 +29,10 @@
 #include "vc_llm.hpp"
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/active_gate.hpp>
-#include <nostos/kit/poster.hpp>
+#include <vckit/active_gate.hpp>
+#include <vckit/poster.hpp>
 
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -168,8 +168,8 @@ private:
     std::vector<nostos::abi::Host::Subscription> subs_;  // provider 热切订阅（vc.llm.set_active）
     std::mutex model_mu_;
     // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=发布，单 provider 启动
-    // 如 vc.ps1 保持原行为）+ vc.llm.set_active 热切的机制托管（kit 单源）
-    nostos::kit::active_gate gate_{"ithaca.llm.cloud", "ITHACA_LLM_ACTIVE", "cloud",
+    // 如 vc.ps1 保持原行为）+ vc.llm.set_active 热切的机制托管（vckit 单源）
+    vckit::active_gate gate_{"ithaca.llm.cloud", "ITHACA_LLM_ACTIVE", "cloud",
                                    /*publish_when_unset=*/true};
 };
 

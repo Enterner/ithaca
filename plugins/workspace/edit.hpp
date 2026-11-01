@@ -10,11 +10,11 @@
 // committed 标志实现"成功路径零副作用、失败路径 LIFO 全量还原"。
 #include "diff.hpp"
 #include "fs.hpp"
-#include <nostos/kit/path_jail.hpp>
+#include <vckit/path_jail.hpp>
 
 #include <nostos/plugin_scope.hpp>
 
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <string>
@@ -192,7 +192,7 @@ inline ApplyResult rejected_midway(ApplyResult r, std::vector<FileEdit> planned,
 // **不用模型原文**——路径写法变体（"./x"、大小写、反斜杠）指向同一真实文件，
 // 按原文做键会让编辑静默丢失。同文件多 op 折叠为一条
 // planned（before=批前原状，after=末次结果，ops_count 计数），diff 随之只出一张。
-inline ApplyResult apply_ops(const nostos::kit::PathJail& jail, TextStore& store, const std::vector<EditOp>& ops,
+inline ApplyResult apply_ops(const vckit::PathJail& jail, TextStore& store, const std::vector<EditOp>& ops,
                              bool dry_run) {
     ApplyResult r;
     std::vector<FileEdit> planned;                              // 每文件一项

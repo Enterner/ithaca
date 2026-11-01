@@ -5,13 +5,13 @@
 #include "webui_plugin.hpp"
 
 #include <chrono>  // std::chrono：探测间隔时长
-#include <nostos/kit/win.hpp>  // sleep_interruptible：探测间隔
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 探测小件（兄弟实例健康检查）
+#include <vckit/win.hpp>  // sleep_interruptible：探测间隔
+#include <vckit/win_http.hpp>  // 一发 HTTP 探测小件（兄弟实例健康检查）
 
 #include <sstream>  // std::ostringstream：整读兄弟实例 index.json
 
 namespace vc_webui {
-namespace win = nostos::kit::win;  // 探测请求小件
+namespace win = vckit::win;  // 探测请求小件
 
 // manifest 行解析（探测线程与聚合端点共用一份口径）：剥 CR/尾空格 → 找 TAB 分隔
 // → 跳 ACTIVE 指示行。返回 false = 空行/格式行/ACTIVE（调用方 continue）
@@ -60,7 +60,7 @@ void WebuiPlugin::start_prober_() {
                 std::lock_guard<std::mutex> lock(probe_mu_);
                 probe_cache_ = std::move(fresh);
             }
-            nostos::kit::win::sleep_interruptible(std::chrono::milliseconds(2000),
+            vckit::win::sleep_interruptible(std::chrono::milliseconds(2000),
                                                   std::chrono::milliseconds(100),
                                                   prober_run_);
         }

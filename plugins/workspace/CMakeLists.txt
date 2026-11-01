@@ -19,8 +19,5 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(workspace_plugin plugin.cpp)
-# kit 的 include 目录：ops/results 的 JSON 编解码用 nlohmann/json（版本随内核 vendored，
-# 经 nostos::kit 的 BUILD_INTERFACE 拿到——外部消费仓不必自带一份）。
-target_link_libraries(workspace_plugin PRIVATE nostos::kit)
 target_include_directories(workspace_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
 target_include_directories(workspace_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

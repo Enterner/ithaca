@@ -247,7 +247,7 @@ void WebuiPlugin::backfill_workspace_() {
     if (ws_backfilled_ || session_.empty() || host_workspace_.empty()) return;
     ws_backfilled_ = true;
     const std::string ws = host_workspace_;
-    nostos::kit::poster_submit(poster_, [this, ws] {
+    vckit::poster_submit(poster_, [this, ws] {
         const vc_api::WorkspaceSet e{ws.c_str()};
         host_.emit(vc_api::workspace_set, &e);
     });

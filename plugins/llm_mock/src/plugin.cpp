@@ -4,7 +4,7 @@
 
 #include "llm_mock_plugin.hpp"
 
-#include <nostos/kit/win.hpp>  // utf8_to_wide（turn 剧本文件路径）
+#include <vckit/win.hpp>  // utf8_to_wide（turn 剧本文件路径）
 
 #include <cstdlib>
 #include <fstream>
@@ -22,7 +22,7 @@ nostos_status MockPlugin::activate(const nostos::abi::Host& host) {
     table_.info = &MockPlugin::info_thunk;
     table_.chat_ex = &MockPlugin::chat_ex_thunk;  // M3：agent 经 chat_ex 带 tools 提交
     table_.set_model = &MockPlugin::set_model_thunk;  // 热切（mock 仅记录，回放不变）
-    // 发布门槛（产品拍板：mock 仅测试模式）收编 kit::active_gate：缺省（env 未设）
+    // 发布门槛（产品拍板：mock 仅测试模式）收编 vckit::active_gate：缺省（env 未设）
     // 休眠，ITHACA_LLM_ACTIVE=mock 才首发。启动器同时按模式互斥装载两 llm 插件，
     // 本判定只防旧启动路径的双装载竞争（同名服务热切竞态，踩过）
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
@@ -34,8 +34,8 @@ nostos_status MockPlugin::activate(const nostos::abi::Host& host) {
         [this](const void* p) {
             const auto* e = static_cast<const vc_api::LlmSetActive*>(p);
             return e->provider != nullptr && std::string_view(e->provider) == "mock"
-                       ? nostos::kit::active_gate::prefer::mine
-                       : nostos::kit::active_gate::prefer::other;
+                       ? vckit::active_gate::prefer::mine
+                       : vckit::active_gate::prefer::other;
         },
         [this] {
             if (host_.publish(vc_api::llm, &table_) != NOSTOS_OK) {
@@ -77,7 +77,7 @@ void MockPlugin::load_script_() {
     delay_env_();
 
     if (const char* path = std::getenv("ITHACA_MOCK_TURNS")) {
-        std::ifstream in(nostos::kit::win::utf8_to_wide(path));
+        std::ifstream in(vckit::win::utf8_to_wide(path));
         json doc = json::parse(in, nullptr, /*allow_exceptions=*/false);
         if (!doc.is_discarded() && doc.is_array() && !doc.empty()) {
             turns_ = doc.get<std::vector<json>>();

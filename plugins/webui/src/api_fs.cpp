@@ -91,7 +91,7 @@ json WebuiPlugin::call_tool_json_(const vc_api::ToolTable* table, const char* to
 // ---- 版式预览（/api/fs/preview）------------------------------------------------
 // docx/doc/pptx/ppt/pdf → PDF 字节流的版式级预览出口。数据面：office 的
 // PreviewTable.convert 只提交（立即返回），重活在 office 的 STA 转换线程；
-// 本端点挂起连接，结果经 on_done 回调在转换线程上补发（kit respond 原语支持
+// 本端点挂起连接，结果经 on_done 回调在转换线程上补发（http 件 respond 原语支持
 // 任意线程，连接已断静默丢弃）。
 //
 // 回调生命周期（deactivate 顺序不定的悬垂防线）：ud 是堆上的 PreviewWait——

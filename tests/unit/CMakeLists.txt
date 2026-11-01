@@ -13,7 +13,7 @@ endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/nostos_root.cmake")
 
-if(NOT TARGET nostos::kit)
+if(NOT TARGET nostos::core)
     add_subdirectory("${NOSTOS_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/_nostos" EXCLUDE_FROM_ALL)
 endif()
 
@@ -39,7 +39,7 @@ target_include_directories(ithaca_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/agent"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/runner"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/webui")
-target_link_libraries(ithaca_unit_tests PRIVATE nostos::core nostos::kit)
+target_link_libraries(ithaca_unit_tests PRIVATE nostos::core)
 
 if(MSVC)
     # /utf-8 /EHsc /permissive- 经 nostos::core INTERFACE 传递（内核 7e0246c 起）

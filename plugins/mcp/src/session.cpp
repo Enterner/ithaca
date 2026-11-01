@@ -1,18 +1,18 @@
-// plugin/mcp · stdio 传输与 JSON-RPC 会话。子进程原语 = kit::PipedProcess（三管道、
-// Job 树杀、env 块按名合并全在 kit）：本文件只剩 mcp 侧的命令行拼装（引号策略）与
+// plugin/mcp · stdio 传输与 JSON-RPC 会话。子进程原语 = vckit::PipedProcess（三管道、
+// Job 树杀、env 块按名合并全在 vckit）：本文件只剩 mcp 侧的命令行拼装（引号策略）与
 // 会话方法——request 同步等 future，feed 分发响应，stdout 逐行分帧，stderr 独立
 // 线程收集尾部诊断。声明见 include/mcp_plugin.hpp。
 
 #include "mcp_plugin.hpp"
 
-#include <nostos/kit/piped_process.hpp>  // kit::read_lines：读循环拼装（行分帧在其内）
+#include <vckit/piped_process.hpp>  // vckit::read_lines：读循环拼装（行分帧在其内）
 
 namespace vc_mcp {
 namespace {
 
 // 命令行拼装：command 恒加引（路径可含空格），参数仅含空白时加引——cmd /c 型命令
 // （npx 系 server 的 Windows 标准接法）对全参数加引有「剥首尾引号」改写规则，会把
-// 命令行改写坏（踩过: cmd /c npx 链上 npm 前缀解析炸掉）。kit 收完整命令行串，
+// 命令行改写坏（踩过: cmd /c npx 链上 npm 前缀解析炸掉）。vckit 收完整命令行串，
 // 引号责任在调用方——本函数即 mcp 侧的引号策略落点。
 std::string compose_command_line(const std::string& command,
                                  const std::vector<std::string>& args) {
@@ -32,7 +32,7 @@ std::string compose_command_line(const std::string& command,
 
 bool McpSession::spawn(const std::string& command, const std::vector<std::string>& args,
                        const json& env_over, const std::string& cwd) {
-    nostos::kit::PipedSpawnOptions o;
+    vckit::PipedSpawnOptions o;
     o.cwd_utf8 = cwd;
     o.stdin_pipe = true;   // JSON-RPC 请求通道：父进程主动写子进程 stdin
     for (auto it = env_over.begin(); it != env_over.end(); ++it)
@@ -93,9 +93,9 @@ void McpSession::feed(const std::string& line) {   // 读线程：分发响应
 void McpSession::start_reader() {
     alive.store(true);
     reader = std::thread([this] {
-        // 行分帧走 kit::read_lines（读循环拼装单源；runner 同款）。非 Windows 下
+        // 行分帧走 vckit::read_lines（读循环拼装单源；runner 同款）。非 Windows 下
         // read_chunk 恒 false ⇒ 拼装件立即返回，alive 清旗路径不变
-        nostos::kit::read_lines(proc.stdout_read(), [this](const std::string& line) {
+        vckit::read_lines(proc.stdout_read(), [this](const std::string& line) {
             if (!line.empty()) feed(line);
         });
         alive.store(false);
@@ -123,7 +123,7 @@ void McpSession::start_stderr_drain() {
         std::string chunk;
         for (;;) {
             chunk.clear();
-            if (!nostos::kit::PipedProcess::read_chunk(proc.stderr_read(), chunk)) break;
+            if (!vckit::PipedProcess::read_chunk(proc.stderr_read(), chunk)) break;
             if (acc.size() < 400) acc.append(chunk);
         }
 #endif
@@ -134,7 +134,7 @@ void McpSession::start_stderr_drain() {
 
 void McpSession::shutdown() {
     alive.store(false);
-    // Job 整树终止（kit 内建）：cmd /c npx 链的孙进程一并死、管道写端随之关闭，
+    // Job 整树终止（vckit 内建）：cmd /c npx 链的孙进程一并死、管道写端随之关闭，
     // 读线程才能退出——只杀直接子会留孤儿持写端 ⇒ 读线程永挂（热重载死锁，踩过）
     proc.terminate_tree();
     if (reader.joinable()) reader.join();

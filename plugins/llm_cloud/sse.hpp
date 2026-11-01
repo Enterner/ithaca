@@ -6,9 +6,9 @@
 //   data: {...}\n\n            事件（本插件逐行处理，多行 data 的合并语义用不上）
 //   data: [DONE]\n\n           结束标记
 //   以 \n 或 \r\n 结尾；网络分块不保证对齐行尾——解析器内部缓冲拼行。
-#include <nostos/kit/piped_process.hpp>  // LineSplitter：\n 分行剥 \r、残余 flush——
+#include <vckit/piped_process.hpp>  // LineSplitter：\n 分行剥 \r、残余 flush——
                                          // 与子进程输出逐行读是同一件事，无第二份实现
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现（错误体截断用）
 
@@ -18,9 +18,9 @@ namespace vcllm {
 
 using nlohmann::json;
 
-// 行解析直接用内核 kit 的分割器（曾有逐字符相同的私有拷贝 SseParser，退役）；
+// 行解析直接用vckit 的分割器（曾有逐字符相同的私有拷贝 SseParser，退役）；
 // 别名保留 SSE 语境的可读性。
-using SseParser = nostos::kit::LineSplitter;
+using SseParser = vckit::LineSplitter;
 
 // chat.completion.chunk → 增量文本。role 块 / usage 块 / finish 块都返回空串——
 // 调用方跳过空增量即可。（DeepSeek reasoner 的 reasoning_content 增量见 delta_reasoning_of。）

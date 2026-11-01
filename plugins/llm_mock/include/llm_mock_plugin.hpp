@@ -18,17 +18,17 @@
 //
 // 线程纪律：chat() 在宿主线程被调（有桥），只做"起线程"（标签制：请求态随线程
 // 走，多会话槽可并发在途）；回放线程只经
-// kit::poster_submit 把事件投回宿主线程，绝不直接碰宿主 API。
+// vckit::poster_submit 把事件投回宿主线程，绝不直接碰宿主 API。
 #pragma once
 
 #include "vc_events.hpp"
 #include "vc_llm.hpp"
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/active_gate.hpp>
-#include <nostos/kit/poster.hpp>
+#include <vckit/active_gate.hpp>
+#include <vckit/poster.hpp>
 
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -94,8 +94,8 @@ private:
     nostos_poster poster_{};
     vc_api::LlmTable table_{};
     // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=休眠，产品拍板 mock 仅
-    // 测试模式）+ vc.llm.set_active 热切的机制托管（kit 单源）
-    nostos::kit::active_gate gate_{"ithaca.llm.mock", "ITHACA_LLM_ACTIVE", "mock",
+    // 测试模式）+ vc.llm.set_active 热切的机制托管（vckit 单源）
+    vckit::active_gate gate_{"ithaca.llm.mock", "ITHACA_LLM_ACTIVE", "mock",
                                    /*publish_when_unset=*/false};
     std::vector<nostos::abi::Host::Subscription> subs_;
 

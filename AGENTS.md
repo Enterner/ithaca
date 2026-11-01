@@ -36,8 +36,10 @@
 三级可见性，路径即答案（对齐 LLVM include/lib 三层与 Chromium DEPS 的机制执行）：
 
 - `contract/` —— 冻结 C ABI，唯一的插件间稳定契约（改动见边界 Ask-first）。
-- `shared/` —— 跨插件共享头（准入：**≥2 个插件消费**；按 namespace 分子目录，
-  include 形态 `"vcws/text.hpp"`）。单消费者头永远留在插件内，消费者消失时迁回。
+- `shared/` —— 产品级共享头（准入：**≥2 个插件消费**；宿主/壳经同一裸名取用，
+  跨宿主/插件两域共用的平台件住 `vckit/`、第三方库 vendored 住 `nlohmann/`；
+  按 namespace 分子目录，include 形态 `"vcws/text.hpp"`）。单消费者头永远留在
+  插件内，消费者消失时迁回。
 - `plugins/<名>/` 全私有 —— `include/` = 内部类头（多 TU 插件的锚点）；根 = 私有
   纯逻辑头（单测白盒可达）；`src/` = 翻译单元。单 TU 插件平铺不建目录。
 

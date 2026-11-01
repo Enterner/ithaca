@@ -20,6 +20,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(webui_plugin
     src/plugin.cpp      # 生命周期 + HTTP 路由 + 通用工具 + NOSTOS_PLUGIN 入口
+    src/http.cpp        # HTTP/1.1+SSE 服务器实现（include/http.hpp 的编译体）
     src/picker.cpp      # 原生选目录对话框 + /api/pick-folder
     src/events.cpp      # 事件总线订阅
     src/sessions.cpp    # 会话注册表/transcript + /api/session* + 上下文构成
@@ -32,12 +33,11 @@ nostos_plugin_module(webui_plugin
 )
 # 内部头（include/webui_plugin.hpp：类声明 + 翻译单元职责地图）
 target_include_directories(webui_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-# kit::http 的实现在 kit 目标里；事件订阅与 JSON 编解码同款依赖
-target_link_libraries(webui_plugin PRIVATE nostos::kit nostos::kit_http)
 # 原生文件夹选择对话框：shell32（IFileDialog/SHCreateItemFromParsingName）+ ole32（CoInitializeEx/CoTaskMemFree）
 # 实例健康探测（多实例聚合 alive 真值）：winhttp
+# HTTP/SSE 服务器（src/http.cpp）的 WinSock：ws2_32
 if (WIN32)
-    target_link_libraries(webui_plugin PRIVATE shell32 ole32 winhttp)
+    target_link_libraries(webui_plugin PRIVATE shell32 ole32 winhttp ws2_32)
 endif()
 target_include_directories(webui_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
 target_include_directories(webui_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

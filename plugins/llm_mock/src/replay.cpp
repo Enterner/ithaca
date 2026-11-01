@@ -16,7 +16,7 @@ void MockPlugin::replay_(int rid, std::uint64_t slot, const std::atomic<bool>& s
     // 模拟深度思考增量（推理显示链路可测；真实推理来自 deepseek-reasoner）
     {
         const std::string think = "（模拟深度思考）正在分析请求并组织回答…";
-        nostos::kit::poster_submit(poster_, [this, rid, slot, text = think] {
+        vckit::poster_submit(poster_, [this, rid, slot, text = think] {
             const vc_api::LlmReasoning e{rid, text.c_str()};
             host_.emit_slot(vc_api::llm_reasoning, slot, &e);
         });
@@ -78,11 +78,11 @@ std::string MockPlugin::builtin_text_() const {
     return all;
 }
 
-// ---- 事件回流（kit::poster_submit；载荷所有权/失败回收都在助手内）--------------
+// ---- 事件回流（vckit::poster_submit；载荷所有权/失败回收都在助手内）--------------
 
 // 产物回流：slot=0 广播（主会话）；slot!=0 单播（子会话私有，不进广播通道）。
 void MockPlugin::post_delta_(int rid, std::uint64_t slot, std::string text) {
-    nostos::kit::poster_submit(poster_, [this, rid, slot, text = std::move(text)] {
+    vckit::poster_submit(poster_, [this, rid, slot, text = std::move(text)] {
         const vc_api::LlmDelta e{rid, text.c_str()};
         host_.emit_slot(vc_api::llm_delta, slot, &e);
     });
@@ -91,7 +91,7 @@ void MockPlugin::post_delta_(int rid, std::uint64_t slot, std::string text) {
 void MockPlugin::post_done_(int rid, std::uint64_t slot, const json& assistant, const json& usage) {
     const std::string assistant_json = assistant.dump();
     const std::string usage_json = usage.dump();
-    nostos::kit::poster_submit(poster_, [this, rid, slot, s = assistant_json, u = usage_json] {
+    vckit::poster_submit(poster_, [this, rid, slot, s = assistant_json, u = usage_json] {
         const vc_api::LlmDone e{rid, s.c_str(), u.c_str()};
         host_.emit_slot(vc_api::llm_done, slot, &e);
     });

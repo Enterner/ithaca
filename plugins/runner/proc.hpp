@@ -1,14 +1,14 @@
 #pragma once
 // 沙箱化子进程 spawn（plugin/runner 的安全策略切片）。
 // 职责分工：非沙箱的"输出捕获"原语（管道 + Job 树杀 + 行分割）已上收内核
-// kit（nostos::kit::PipedProcess / LineSplitter）——本头只剩 kit 表达不了的部分：
+// vckit（PipedProcess / LineSplitter）——本头只剩 vckit 表达不了的部分：
 // AppContainer 沙箱（低盒令牌 / SECURITY_CAPABILITIES 两层路径 + ACL 授权 +
-// 环境重定向）。沙箱是宿主的安全策略（读宽写窄），不进 kit。
+// 环境重定向）。沙箱是宿主的安全策略（读宽写窄），不进共享层。
 //
-// 沙箱路径的管道坑与 kit 同源（父写端即关 / 读端去继承位），已按同款纪律处理。
-// 输出按字节流读取、经 kit::LineSplitter 分行（分块边界不保证对齐）。
-#include <nostos/kit/piped_process.hpp>
-#include <nostos/kit/win.hpp>
+// 沙箱路径的管道坑与 vckit 同源（父写端即关 / 读端去继承位），已按同款纪律处理。
+// 输出按字节流读取、经 vckit::LineSplitter 分行（分块边界不保证对齐）。
+#include <vckit/piped_process.hpp>
+#include <vckit/win.hpp>
 
 #include <objbase.h>
 #include <aclapi.h>
@@ -59,7 +59,7 @@ struct ChildPipes {
     HANDLE stderr_read = nullptr;
     HANDLE job = nullptr;  // 进程树容器（KILL_ON_JOB_CLOSE）：句柄关闭即整树终止
     HANDLE stdin_write = nullptr;  // stdin 管道写端（仅 stdin_pipe spawn 非空；与
-                                   // kit PipedHandles 五句柄对齐，交五收五）
+                                   // vckit PipedHandles 五句柄对齐，交五收五）
 
     ChildPipes() = default;
     ChildPipes(const ChildPipes&) = delete;
@@ -89,10 +89,10 @@ struct ChildPipes {
         }
         if (process != nullptr) TerminateProcess(process, 0xFFFFFFFFu);
     }
-    // 从 kit::PipedProcess 接管全部句柄（bash 与 cmd 非沙箱两条 spawn 路的公共
+    // 从 vckit::PipedProcess 接管全部句柄（bash 与 cmd 非沙箱两条 spawn 路的公共
     // 尾段）；本类型不可拷贝/移动，按引用落位
-    static void adopt(nostos::kit::PipedProcess& p, ChildPipes& out) {
-        const nostos::kit::PipedHandles h = p.release_handles();
+    static void adopt(vckit::PipedProcess& p, ChildPipes& out) {
+        const vckit::PipedHandles h = p.release_handles();
         out.process = static_cast<HANDLE>(h.process);
         out.stdout_read = static_cast<HANDLE>(h.stdout_read);
         out.stderr_read = static_cast<HANDLE>(h.stderr_read);
@@ -272,7 +272,7 @@ inline void sandbox_grant_path_dirs(PSID sid) {
 // 子进程环境块：继承宿主环境，TEMP/TMP/LOCALAPPDATA 重定向到容器可写目录。
 // PATH 追加 Git for Windows 的 usr\bin（宿主 PATH 常只有 Git\cmd——git.exe 在而
 // ls/grep/wc 不在；模型写 Unix 命令是高频形态，cmd 包装后由子进程 PATH 找它们）。
-// 构建机制（读父块 + 覆盖合并 + 排序 + 双 NUL）在 kit::win::build_env_block_w
+// 构建机制（读父块 + 覆盖合并 + 排序 + 双 NUL）在 vckit::win::build_env_block_w
 // 单一出处——沙箱策略只负责算覆盖项；PATH 拼接要现值，在策略侧读出后整值覆盖。
 inline std::wstring sandbox_env_block(const std::wstring& temp_dir) {
     std::wstring git_bin;
@@ -304,7 +304,7 @@ inline std::wstring sandbox_env_block(const std::wstring& temp_dir) {
             }
         }
     }
-    return nostos::kit::win::build_env_block_w(overrides);
+    return vckit::win::build_env_block_w(overrides);
 }
 
 // 沙箱 v2：令牌先行——NtCreateLowBoxToken 直造低盒令牌（AppContainer 令牌本体），
@@ -386,7 +386,7 @@ inline std::wstring sandbox_locate_exe(const std::wstring& cmdline, std::string&
     const bool has_ext = exe.find_last_of(L'.') != std::wstring::npos;
     const std::wstring probe = has_ext ? exe : exe + L".exe";
     if (::SearchPathW(nullptr, probe.c_str(), nullptr, MAX_PATH * 4, full, nullptr) == 0) {
-        err = "找不到命令: " + nostos::kit::win::wide_to_utf8(exe.c_str()) +
+        err = "找不到命令: " + vckit::win::wide_to_utf8(exe.c_str()) +
               "（宿主 PATH 中无此可执行文件）";
         return L"";
     }
@@ -395,11 +395,11 @@ inline std::wstring sandbox_locate_exe(const std::wstring& cmdline, std::string&
 inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPipes& out,
                   std::string& err, bool sandboxed = false, bool* degraded = nullptr) {
     if (!sandboxed) {
-        // 非沙箱 = kit 原语直通（管道/Job 树杀/EOF 纪律都在 kit::PipedProcess）
-        nostos::kit::PipedProcess p;
-        nostos::kit::PipedSpawnOptions o;
-        o.cwd_utf8 = nostos::kit::win::wide_to_utf8(cwd.c_str());
-        if (!p.start(nostos::kit::win::wide_to_utf8(cmdline.c_str()), o, err)) return false;
+        // 非沙箱 = kit 原语直通（管道/Job 树杀/EOF 纪律都在 vckit::PipedProcess）
+        vckit::PipedProcess p;
+        vckit::PipedSpawnOptions o;
+        o.cwd_utf8 = vckit::win::wide_to_utf8(cwd.c_str());
+        if (!p.start(vckit::win::wide_to_utf8(cmdline.c_str()), o, err)) return false;
         ChildPipes::adopt(p, out);
         return true;
     }

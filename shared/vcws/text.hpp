@@ -2,7 +2,6 @@
 // 文本护栏（收敛点）：UTF-8 校验 / 码点安全截断 / 宽字符小写折叠——本仓
 // 唯一实现，多插件与单测经 shared/ include 路径共用（踩过: 各自为政的年代里，
 // runner 的 sanitize_utf8 放行 overlong、webui 的按字节截断劈码点）。
-// TODO: 内核 kit 收编后整体迁移。
 #include <cwctype>
 #include <string>
 

@@ -29,7 +29,7 @@
 #include "vcws/text.hpp"  // vcws::ascii_lower：错误文案折叠
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/active_gate.hpp>
+#include <vckit/active_gate.hpp>
 
 #include <cstdlib>
 #include <filesystem>
@@ -58,17 +58,17 @@ public:
 
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
-        // 选择开关收编 kit::active_gate（竞争样板单源）：生效口径 env 缺省/="basic"
+        // 选择开关收编 vckit::active_gate（竞争样板单源）：生效口径 env 缺省/="basic"
         // 活跃；显式选了别的策略 ⇒ 休眠不发布
         auto armed = gate_.arm(
             host, vc_api::ctx_set_active,
             [this](const void* p) {
                 const auto* e = static_cast<const vc_api::CtxSetActive*>(p);
                 if (e->active == nullptr)  // "" = 无偏好，保持现状
-                    return nostos::kit::active_gate::prefer::keep;
+                    return vckit::active_gate::prefer::keep;
                 return std::string_view(e->active) == "basic"
-                           ? nostos::kit::active_gate::prefer::mine
-                           : nostos::kit::active_gate::prefer::other;
+                           ? vckit::active_gate::prefer::mine
+                           : vckit::active_gate::prefer::other;
             },
             [this] { return publish_(); },
             [this] { host_.unpublish(vc_api::ctx); });
@@ -375,8 +375,8 @@ private:
     vc_api::CtxTable table_{};
     std::vector<nostos::abi::Host::Subscription> subs_;
     // 竞争发布门：选择开关（env 缺省/="basic" 活跃 + vc.ctx.set_active 热切，
-    // 与 llm 两供应商同构）的机制托管（kit 单源）
-    nostos::kit::active_gate gate_{"ithaca.ctx.basic", "ITHACA_CTX_ACTIVE", "basic",
+    // 与 llm 两供应商同构）的机制托管（vckit 单源）
+    vckit::active_gate gate_{"ithaca.ctx.basic", "ITHACA_CTX_ACTIVE", "basic",
                                    /*publish_when_unset=*/true};
 
     long long base_threshold_ = 32000;    // env 兜底基线（W 未知时的判定基线）

@@ -9,8 +9,8 @@
 
 #include "vcws/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
 
-#include <nostos/kit/win.hpp>  // utf8_to_wide：模型清单拉取的宽字符转换
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（模型清单拉取）
+#include <vckit/win.hpp>  // utf8_to_wide：模型清单拉取的宽字符转换
+#include <vckit/win_http.hpp>  // 一发 HTTP 请求小件（模型清单拉取）
 
 #include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
 
@@ -26,7 +26,7 @@ json default_mock_models() {
                              {"context", vc_api::kDefaultContextWindow},
                              {"enabled", true}}});
 }
-namespace win = nostos::kit::win;  // 模型清单拉取（utf8_to_wide/http_fetch/错误人话）
+namespace win = vckit::win;  // 模型清单拉取（utf8_to_wide/http_fetch/错误人话）
 
 // 实例差异项键清单（共享/覆盖两层配置的分界）——merge 与 persist 三处共用，
 // 单一出处：新增覆盖键漏改任一处即静默失效
@@ -365,7 +365,7 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
         return respond_err_(conn, "数据目录不可写：" + config_path_().string() +
                                       " —— 重启宿主时加 -DataHome 参数换个位置");
     if (need_reload) {
-        nostos::kit::poster_submit(poster_, [this] {
+        vckit::poster_submit(poster_, [this] {
             const vc_api::McpReload r{};
             host_.emit(vc_api::mcp_reload, &r);   // poster 排水后宿主线程发射
         });
@@ -431,7 +431,7 @@ void WebuiPlugin::post_llm_set_active_() {
                 }
             break;
         }
-    nostos::kit::poster_submit(poster_, [this, provider, cur_key, cur_burl, window,
+    vckit::poster_submit(poster_, [this, provider, cur_key, cur_burl, window,
                                          sub_model, sub_key, sub_base] {
         const vc_api::LlmSetActive e{
             provider.c_str(), cur_key.c_str(),
@@ -486,7 +486,7 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
             .timeouts = {5000, 5000, 10000, 30000},
         });
         if (!reply.sent || reply.status == 0) {
-            result["error"] = win::winhttp_error_text(reply.gle);   // 失败码人话（kit 单源）
+            result["error"] = win::winhttp_error_text(reply.gle);   // 失败码人话（vckit 单源）
         } else {
             const json doc = json::parse(reply.body, nullptr,
                                          /*allow_exceptions=*/false);
@@ -515,7 +515,7 @@ http::Response WebuiPlugin::api_provider_models_(const http::Request& req) {
         }
         json evt = {{"type", "provider_models"}};
         evt.merge_patch(result);
-        if (srv) srv->broadcast(evt.dump());   // kit 层线程安全；已停实例 = no-op
+        if (srv) srv->broadcast(evt.dump());   // http 件层线程安全；已停实例 = no-op
     }).detach();
         server_->respond(conn, json_resp({{"ok", true}, {"pending", true}}));
     });

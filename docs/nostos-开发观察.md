@@ -4,24 +4,70 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：观察 11 查因收口 · 2026-11-01；观察 6/7 方向维持，观察 9 剩两半）
+## 当前发现（批次：三轮全量审核（内核+产品）· 2026-11-01；新增观察 13–16，观察 6/7/9 维持）
 
-审核批次（2026-10-31）挂出的观察 1–4 与 8/10 本批随内核 kit 落地、产品仓同步消费
-（见落地状态）；观察 5 经内核复核归因不成立（闭环记录见落地状态）。仍开放的只剩：
+**立项标准（本批起生效）**：内核侧立项一律以内核仓 `external/nostos/docs/内核规范.md`
+的六问准入清单为准（机制非策略 / 非协议引擎框架 / OS 未提供 / 零依赖 / ≥2 消费方
+或 ABI 直接配套 / 回滚可表达）——任一不过即由产品仓 `shared/` 或插件私有收编，
+本文件记录裁决依据。
+
+审核批次（2026-10-31）挂出的观察 1–4 与 8/10 已随内核 kit 落地并消费（见落地状态）；
+观察 5 归因不成立、观察 11 双向收口（均见落地状态）。本批（三轮全量审核，四路逐
+文件通读 + 双向 grep 坐实）新增：
+
+**观察 13：内核零消费 SDK 面一批，按六问第 5 条逐条裁决**（触发场景：本批死面
+扫描，每条经产品仓与内核内部双向 grep 坐实零引用）——BailPolicy/WaterfallPolicy
+及其派发分支与 typedef（event.hpp:144-168、216-227；直接构造 EventBus<E,Policy>
+全仓 0 例）；QueueExecutor/SafeExecutor（executor.hpp:47-118，InlineExecutor 是
+唯一在用实现）；Scope effect 记账面 effect/get_effects/spawn/empty/size
+（scope.hpp:81-123，live_labels_ 与每笔三捕 closure 整套无人用）；EventHub::on_raw
+（event.hpp:306，ABI 真路径是 on_slot_thunk(evt_id, 0)）与 listener_count/knows/
+raw_listener_count/raw_channel_count 内省四件；registry 查询面 contains/size/
+empty/name_of；HostBridge 会话内省五件（session_depth/published_in_session/
+subscriptions_in_session/subscriptions_tracked/has_dependent_revoker）；loader
+转发 executable_directory/plugin_module_path/unpack_version 与 pending_count/
+state；di consistent_v、fixed_string data/size/operator==；abi/nostos_services.h
+整文件（零消费，注释还引已迁走的 kit::Log）。方向：一批清理，删或按「保留须有
+消费方」逐条裁决；随批注释纠偏——event.hpp:204-210 性能注释描述的是 COW 落地前
+的旧实现、nostos_services.h 的 kit::Log/Tier 0 提法、plugin_scope/subscriptions
+的 Tier 0 残留、CMakeLists:6 的 app//plugin/ 目录名、src/README 的 winsock 提法、
+本仓注释规范.md 引 kit 文件两处。
+
+**观察 14：event raw/slot 通道派发快照逐次堆分配 + 三路派发循环三写**（触发场景：
+审核 event.hpp 三路派发对读）——emit_slot(:368)/dispatch_raw(:401) 每次派发按值
+拷贝槽位 vector（1 分配 + N 次 std::function 拷贝），而类型化通道已是 COW +
+shared_ptr 快照零分配（:186-198、:215）；「快照→逐槽 active 判定→fn(payload)」
+循环三份拷贝（:138-141/:366-372/:398-404）。方向：RawChannel 改同款 COW +
+dispatch_slots 单源收编，两项一并做收益最大。
+
+**观察 15：record_dependency 无去重，重复取用依赖边无界增长**（触发场景：审核
+revoke 路径）——context.hpp:264/:330 每次取用无条件 push_back 且各分配一个新
+string；组件运行期反复解析同一 service ⇒ edges_ 线性膨胀，拖慢 revoke 的
+mark_dependents_of/mark_closure 全边扫描（host_builder.hpp:397-429）。方向：
+入库前按 (consumer, id) 去重。
+
+**观察 16（低，顺手项归组）**：loader.cpp:282-289 与 linked_plugin.hpp:52-60 的
+入口异常转 plugin_error 逐字两写（resolve_entry 下沉单源）；di.hpp 扫描节点成员
+转播五连抄（节点继承 finding 类型可消）；host_api 11 个 thunk 的「取桥→判空→
+try/catch」三段式骨架（with_bridge 可收编，现状可读性尚可、缓办）；
+drain_posted 每拍对 posters_ 全量加锁（加原子计数，空队列免锁跳过）。
+
+前批仍开放的只剩：
 
 **观察 6：槽订阅「四件套」样板无 SDK 打包**（触发场景：agent 审核——8 条槽订阅
 每条手写 poster 推迟一拍 + turn 守卫 + 载荷字符串深拷贝 + 补 session 标重播
 （ctx_turn.cpp subscribe_turn_slot_），poster_submit_owner/invalidate_owner 还须
 跨文件手工配对，漏一半即悬垂闭包）。切缝判据：推迟一拍 + 载荷保活是 ABI 逼出的
-机制（可收 kit 原语），补 session 标重播是会话路由的应用语义（留插件）；owner
+机制（可收 vckit 原语），补 session 标重播是会话路由的应用语义（留插件）；owner
 配对的收编方向 = 随上下文销毁路径统一承担。未实施——等 agent 之外出现第二形态
 再定打包面，不为单一消费方预建抽象。
 
 **观察 7：svc 表槽的 JSON 调用五步样板与 emit Scratch 保活无便利件**（触发场景：
 agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参（ctx_strategy 全文件
 与 mission/recall/classify_error 各点），出参生命周期口径两插件各说各话；emit 侧
-局部 Scratch + 逐字段 hold 共 7 处，漏 hold 即悬垂）。方向：kit 槽调用助手
-（scratch 保活，C ABI 不动）。未实施——kit::Scratch 已是调用点表达，助手的价值
+局部 Scratch + 逐字段 hold 共 7 处，漏 hold 即悬垂）。方向：槽调用助手（scratch
+保活，C ABI 不动；落点 shared/vcagent 或插件侧）。未实施——Scratch 已是调用点
+表达（随 kit 退役迁 agent 插件内 scratch.hpp），助手的价值
 密度待第二个表服务（非工具表）出现再验证。
 
 **观察 9 残余（teardown 契约本批落地，余两半维持方向）**：LazyGate 重估靠宿主
@@ -29,10 +75,6 @@ agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参
 方向：依赖重估挂进 drain/post_wake 接缝；插件集合托管容器（load→submit→pump→
 逆序收口一体）——方向：参数化原语而非宿主框架，装配决策（装载哪些/懒激活条件）
 留宿主。
-
-**观察 11（已收口，见落地状态）：kit::http 投递可靠性疑点——查因坐实一半（SSE 广播
-突发丢帧，内核 323f3ea 修复），另一半（挂起连接永不 resolve）探针未复现，归因收敛
-到浏览器/客户端中止侧。**
 
 **svc 单槽维持不立项**：跨工作区并行的真墙是 workspace/runner/office 的单 jail
 （webui 门卫按运行池工作区一致性拦截），多工作区并行才需要命名实例。
@@ -47,7 +89,7 @@ agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参
 shared/vcplugin 可收 llm_worker.hpp，runner 的回收样板可成第三消费方）；workspace/
 office 的 object_with 与 tool_execute 守门样板（tool_table.hpp 章程内，恰好 2 消费
 方）；webui 挂起-补响应四件套组合出口（defer_+fail_suspended_+respond_err_+异常
-钩子约 50 行胶水，当前单消费方——若 runner/mcp 出现同形态再议 kit::http）；内核
+钩子约 50 行胶水，当前单消费方——若 runner/mcp 出现同形态再议共享收编）；内核
 tframe 同款断言框架产品自备 62 行（tests/unit/ithaca_test_framework.hpp——刻意
 边界纪律，成本极低，不折腾）。
 
@@ -77,6 +119,7 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-01 | 内核职责收缩：对照主流内核纪律审核（OS 内核 × 插件框架内核两参照系，机制/策略分离 + framework 不含 service）⇒ kit 能力层大部分不属内核——应用协议与策略（http/win_http/active_gate/config）、文本引擎（regex）、OS 机制封装（process/piped_process/win 部分件）、零消费死面（log/timer/task/process/config），另 vendored json（全仓 74% 行数）托管在内核属第三方库错放；标准成文于内核仓 `docs/内核规范.md`（六问准入，后续立项以此为据） | 已落地（内核：删 kit/config、log、timer、task、process 五件（产品仓零 include）；win/win_http/path_jail/piped_process/poster/active_gate 六件迁产品 shared/vckit（namespace nostos::kit → vckit）；regex 迁回 workspace、http 迁回 webui、scratch 迁回 agent（均单消费者，插件私有）；vendored json 落产品 shared/nlohmann；CMake 删 nostos::kit/nostos::kit_http 两目标，README/src/README kit 章节退役；kit/subscriptions（ABI 配套）留守。产品：40 处 include + 全部 nostos::kit 符号跟迁（http 件命名空间 vc_webui::http、regex 归 vcws、scratch 归 vc_agent）；webui 自编 src/http.cpp 并链 ws2_32；host/shell 挂 shared include，shell 摘除 NOSTOS_ROOT 接线；AGENTS.md shared/ 纪律行扩为宿主/壳裸名取用 + vckit/nlohmann 落点。内核自有代码 ~8.7k → ~5.5k 行，仓体 33.5k → ~5.7k（-83%）。工作树待提交） |
 | 2026-11-01 | 观察 11：kit::http 投递可靠性疑点（双 SSE 连接下消费连接静默饿死「conn 恒 on、无 error 事件」；偶发挂起连接「defer 体已执行、fetch 永不 resolve」） | 已落地（坐实一半：broadcast 只入队不发送 ⇒ select 循环来不及插轮次的密集广播把健康读者的 out 也顶过 buffer_cap、跳帧闸门误杀活跃连接——抛弃式探针直连内核复现：读者 21020/30000，缺口与一次轮次窗口的溢出量吻合；内核 323f3ea 修为追加后立即 flush，out 只计量客户端真实积压，30000/30000 × 3 稳定。另一半探针未复现：挂起-补发完整送达、断连静默丢弃为契约、挂起连接 16s reap 豁免存活，归因收敛到浏览器/客户端中止侧。产品侧补洞恒跑与 api() 超时为正确层级的防御，按原计划维持） |
 | 2026-11-01 | 观察 12：kit::http 文件流式（Response::file_path）在 out 排空后永久停摆——writable 集只收非空 out + fill_file 续推被 ready>0 门控，out 恰好送空而 remaining>0 时下轮 select 无任何就绪事件（4.4MB 实测卡死 buffer_cap，孤立连接必现；有其他连接产生事件时呈「蹭车」式龟速） | 已落地（内核 323f3ea：fd_set 构造对「有剩余文件」的连接同样挂 writable，续推由循环每轮 flush+fill 自然推进；产品仓 preview_on_done 的 body 整读兜底（≤64MB 上界）退役，回归 file_path 零拷贝流式——660KB 跨 buffer_cap 孤立连接探针完整送达） |
 | 2026-11-01 | 审核批次观察 1–4/8/10（能力层缺口）+ 观察 9 的 teardown 契约 + 观察 5 归疑复核 | 已落地（内核：kit::win 补 `ascii_lower`；win_http 补 `crack_url`/`UrlParts` 与 `winhttp_error_text`、http_fetch 内部 crack 同源化；kit::http `Request::query(name)`（%XX 解码、'+' 保留、名字精确匹配）；piped_process 补 `read_lines` 读循环拼装件；PathJail 增 UTF-8 根构造与 `Resolved` 聚合出参；HostBridge 析构兜底摘唤醒钩 + set_post_wake 写明 teardown 契约；EventHub 头注释补「类型化/广播 raw/slot 三路派发同为快照迭代」的重入声明。产品仓消费迁移：host profile 折叠件改走 kit（第 7 份副本退役）；llm_cloud 端点解析/错误人话改走 kit；webui query_val 退役（5 消费点改 Request::query）+ 错误人话改走 kit；runner/mcp 读循环收进 read_lines；workspace/office/runner 的 PathJail 构造与 office resolve 改用新形态；agent ctx_turn.cpp 的崩溃归因注释更正（快照迭代自 58dc137 即在，真实依据是载荷寿命 + 因果序两契约，纪律维持）。观察 5 闭环：a18232f 的「raw 槽通道非快照迭代」归因复核不成立——内核三路派发自 58dc137 起均为快照迭代；0xc0000005 的修复实际来自载荷深拷贝 + 推迟一拍（符合 ABI 两契约），精确根因未重新确立，不再挂账。工作树待提交） |

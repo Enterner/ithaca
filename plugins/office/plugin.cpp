@@ -27,11 +27,11 @@
 
 #include "docs.hpp"
 #include "preview.hpp"
-#include <nostos/kit/path_jail.hpp>
+#include <vckit/path_jail.hpp>
 #include "vcws/read_paged.hpp"
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/win.hpp>
+#include <vckit/win.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -55,7 +55,7 @@ public:
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
-        jail_ = std::make_unique<nostos::kit::PathJail>(
+        jail_ = std::make_unique<vckit::PathJail>(
             env != nullptr && *env != '\0' ? env : ".");
         // 发布失败 = 激活失败（对齐 workspace/runner 与 ctx_basic 的裁决：表不在
         // 却报就绪的带病继续没有消费方受益）
@@ -79,18 +79,18 @@ public:
         }
         vcplugin::notify_tool_register(host_, vcoffice::kPreviewSvcName);
         host_.log(2, "ithaca.office: 就绪，jail 根 = " +
-                        nostos::kit::win::wide_to_utf8(jail_->root().c_str()));
+                        vckit::win::wide_to_utf8(jail_->root().c_str()));
 
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
             // 同值热切幂等（backfill 补发形态，与 workspace 同款）：重建边界非零
             // 成本且就绪日志会刷屏
-            const std::wstring next = nostos::kit::win::utf8_to_wide(e->root);
+            const std::wstring next = vckit::win::utf8_to_wide(e->root);
             if (jail_ != nullptr && jail_->root() == next) return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
-            jail_ = std::make_unique<nostos::kit::PathJail>(e->root);
+            jail_ = std::make_unique<vckit::PathJail>(e->root);
             host_.log(2, "ithaca.office: 工作区已热切为 " + std::string(e->root));
         }));
         return NOSTOS_OK;
@@ -135,7 +135,7 @@ private:
             json args = json::parse(req_json != nullptr ? req_json : "{}", nullptr,
                                     /*allow_exceptions=*/false);
             if (args.is_discarded() || !args.is_object()) args = json::object();
-            nostos::kit::PathJail::Resolved r;
+            vckit::PathJail::Resolved r;
             if (!jail_->resolve(args.value("path", ""), r))
                 return finish_preview(fail("路径被拒: " + r.err), out);
             const std::string ext_lower =
@@ -164,7 +164,7 @@ private:
                          "MB 上限）: " + r.norm),
                     out);
             vcoffice::Preview::Job job;
-            job.root = nostos::kit::win::wide_to_utf8(jail_->root().c_str());
+            job.root = vckit::win::wide_to_utf8(jail_->root().c_str());
             job.norm = r.norm;
             job.full = r.full;
             job.ext = ext_lower;
@@ -248,7 +248,7 @@ private:
     static json fail(const std::string& error) { return json{{"ok", false}, {"error", error}}; }
 
     json read_tool(const json& args) {
-        nostos::kit::PathJail::Resolved r;
+        vckit::PathJail::Resolved r;
         if (!jail_->resolve(args.value("path", ""), r))
             return fail("路径被拒: " + r.err);
         const std::string ext_lower = vcws::ascii_lower(fs::path(r.norm).extension().string());
@@ -283,7 +283,7 @@ private:
     // ---- 状态 ---------------------------------------------------------------------
 
     nostos::abi::Host host_{};
-    std::unique_ptr<nostos::kit::PathJail> jail_;
+    std::unique_ptr<vckit::PathJail> jail_;
     std::vector<nostos::abi::Host::Subscription> subs_;  // 工作区热切订阅
     vc_api::ToolTable table_{};
     std::mutex tool_mu_;

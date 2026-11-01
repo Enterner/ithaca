@@ -25,7 +25,5 @@ nostos_plugin_module(mcp_plugin
 )
 # 内部头（include/mcp_plugin.hpp：数据结构 + 类声明 + 翻译单元职责地图）
 target_include_directories(mcp_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-# kit：nlohmann/json（JSON-RPC 与工具 schema 编解码）+ win（UTF-8 ↔ 宽字符）
-target_link_libraries(mcp_plugin PRIVATE nostos::kit)
 target_include_directories(mcp_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
 target_include_directories(mcp_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

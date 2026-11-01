@@ -43,8 +43,8 @@
 #include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
 
 #include <nostos/abi/plugin.hpp>
-#include <nostos/kit/scratch.hpp>  // Scratch：emit 载荷稳定缓冲（调用期有效）
-#include <nostos/kit/poster.hpp>   // poster_submit：dispatch 推迟一拍的投递原语
+#include "../scratch.hpp"  // Scratch：emit 载荷稳定缓冲（调用期有效）
+#include <vckit/poster.hpp>   // poster_submit：dispatch 推迟一拍的投递原语
 
 #include <atomic>
 #include <cstdint>
@@ -53,7 +53,7 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <nostos/nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include <set>
 #include <string>
 #include <string_view>
@@ -442,7 +442,7 @@ struct AgentCtx {
     // provider 的 Scratch 保活到本次派发结束，嵌套 emit 内仍有效
     template <typename E>
     void retag_emit_(std::uint64_t evt, const E* e) {
-        nostos::kit::Scratch s;
+        vc_agent::Scratch s;
         E tag = *e;
         tag.session = s.hold(session_id_);
         host_.emit(evt, &tag);
