@@ -65,6 +65,10 @@ public:
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
+            // 同值热切幂等（backfill 补发形态，与 workspace 同款）：重建边界非零
+            // 成本且就绪日志会刷屏
+            const std::wstring next = nostos::kit::win::utf8_to_wide(e->root);
+            if (jail_ != nullptr && jail_->root() == next) return;
             std::error_code ec;
             fs::create_directories(fs::path(e->root), ec);
             jail_ = std::make_unique<nostos::kit::PathJail>(e->root);
@@ -123,7 +127,8 @@ private:
 
     nostos_status tool_execute(const char* tool, const char* args_json, int turn_id,
                                const char** out) {
-        // 全工具串行锁：与 workspace 同款双线程纪律（agent 宿主线程 + webui 分流闭包）
+        // 全工具串行锁（tool_mu_）：本表两个调用线程——agent 宿主线程与 webui
+        // 分流闭包，出参缓冲 out_buf_ 共享 ⇒ 必须串行
         std::lock_guard<std::mutex> lock(tool_mu_);
         json args = json::parse(args_json != nullptr ? args_json : "{}", nullptr,
                                 /*allow_exceptions=*/false);
@@ -160,8 +165,9 @@ private:
         // 查询失败放行：不存在/权限失败由下方 ifstream 打开失败如实上报（错误
         // 口径单一）；只挡"确实大"的文件——整读 slurp 无分页，护栏必须在读之前
         if (!ec && sz > vcoffice::docs::kArchiveCap)
-            return fail("文档过大（" + std::to_string(sz / (1024 * 1024)) +
-                        "MB > 64MB 上限）: " + r.norm);
+            return fail("文档过大（" + std::to_string(sz / (1024 * 1024)) + "MB > " +
+                        std::to_string(vcoffice::docs::kArchiveCap / (1024 * 1024)) +
+                        "MB 上限）: " + r.norm);
         std::string bytes;
         {
             // 二进制整读（抽取器自己解容器，不走 workspace 的文本 Store）

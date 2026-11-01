@@ -76,7 +76,6 @@ CRITICAL_SECTION g_cs;       // UI 线程增删与 worker 快照读的互斥（�
                              // HTTP 探测在锁外——900ms 级超时不能捂住 UI 操作）
 int g_page_port = 0;         // 页面当前加载的实例端口（删除自源实例时切换用）
 std::wstring g_page_key;     // 页面当前实例的 manifest 键
-bool g_ctrl_ready = false;   // WebView2 controller 就绪（TryNavigate 的两个条件之一）
 int g_navigated = 0;         // 已完成首次导航（后续切换由消息通道驱动）
 std::wstring g_pending_key;  // 等待就绪导航的实例键（空 = 无）
 ICoreWebView2* g_web = nullptr;   // 页面（非拥有；controller 持有）
@@ -307,11 +306,11 @@ void WorkerLoop(HWND hwnd) {
 // 旧会话懒迁移：中央库的 transcript 搬进实例 home，实例自己的 index.json 由中央
 // index 的该条目原文本构成（首次拉起该会话时执行一次）
 void MigrateLegacySession(const Inst& it) {
-    if (PathExists(it.home + L"\\index.json")) return;   // 已迁移/已初始化（踩过：残留 sessions 目录不可作判据）
+    if (PathExists(it.home + L"\\index.json")) return;   // 已迁移/已初始化（踩过: 残留 sessions 目录不可作判据）
     const std::wstring src = g_data + L"\\sessions\\" + it.key + L".transcript.jsonl";
     if (!PathExists(src)) return;
     // NOTE: CreateDirectoryW 不建中间目录——home 整个不存在时（首次迁移）逐级建，
-    // 否则 MoveFile/写 index 全部静默失败（踩过：rm 掉 home 后迁移"成功"却零产物）
+    // 否则 MoveFile/写 index 全部静默失败（踩过: rm 掉 home 后迁移"成功"却零产物）
     CreateDirectoryW((g_data + L"\\hosts").c_str(), nullptr);
     CreateDirectoryW(it.home.c_str(), nullptr);
     CreateDirectoryW((it.home + L"\\sessions").c_str(), nullptr);
@@ -351,7 +350,7 @@ void SpawnInstance(size_t idx) {
     // 清单唯一出处 scripts/plugins.mjs（本文件无法 import——改清单时同步此处）
     const wchar_t* plugin_names[] = {
         g_mock_mode ? L"llm_mock_plugin.dll" : L"llm_cloud_plugin.dll",
-        L"workspace_plugin.dll", L"office_plugin.dll",
+        L"workspace_plugin.dll", L"office_plugin.dll", L"ctx_basic_plugin.dll",
         L"runner_plugin.dll", L"agent_plugin.dll", L"mcp_plugin.dll", L"webui_plugin.dll" };
     std::wstring cmdline = L"cmd.exe /d /s /c \"\"" + g_bin + L"\\ithaca_host.exe\"";
     for (const wchar_t* pn : plugin_names) {
@@ -451,8 +450,13 @@ RECT ViewRect() {
     return rc;
 }
 
+// 外开转交系统：ShellExecuteW "open" 按注册表交默认浏览器/协议处理器
+void OpenExternal(const std::wstring& u) {
+    ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 UINT g_deferred_port = 0;   // controller 就绪前请求的导航挂起在这（完成回调里补偿，
-                            // 踩过：孤儿附着/快速就绪时 NavigatePage 撞 g_web==null
+                            // 踩过: 孤儿附着/快速就绪时 NavigatePage 撞 g_web==null
                             // 静默丢失 ⇒ 黑屏）
 UINT g_last_good_port = 0;   // 最后一次导航成功的实例端口（导航失败自愈的回退目标）
 
@@ -464,7 +468,7 @@ void NavigatePage(UINT port) {
         return;
     }
     // ?v= 缓存穿透：bundle 名带 hash，但 index.html 本身被 webview 强缓存、依旧
-    // 指向旧 hash——导航 URL 必须带每次变化的 ?v=（踩过：页面跑旧 JS，新前端功能全静默）
+    // 指向旧 hash——导航 URL 必须带每次变化的 ?v=（踩过: 页面跑旧 JS，新前端功能全静默）
     const std::wstring url = L"http://127.0.0.1:" + std::to_wstring(port) +
                              L"/?v=" + std::to_wstring(GetTickCount64());
     g_web->Navigate(url.c_str());
@@ -513,7 +517,7 @@ struct PageMessageHandler
     HRESULT STDMETHODCALLTYPE Invoke(
         ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) override {
         // NOTE: 前端 postMessage(obj) 传对象——TryGetWebMessageAsString 只认字符串
-        //（对象消息它会失败），必须走 get_WebMessageAsJson（踩过：TryGet 静默失败
+        //（对象消息它会失败），必须走 get_WebMessageAsJson（踩过: TryGet 静默失败
         // ⇒ 消息通道全哑且无诊断）
         PWSTR raw = nullptr;
         if (FAILED(args->get_WebMessageAsJson(&raw)) || raw == nullptr) return S_OK;
@@ -573,7 +577,6 @@ struct ControllerHandler
         }
         g_ctrl->put_Bounds(ViewRect());
         g_ctrl->put_IsVisible(TRUE);
-        g_ctrl_ready = true;
         if (g_deferred_port != 0) {
             const UINT p = g_deferred_port;
             g_deferred_port = 0;
@@ -592,7 +595,7 @@ struct ControllerHandler
             if (is_local_page_url(u)) return S_OK;
             args->put_Cancel(TRUE);
             LogLine(L"nav blocked -> external: " + u);
-            ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            OpenExternal(u);
             return S_OK;
         }
     };
@@ -605,7 +608,7 @@ struct ControllerHandler
                 const std::wstring u = uri;
                 CoTaskMemFree(uri);
                 LogLine(L"new window -> external: " + u);
-                ShellExecuteW(nullptr, L"open", u.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                OpenExternal(u);
             }
             args->put_Handled(TRUE);
             return S_OK;
@@ -678,7 +681,7 @@ void ActivateKey(const std::wstring& key) {
     }
     if (state == ST_RUNNING && port != 0) {
         // NOTE: 直航前健康复查——state 可能落后于宿主真实状态（死亡瞬间/探测
-        // 窗口），盲航会落到死端口错误页（踩过：nav FAIL 循环）。不健康 ⇒ 按
+        // 窗口），盲航会落到死端口错误页（踩过: nav FAIL 循环）。不健康 ⇒ 按
         // 停止态重新拉起。复查在锁外（900ms 超时），回写按"仍是同一实例同一
         // 端口"复核，避免与删除/停止竞态误伤。
         if (!HttpGetOk(port, L"/api/health")) {
@@ -810,11 +813,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_ERASEBKGND:
             return 1;   // 全窗 WebView2，免闪烁
         case WM_SIZE:
-            if (g_ctrl != nullptr && wp != SIZE_MINIMIZED) {
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                g_ctrl->put_Bounds(rc);
-            }
+            if (g_ctrl != nullptr && wp != SIZE_MINIMIZED) g_ctrl->put_Bounds(ViewRect());
             return 0;
         case UWM_PORT_READY:
             OnPortReady((DWORD)wp, (UINT)lp);

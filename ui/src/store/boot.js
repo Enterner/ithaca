@@ -4,20 +4,26 @@
 import { S } from './state'
 import { api, cfgFromServer, shellMsg } from './api'
 import { pollOnce, render } from './records'
-import { loadSessions, sessionMeta, startShellPoll, enterDraft } from './sessions'
+import { loadSessions, startShellPoll, enterDraft } from './sessions'
 
-// SSE 断线补洞：EventSource 自动重连，但重连间隙的事件是空洞——conn=off 期间
-// 用 pollOnce（after 游标）轮询补齐，恢复 on 即停。无此兜底，宿主重启/网络抖动
-// 后页面永久失去实时事件，用户只能刷新整页。
+// SSE 补洞：EventSource 的重连间隙有空洞——但「连接在、帧丢失」的静默形态
+//（复现：双连接下单条被饿死，conn 恒 on、无 error 事件）靠 onerror 触发的
+// 补洞永远不启动，页面从此丢实时流只能刷新。因此 pollOnce 恒跑（on 时 5s
+// 兜底、off 时 2s 抢救），漏帧由 after 游标补齐，串行化与停靠见 records。
 let holeTimer = null
 function setHolePoll(on) {
-  if (on && holeTimer === null) {
+  const period = on ? 5000 : 2000
+  if (holeTimer === null) {
     holeTimer = setInterval(async () => {
       try { await pollOnce() } catch (e) { /* 宿主未回：下一轮再试 */ }
-    }, 2000)
-  } else if (!on && holeTimer !== null) {
-    clearInterval(holeTimer); holeTimer = null
+    }, period)
+  } else if (holeTimer._period !== period) {
+    clearInterval(holeTimer)
+    holeTimer = setInterval(async () => {
+      try { await pollOnce() } catch (e) { /* 宿主未回：下一轮再试 */ }
+    }, period)
   }
+  holeTimer._period = period
 }
 
 function connect() {
@@ -57,8 +63,7 @@ export async function boot() {
   })
   cfgFromServer(await api('/api/config'))
   connect()
-  const sess = await api('/api/session')
-  sessionMeta(sess)
+  await api('/api/session')   // 对账 in_flight（重放后僵尸轮检测的数据源，records 消费）
   await pollOnce()          // 重放期在此：期间到达的提案是历史，不进决策坞
   S.booted = true
   await loadSessions()
@@ -67,9 +72,5 @@ export async function boot() {
   const urlWs = new URLSearchParams(location.search).get('ws') || ''
   if (urlWs) enterDraft(urlWs)
   else if (!S.sessions.length || !S.curSession) enterDraft()
-  if (S.shell) {
-    try {
-      shellMsg({ type: 'ping', key: S.curSession })   // 消息通道自证（壳端日志）
-    } catch (e) { console.error('ithaca.web: shellMsg 消息通道发送失败', e) }
-  }
+  if (S.shell) shellMsg({ type: 'ping', key: S.curSession })   // 消息通道自证（shellMsg 内部自吞错）
 }

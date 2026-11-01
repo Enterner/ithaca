@@ -8,7 +8,7 @@ import { S } from './state'
 export const DEFAULT_CONTEXT = 128000
 
 /** 当前选中供应商对象（S.current 按名匹配；找不到返回 null）。 */
-export function curProv() {
+function curProv() {
   return S.providers.find(p => p.name === S.current) || null
 }
 /** 当前供应商的模型列表（无供应商时为空数组）。 */
@@ -90,12 +90,19 @@ export function fmtK(n) {
 
 /**
  * fetch JSON 助手：带 body ⇒ POST JSON，无 body ⇒ GET。
- * NOTE: POST 端点必须显式传 {}——无 body 会发 GET（踩过：pickFolder 404 静默无效）。
+ * NOTE: POST 端点必须显式传 {}——无 body 会发 GET（踩过: pickFolder 404 静默无效）。
  * 非 JSON 响应（宿主 500 HTML / 代理错误页）不再抛 SyntaxError——调用点读到的
  * 是 {ok:false, error}，失败路径可控；业务语义仍以返回体的 ok 字段为准。
  */
 export async function api(path, body) {
-  const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) } : undefined)
+  // 超时中止：偶发「服务端已应答、浏览器 fetch 永不 resolve」的悬挂连接会把
+  // 依赖串行 fetch 的管线（records 的 pollOnce → parkSse 停靠）永久卡死，页面
+  // 渲染假死到刷新（repro 实测：服务端 body 已跑、浏览器 await 不归）。10s 对
+  // 本地端点远超宽裕（慢路径 /api/provider/models 的真结果走 SSE
+  // provider_models 事件，此响应只是受理回执）；中止后调用方走失败路径，
+  // parkSse 在 pollOnce 的 finally 放行，管线自愈
+  const r = await fetch(path, body ? { method: 'POST', body: JSON.stringify(body) }
+                                   : { signal: AbortSignal.timeout(10_000) })
   try {
     return await r.json()
   } catch (e) {
