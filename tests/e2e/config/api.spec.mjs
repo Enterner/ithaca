@@ -8,7 +8,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
-import { test, expect, getJson, postJson } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, waitTurnDone } from "../helpers/host.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -68,10 +68,7 @@ test.describe("SSE 存活（mock 缺省模式）", () => {
         const created = await postJson(host.base, "/api/session/new", { message: "创建 hello.txt" });
         expect(created.body.ok).toBe(true);
         // 等 turn 收口（等事实不等时间）——in_flight 门卫会拒并发 input
-        await expect.poll(async () => {
-            const { body: t } = await getJson(host.base, "/api/transcript?after=0");
-            return t.records.some((r) => r.type === "assistant");
-        }, { timeout: 15_000 }).toBe(true);
+        await waitTurnDone(host);
 
         const port = Number(new URL(host.base).port);
         const chunks = [];

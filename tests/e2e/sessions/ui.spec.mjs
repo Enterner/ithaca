@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { test, expect, getJson, postJson, root } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, root, pollHealth } from "../helpers/host.mjs";
 
 test.use({ hostCfg: { pickStub: true } });
 
@@ -109,7 +109,7 @@ test("SC2d UI：草稿被丢弃后原会话记录与 active 分毫未动", async
     expect(created.body.ok).toBe(true);
     const sid = created.body.id;
     // 等 turn 真收口：多轮 mock 剧本的中间 llm_done 也落一条空 assistant
-    //（turn_done=false）——以带 turn_done 标记的收口记录为准（踩过：只认
+    //（turn_done=false）——以带 turn_done 标记的收口记录为准（踩过: 只认
     // assistant/旗子会在中间轮误判，记录数差一条）
     await expect
         .poll(async () => {
@@ -139,7 +139,7 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
     test.setTimeout(90000);
     // 释放固定端口：上次运行的残留宿主会占住 8794/8795（webui 回退随机端口 ⇒
     // baseA 失配）。测试规范禁 taskkill /IM 全局杀——会误杀并行 worker 的
-    // fixture 宿主（踩过：并发跑时对端用例的 turn 被腰斩）——按端口找
+    // fixture 宿主（踩过: 并发跑时对端用例的 turn 被腰斩）——按端口找
     // LISTENING 的 PID 再按 PID 树杀。
     const freePort = (port) => {
         const out = spawnSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8" }).stdout ?? "";
@@ -155,7 +155,7 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
     freePort(8794);
     freePort(8795);
     // 等事实不等时间：taskkill 后端口要等 OS 收尾才可重绑——轮询 netstat 直到
-    // 两端点都无 LISTENING（固定 sleep 在慢机/负载下不够，踩过：残留监听吃住
+    // 两端点都无 LISTENING（固定 sleep 在慢机/负载下不够，踩过: 残留监听吃住
     // 8794 ⇒ webui 回退随机端口，baseA 失配整用例空转）
     for (let i = 0; i < 50; i++) {
         const out = spawnSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8" }).stdout ?? "";
@@ -201,7 +201,6 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
               stdio: ["ignore", "pipe", "pipe"] });
         pr.stdout.on("data", (d) => process.stdout.write("[host " + port + "] " + d.toString()));
         pr.stderr.on("data", (d) => process.stdout.write("[host " + port + "!ERR] " + d.toString()));
-        pr.on("exit", (c) => console.log("[host " + port + "] EXIT code=" + c));
         pr.on("exit", (c) => console.log(`[host ${port}] EXIT code=${c} at=${new Date().toISOString().slice(11, 19)}`));
         procs.push(pr);
         return pr;
@@ -210,21 +209,14 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
     spawnHost(path.join(hostsRoot, "hB"), 8795);
     const baseA = "http://127.0.0.1:8794";
     const baseB = "http://127.0.0.1:8795";
-    const waitReady = async (base) => {
-        for (const d = Date.now() + 20000; Date.now() < d;) {
-            try { if ((await fetch(base + "/api/health", { signal: AbortSignal.timeout(1200) })).ok) return; } catch {}
-            await new Promise((r) => setTimeout(r, 250));
-        }
-        throw new Error("宿主未就绪：" + base);
-    };
     try {
-        await waitReady(baseA);
-        await waitReady(baseB);
+        await pollHealth(baseA, 20000);
+        await pollHealth(baseB, 20000);
 
         // 捕获激活意图（停止态路径在无壳浏览器里只能验证意图）。桩面 = boot.js
         // 依赖的最小 webview 外观：postMessage（激活意图出向）+ addEventListener/
         // removeEventListener（boot 注册 navigate 监听用）——缺任一 boot 即抛
-        // TypeError，SSE 永不连接（踩过：只桩 postMessage ⇒ 页面停在「连接中」）
+        // TypeError，SSE 永不连接（踩过: 只桩 postMessage ⇒ 页面停在「连接中」）
         await page.addInitScript(() => {
             window.__shellMsgs = [];
             window.chrome = window.chrome || {};
@@ -277,7 +269,7 @@ test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换�
             }, { timeout: 15000 })
             .toBe(false);
         // 页面侧数据只能靠它自己的 3s 轮询刷新（store 不暴露给测试进程）——等事实：
-        // 乙行渲染出「已停止」角标后，点击才会走激活意图而非直航死端口（踩过：
+        // 乙行渲染出「已停止」角标后，点击才会走激活意图而非直航死端口（踩过: 
         // 轮询间隔内旧 alive=true 会被整页导航到已杀实例）
         await expect(
             page.locator(".sess", { has: page.locator(".t", { hasText: "会话乙" }) })

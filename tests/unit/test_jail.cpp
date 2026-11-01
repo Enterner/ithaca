@@ -13,12 +13,8 @@ using Jail = nostos::kit::PathJail;
 namespace {
 
 fs::path make_temp_root() {
+    const fs::path root = test_root("ithaca_m1_jail_test");   // 清空+建目录走框架共用件
     std::error_code ec;
-    // 测试根放产品仓内：TEMP 在本开发环境对部分子进程的建目录会 Access denied，
-    // 工作区路径确定可用；每次运行先清空，互不污染。
-    const fs::path root =
-        fs::path(__FILE__).parent_path() / ".tmp" / "ithaca_m1_jail_test";
-    fs::remove_all(root, ec);
     fs::create_directories(root / "sub" / "nested", ec);
     { std::ofstream(root / "a.txt").put('x'); }
     return root;

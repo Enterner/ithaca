@@ -38,7 +38,7 @@ VC_TEST("snapshots: 不同 turn 各自成组，undo 默认弹最新") {
     CHECK(s.find(2) == nullptr);
     CHECK(s.find(1) != nullptr);
     CHECK(s.pop_turn(1));
-    CHECK(s.empty());
+    CHECK(s.depth() == 0);
 }
 
 VC_TEST("snapshots: 栈上限 20——超限丢最旧") {

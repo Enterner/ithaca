@@ -23,9 +23,8 @@ const env = {
 
 function invokeSelftest() {
     // 两次运行必须从相同起点出发：清整个工作区（文件残留会让 apply 的
-    // is_new/diff 变化——踩过：第二轮 replace 变成 is_new:false）
-    fs.rmSync(ws, { recursive: true, force: true });
-    fs.mkdirSync(ws, { recursive: true });
+    // is_new/diff 变化——踩过: 第二轮 replace 变成 is_new:false）
+    freshWs(ws);
     // 输出重定向到文件再读：①stdout+stderr 按真实写入顺序合并（两条管道分别收集
     // 顺序不定，会污染"两遍一致"比较）；②宿主管道输出是 UTF-8 字节，按 utf8 读即可
     const outFile = path.join(ws, "selftest_out.txt");

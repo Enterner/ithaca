@@ -8,13 +8,21 @@ import { test, expect, postJson } from "../helpers/host.mjs";
 test.use({ hostCfg: { pickStub: true } });
 const hello = (host) => path.join(host.ws, "picked-ws", "hello.txt");
 
-test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 再对话", async ({ host, page }) => {
+// 「打开草稿对话流并发送」共用五步（subagent-ui 同款 helper——spec 间禁止互引，
+// 故各留一份）：goto → SSE 就绪 → hero 选工作区（pickStub 钩子）→ 草稿流可见 →
+// 填入发送。
+async function openFlow(page, host, message) {
     await page.goto(host.base);
     await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
     await page.locator(".hero-ws").click();   // 选工作区（pickStub 测试钩子）
     await expect(page.locator(".stream")).toBeVisible();   // 等 folder_picked 记入草稿
-    await page.locator("textarea.in").fill("创建 hello.txt");
+    await page.locator("textarea.in").fill(message);
     await page.locator(".send-btn").click();
+}
+
+
+test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 再对话", async ({ host, page }) => {
+    await openFlow(page, host, "创建 hello.txt");
 
     // 用户消息渲染
     await expect(page.locator(".msg.u", { hasText: "创建 hello.txt" })).toBeVisible();
@@ -39,12 +47,7 @@ test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 
 
 test("CONV2 决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起", async ({ host, page }) => {
     await postJson(host.base, "/api/permission-mode", { mode: "suggest" });   // 前置：切逐条批准
-    await page.goto(host.base);
-    await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
-    await page.locator(".hero-ws").click();
-    await expect(page.locator(".stream")).toBeVisible();   // 等 folder_picked 记入草稿
-    await page.locator("textarea.in").fill("创建 hello.txt");
-    await page.locator(".send-btn").click();
+    await openFlow(page, host, "创建 hello.txt");
 
     // 提案挂进决策坞（工具名 + 待你裁决）
     const dock = page.locator(".ddock");
@@ -70,11 +73,7 @@ test.describe("CONV5 停止生成", () => {
         },
     });
     test("生成中发送键变停止方框，点击取消 turn", async ({ host, page }) => {
-        await page.goto(host.base);
-        await page.locator(".hero-ws").click();
-        await expect(page.locator(".stream")).toBeVisible();
-        await page.locator("textarea.in").fill("写一篇长文");
-        await page.locator(".send-btn").click();
+        await openFlow(page, host, "写一篇长文");
 
         // 等流式真的开始（agent 已进 Running，取消才不会空转），此时键已变停止方框
         await expect(page.locator(".msg.a").first()).toBeVisible({ timeout: 15000 });
@@ -91,12 +90,7 @@ test.describe("CONV5 停止生成", () => {
 });
 
 test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, page }) => {
-    await page.goto(host.base);
-    await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
-    await page.locator(".hero-ws").click();
-    await expect(page.locator(".stream")).toBeVisible();
-    await page.locator("textarea.in").fill("创建 hello.txt");
-    await page.locator(".send-btn").click();
+    await openFlow(page, host, "创建 hello.txt");
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first())
         .toBeVisible({ timeout: 15000 });
 
@@ -115,12 +109,7 @@ test("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件
     // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，挂账），修复后转正。
     // fixme 一层即够——fixme+skip 叠用会让两处跳过原因各自为政（改一处漏一处）
     test.fixme(true, "undo 带工作区会话不回退文件（挂账产品问题）");
-    await page.goto(host.base);
-    await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();   // 等 SSE 就绪
-    await page.locator(".hero-ws").click();
-    await expect(page.locator(".stream")).toBeVisible();
-    await page.locator("textarea.in").fill("创建 hello.txt");
-    await page.locator(".send-btn").click();
+    await openFlow(page, host, "创建 hello.txt");
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first())
         .toBeVisible({ timeout: 15000 });
     await page.locator("textarea.in").fill("/undo");
@@ -152,12 +141,7 @@ test.describe("CONV10 工具行人性化", () => {
         },
     });
     test("list/search/read 渲染人话摘要", async ({ host, page }) => {
-        await page.goto(host.base);
-        await expect(page.locator("#conn", { hasText: "已连接" })).toBeVisible();
-        await page.locator(".hero-ws").click();
-        await expect(page.locator(".stream")).toBeVisible();
-        await page.locator("textarea.in").fill("看看目录");
-        await page.locator(".send-btn").click();
+        await openFlow(page, host, "看看目录");
 
         // 调用参数摘要（两行制：调用行只说跑了什么——depth 等请求参数细节只在
         // 展开区；缺省 path = 工作区根，直接显示真实目录）

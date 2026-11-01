@@ -4,18 +4,11 @@
 // 端点契约。上传不经 apply 提案（用户文件进场，非内容修改），落点 .ithaca/uploads/。
 import path from "node:path";
 
-import { test, expect, getJson, postJson } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, waitTurnDone } from "../helpers/host.mjs";
 
 // 内容随意字节（端点按扩展名出 Content-Type，不校验字节合法性）
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 255]);
 const b64 = (buf) => buf.toString("base64");
-
-async function waitTurnDone(host) {
-    await expect.poll(async () => {
-        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
-        return t.records.some((x) => x.type === "assistant" && /任务完成/.test(x.text ?? ""));
-    }, { timeout: 15_000 }).toBe(true);
-}
 
 async function getAttachment(host, rel) {
     const r = await fetch(`${host.base}/api/attachment?path=${encodeURIComponent(rel)}`);

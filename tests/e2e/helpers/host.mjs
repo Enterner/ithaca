@@ -63,17 +63,32 @@ export function makeHost({ name, port, preset = "debug" }) {
             proc = null;
         },
         async waitReady(timeoutMs = 15000) {
-            const deadline = Date.now() + timeoutMs;
-            while (Date.now() < deadline) {
-                try {
-                    const r = await fetch(`${this.base}/api/health`, { signal: AbortSignal.timeout(1500) });
-                    if (r.ok) return;
-                } catch {}
-                await sleep(250);
-            }
-            throw new Error("宿主未就绪（health 超时）");
+            await pollHealth(this.base, timeoutMs);
         },
     };
+}
+
+/** health 轮询到就绪（fixture waitReady 与 SW1 双实例用例共用同一份口径）。 */
+export async function pollHealth(base, timeoutMs = 15_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const r = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1500) });
+            if (r.ok) return;
+        } catch {}
+        await sleep(250);
+    }
+    throw new Error("宿主未就绪（health 超时）: " + base);
+}
+
+/** 等 turn 收口（等事实不等时间）：transcript 出现 assistant 记录即收口（规范 §3）。
+ *  match = 可选的文本筛选（点名特定回复的用例传正则）。 */
+export async function waitTurnDone(host, match = null, timeoutMs = 15_000) {
+    await expect.poll(async () => {
+        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
+        return t.records.some(
+            (x) => x.type === "assistant" && (match === null || match.test(x.text ?? "")));
+    }, { timeout: timeoutMs }).toBe(true);
 }
 
 // 默认 mock 剧本：提案（apply 写文件）→ 收口
@@ -99,8 +114,7 @@ export const test = base.extend({
         // config 种子：mock 供应商 + 可选的 MCP server 清单（mcp 插件读取）
         const seedCfg = { provider: "mock" };
         if (hostCfg.mcpServers) seedCfg.mcp = { servers: hostCfg.mcpServers };
-        if (!hostCfg.noSeedConfig)
-            fs.writeFileSync(path.join(h.home, "config.json"), JSON.stringify(seedCfg));
+        fs.writeFileSync(path.join(h.home, "config.json"), JSON.stringify(seedCfg));
         h.writeScenario(hostCfg.scenario ?? defaultScenario);
         if (hostCfg.seed) hostCfg.seed(h);
         // 环境注入：mock 剧本路径 + pick-folder 测试钩子（宿主侧跳过原生对话框，

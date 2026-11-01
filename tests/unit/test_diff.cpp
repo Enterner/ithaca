@@ -97,12 +97,7 @@ VC_TEST("diff: Myers 散布公共行——统计与 hunk 收敛正确") {
     CHECK(d.find("s50") != std::string::npos);      // 公共行保留为上下文
     CHECK(d.find("old1") != std::string::npos);
     CHECK(d.find("new599") != std::string::npos);
-    std::size_t hunks = 0;
-    for (std::size_t pos = d.find("\n@@"); pos != std::string::npos;
-         pos = d.find("\n@@", pos + 1))
-        ++hunks;                                    // 每个 hunk 头占一行（行首 @@）
-    if (d.compare(0, 2, "@@") == 0) ++hunks;        // 首行就是 hunk 头
-    CHECK(hunks == 1);
+    CHECK(count_hunks(d) == 1);   // hunk 头计数走框架共用件
 }
 
 VC_TEST("diff: Myers 纯插入/纯删除大段（单侧 >256 行）") {

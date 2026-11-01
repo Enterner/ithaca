@@ -1,7 +1,7 @@
 // MCP 插件接入链路用例：mock MCP server 经 mcp
 // 插件接入 agent 工具链，mock LLM 场景驱动真实工具调用，断言 transcript 全链路。
 import path from "node:path";
-import { test, expect, getJson, postJson, root } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, root, waitTurnDone } from "../helpers/host.mjs";
 
 const serverScript = path.join(root, "tests", "fixtures", "mock-mcp-server.mjs");
 
@@ -37,12 +37,8 @@ test.describe("MCP 接入", () => {
             await new Promise((r) => setTimeout(r, 500));
         }
         await postJson(host.base, "/api/session/new", { message: "算 2+3" });
-        let t;
-        for (let i = 0; i < 40; i++) {
-            t = (await getJson(host.base, "/api/transcript?after=0")).body;
-            if (t.records.some((x) => x.type === "assistant" && /算完了/.test(x.text || ""))) break;
-            await new Promise((r) => setTimeout(r, 400));
-        }
+        await waitTurnDone(host, /算完了/);
+        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
         // 工具调用行（agent 工具集含 MCP 工具 ⇒ LLM 可见可调）
         const call = t.records.find((x) => x.type === "tool_call");
         expect(call?.tool).toBe("mcp.demo__add");
@@ -67,12 +63,8 @@ test.describe("MCP 容错", () => {
         const h = await getJson(host.base, "/api/health");
         expect(h.body.ok).toBe(true);
         await postJson(host.base, "/api/session/new", { message: "普通对话" });
-        let t;
-        for (let i = 0; i < 40; i++) {
-            t = (await getJson(host.base, "/api/transcript?after=0")).body;
-            if (t.records.some((x) => x.type === "assistant")) break;
-            await new Promise((r) => setTimeout(r, 400));
-        }
+        await waitTurnDone(host);
+        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
         expect(t.records.some((x) => x.type === "user")).toBe(true);
         expect(t.records.some((x) => x.type === "assistant")).toBe(true);
         // 无 MCP 工具记录

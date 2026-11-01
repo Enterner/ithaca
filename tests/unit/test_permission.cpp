@@ -2,6 +2,7 @@
 // 沙箱（AppContainer）与 Job Object 是 Windows API 集成，走 e2e/dogfood 验证。
 #include "ithaca_test_framework.hpp"
 
+#include "vc_events.hpp"  // vc_api::normalize_permission_mode：归一契约单源
 #include "vcagent/context.hpp"
 #include "permission.hpp"
 
@@ -9,14 +10,14 @@
 #include <vector>
 
 using vcagent::mode_confirm;
-using vcagent::normalize_mode;
+using vc_api::normalize_permission_mode;
 
 VC_TEST("permission: 模式归一——未知取值回落 auto-edit") {
-    CHECK(normalize_mode("suggest") == "suggest");
-    CHECK(normalize_mode("auto-edit") == "auto-edit");
-    CHECK(normalize_mode("full-auto") == "full-auto");
-    CHECK(normalize_mode("") == "auto-edit");
-    CHECK(normalize_mode("yolo") == "auto-edit");
+    CHECK(normalize_permission_mode("suggest") == "suggest");
+    CHECK(normalize_permission_mode("auto-edit") == "auto-edit");
+    CHECK(normalize_permission_mode("full-auto") == "full-auto");
+    CHECK(normalize_permission_mode("") == "auto-edit");
+    CHECK(normalize_permission_mode("yolo") == "auto-edit");
 }
 
 VC_TEST("permission: suggest——编辑与命令逐条批准") {

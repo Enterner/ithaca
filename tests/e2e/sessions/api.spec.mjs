@@ -2,7 +2,7 @@
 // SC1（新口径）+ SC2a–d 的服务端镜像不变式：注册表只含已初始化会话。
 import fs from "node:fs";
 import path from "node:path";
-import { test, expect, getJson, postJson } from "../helpers/host.mjs";
+import { test, expect, getJson, postJson, waitTurnDone } from "../helpers/host.mjs";
 
 function transcriptLines(host, id) {
     const tf = path.join(host.home, "sessions", `${id}.transcript.jsonl`);
@@ -36,13 +36,7 @@ test("SC1 组合端点创建即初始化：注册表/transcript/回复/重启重
     expect(meta.id).toBe(sid);
 
     // 回复到达（mock 剧本）
-    let assistant = null;
-    for (let i = 0; i < 30 && !assistant; i++) {
-        await new Promise((res) => setTimeout(res, 400));
-        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
-        assistant = t.records.find((x) => x.type === "assistant" && /任务完成/.test(x.text ?? ""));
-    }
-    expect(assistant).not.toBeNull();
+    await waitTurnDone(host, /任务完成/);
 
     // 重启 → 会话仍在、active 指向它、记录完整重放
     const before = transcriptLines(host, sid).length;
@@ -61,11 +55,7 @@ test("SC2a 镜像：裸 session/new 400，注册表不变", async ({ host }) => 
     // 先正常创建一个会话，等 turn 收口（否则裸调用会先撞上 in_flight 门卫）
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     expect(created.body.ok).toBe(true);
-    for (let i = 0; i < 30; i++) {
-        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
-        if (t.records.some((x) => x.type === "assistant")) break;
-        await new Promise((res) => setTimeout(res, 400));
-    }
+    await waitTurnDone(host);
     const before = (await getJson(host.base, "/api/sessions")).body;
 
     // 裸调用（无 message）⇒ 400 + 注册表分毫不动 + 无孤儿条目 + 无 transcript 文件
@@ -112,11 +102,7 @@ test("SC2c 启动清扫：孤儿条目与空 transcript 被兜底清除", async 
 test("SC2d 镜像：失败创建后原会话与 active 分毫未动", async ({ host }) => {
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     const sid = created.body.id;
-    for (let i = 0; i < 30; i++) {   // 等 turn 收口（记录数稳定）
-        const t = (await getJson(host.base, "/api/transcript?after=0")).body;
-        if (t.records.some((x) => x.type === "assistant")) break;
-        await new Promise((res) => setTimeout(res, 400));
-    }
+    await waitTurnDone(host);   // 等 turn 收口
     const beforeRecords = (await getJson(host.base, "/api/transcript?after=0")).body.records.length;
 
     await postJson(host.base, "/api/session/new", {});   // 裸调用 400（SC2a 已断言状态码）

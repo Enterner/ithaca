@@ -32,6 +32,7 @@ add_executable(ithaca_unit_tests
     test_read_paged.cpp
     test_attachments.cpp)
 target_include_directories(ithaca_unit_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../contract"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../shared"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/workspace"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugins/llm_cloud"
