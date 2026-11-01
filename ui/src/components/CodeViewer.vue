@@ -243,6 +243,8 @@ function showDiff() {
       <span class="cv-lang">{{ langOf(S.viewer?.path) }}</span>
       <!-- 文档抽取来源（docx/ifilter:pdf…）：内容是抽取的纯文本而非原文件字节 -->
       <span v-if="S.viewer?.doc" class="cv-doc" title="内容为文档抽取的纯文本，非原文件排版">📄 {{ S.viewer.doc }} 抽取文本</span>
+      <!-- 查看器警示条（PDF 预览回落原因等）：不遮内容的琥珀 pill，全因进 title -->
+      <span v-if="S.viewer?.note" class="cv-doc note" :title="S.viewer.note">⚠ 预览不可用</span>
       <span v-if="S.viewer?.truncated" class="cv-trunc">超 256KB 已截断</span>
       <span class="spacer"></span>
       <button class="mode-btn" :class="{ on: mode === 'diff' }" :disabled="btnDisabled"

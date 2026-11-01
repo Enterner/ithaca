@@ -141,6 +141,12 @@ export function attUrl(path) {
   return '/api/attachment?path=' + encodeURIComponent(path)
 }
 
+/** 文档版式预览 URL（/api/fs/preview；office 插件转 PDF 的流式出口）。
+ *  调用方自带超时——不走 api() 的 10s GET 上限，转换服务端自限 30s。 */
+export function previewUrl(path) {
+  return '/api/fs/preview?path=' + encodeURIComponent(path)
+}
+
 /** 子代理工作明细存档（右栏过程视图的历史补齐；按 turn 过滤）。 */
 export function fetchAgentLog(turn) {
   return api('/api/agent-log?turn=' + turn)

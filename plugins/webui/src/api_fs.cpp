@@ -88,6 +88,112 @@ json WebuiPlugin::call_tool_json_(const vc_api::ToolTable* table, const char* to
     return r;
 }
 
+// ---- 版式预览（/api/fs/preview）------------------------------------------------
+// docx/doc/pptx/ppt/pdf → PDF 字节流的版式级预览出口。数据面：office 的
+// PreviewTable.convert 只提交（立即返回），重活在 office 的 STA 转换线程；
+// 本端点挂起连接，结果经 on_done 回调在转换线程上补发（kit respond 原语支持
+// 任意线程，连接已断静默丢弃）。
+//
+// 回调生命周期（deactivate 顺序不定的悬垂防线）：ud 是堆上的 PreviewWait——
+// 只有 server 快照 + 连接号 + inflight 指针，零插件成员；office 保证每 job 恰
+// 一次回调（成功/失败/停机取消/杀进程后失败四路同口），回调内自毁。页面关闭
+// 后回调照常来、respond 静默丢——不占不漏。
+namespace {
+
+// 挂起连接的在途记账：闭包 ++（宿主线程）与回调 --（office 转换线程）跨线程，
+// atomic。上限对齐 office 队列容量——挂起连接占客户端槽、文件流占 max_streams，
+// 不给"排队等转换"开无界口子。
+constexpr int kPreviewMaxInflight = 4;
+
+struct PreviewWait {
+    std::shared_ptr<http::Server> srv;   // picker/api_provider_models 同款快照纪律
+    std::uint64_t conn = 0;
+    std::atomic<int>* inflight = nullptr;
+};
+
+// office 转换线程回调（C ABI trampoline）：result_json 只在回调期有效，同步消费。
+// 成功 → PDF 文件流（no-cache：URL 无版本参数，浏览器缓存会吃掉改版后的新转换）；
+// 失败 → JSON {ok:false,error}（前端回落文本抽取）。两路都 200——失败语义是
+// 「预览不可用，请看抽取文本」，不是传输层错误。file_path 流式的内存面 = 内核
+// 按 chunk 分块读盘，零整读上界。
+void preview_on_done(void* ud, const char* result_json) noexcept {
+    std::unique_ptr<PreviewWait> w(static_cast<PreviewWait*>(ud));
+    if (!w) return;
+    if (w->inflight) w->inflight->fetch_sub(1);
+    if (!w->srv) return;
+    const json r = json::parse(result_json != nullptr ? result_json : "null", nullptr, false);
+    http::Response resp;
+    resp.status = 200;
+    if (r.is_object() && r.value("ok", false) && r.contains("pdf")) {
+        std::error_code ec;
+        const fs::path pdf = fs::path(r["pdf"].get<std::string>());
+        const auto sz = fs::file_size(pdf, ec);
+        if (!ec) {
+            resp.content_type = "application/pdf";
+            resp.file_path = pdf.string();
+            resp.file_length = sz;
+            resp.headers.push_back({"cache-control", "no-cache"});
+            w->srv->respond(w->conn, resp);
+            return;
+        }
+        resp.body = json{{"ok", false}, {"error", "PDF 缓存文件不可读"}}.dump();
+    } else {
+        resp.body = json{{"ok", false},
+                         {"error", r.is_object() ? r.value("error", std::string("预览转换失败"))
+                                                 : std::string("预览转换失败")}}
+                        .dump();
+    }
+    resp.content_type = "application/json; charset=utf-8";
+    w->srv->respond(w->conn, resp);
+}
+
+}  // namespace
+
+/// GET /api/fs/preview?path=<相对路径> → 文档的 PDF 版式预览（office 插件转换，
+/// 本端点只挂起-补发）。扩展名白名单在入口即断（xlsx 等维持抽取文本，前端据此
+/// 走 /api/fs/read）；转换校验（jail/大小）在 office 侧同款复跑——两侧白名单
+/// 必须一致，此处挡的是"明显不支持的格式别占挂起连接"。线程纪律：解析在 select
+/// 线程、提交在宿主闭包、补发在 office 转换线程（respond 原语任意线程）。
+http::Response WebuiPlugin::api_fs_preview_(const http::Request& req) {
+    static constexpr const char* kPreviewExts[] = {".docx", ".doc", ".pptx", ".ppt", ".pdf"};
+    const std::string rel = req.query("path");
+    const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
+    const bool supported =
+        std::any_of(std::begin(kPreviewExts), std::end(kPreviewExts),
+                    [&](const char* e) { return e == ext_lower; });
+    if (!supported)
+        return json_resp({{"ok", false},
+                          {"error", "该格式不支持版式预览（docx/doc/pptx/ppt/pdf 之外"
+                                    "维持抽取文本）"}});
+    return defer_(req, [this, rel](std::uint64_t conn) {
+        if (preview_ == nullptr) {
+            respond_err_(conn, "office 插件未装载，无版式预览能力");
+            return;
+        }
+        if (preview_inflight_.load() >= kPreviewMaxInflight) {
+            respond_err_(conn, "预览转换排队已满，请稍后再试");
+            return;
+        }
+        auto* w = new PreviewWait{server_, conn, &preview_inflight_};
+        w->inflight->fetch_add(1);
+        const std::string args = json{{"path", rel}}.dump();
+        const char* out_json = nullptr;
+        const nostos_status st =
+            preview_->convert(preview_->self, args.c_str(), &preview_on_done, w, &out_json);
+        json r = st == NOSTOS_OK && out_json != nullptr
+                     ? json::parse(out_json, nullptr, false)
+                     : json{{"ok", false}};
+        // 即时失败（校验/队满/停机）⇒ 未入队 ⇒ 无回调：状态就地回退并补发错误。
+        // 成功入队 ⇒ PreviewWait 所有权移交回调（恰一次，自毁）
+        if (r.is_object() && r.value("ok", false)) return;
+        w->inflight->fetch_sub(1);
+        delete w;
+        respond_err_(conn, r.is_object() && r.contains("error")
+                               ? r["error"].get<std::string>()
+                               : "预览提交失败 (" + std::to_string(static_cast<int>(st)) + ")");
+    });
+}
+
 /// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
 // 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。
 // 数据源：路由 defer 包装（宿主线程闭包内调用）。

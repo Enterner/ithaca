@@ -20,6 +20,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/plugin_module.cmake")
 
 nostos_plugin_module(office_plugin plugin.cpp)
 # kit 的 include 目录：分页出参的 JSON 编解码用 nlohmann/json（版本随内核 vendored）。
-target_link_libraries(office_plugin PRIVATE nostos::kit)
+# ole32/uuid：预览转换的 COM 自动化（CoCreateInstance/IDispatch，见 preview.hpp）。
+target_link_libraries(office_plugin PRIVATE nostos::kit ole32 uuid)
 target_include_directories(office_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../contract")
 target_include_directories(office_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../shared")

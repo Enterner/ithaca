@@ -12,6 +12,7 @@ import InputBar from './components/InputBar.vue'
 import Settings from './components/Settings.vue'
 import FileTree from './components/FileTree.vue'
 import CodeViewer from './components/CodeViewer.vue'
+import OfficeViewer from './components/OfficeViewer.vue'
 import SubagentPane from './components/SubagentPane.vue'
 
 const settingsRef = ref(null)
@@ -71,8 +72,23 @@ function onWinKey(e) {
 }
 
 // ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
-function openFile(path) {   // 内容经 /api/fs/read 代理 workspace read；纯展示态不经 actions 层
-  S.viewer = { path, content: '', truncated: false, loading: true, error: '', doc: '' }
+// 版式预览白名单（与 webui /api/fs/preview、office 转换域三方同清单）：xlsx 不进
+// ——表格的"打印版式"对预览无增益，维持抽取文本
+const PREVIEW_EXTS = new Set(['docx', 'doc', 'pptx', 'ppt', 'pdf'])
+const extOf = (p) => { const m = /\.([^.]+)$/.exec(p || ''); return m ? m[1].toLowerCase() : '' }
+function openFile(path) {
+  if (PREVIEW_EXTS.has(extOf(path))) {
+    // 版式预览态：内容归 OfficeViewer 拉取（office 插件转 PDF），本函数不 fetch
+    S.viewer = { path, kind: 'pdf', content: '', truncated: false, loading: true, error: '', doc: '', note: '' }
+    return
+  }
+  loadText(path)
+}
+// 文本抽取态（预览失败回落的共用出口；内容经 /api/fs/read 代理——纯展示态不经
+// actions 层）。note 保留同文件回落时 OfficeViewer 留下的警示原因
+function loadText(path) {
+  S.viewer = { path, kind: '', content: '', truncated: false, loading: true, error: '', doc: '',
+               note: S.viewer && S.viewer.path === path ? S.viewer.note : '' }
   fetchFile(path).then((r) => {
     if (!S.viewer || S.viewer.path !== path) return   // 已返回树/已换文件：丢弃迟到响应
     S.viewer.loading = false
@@ -83,6 +99,13 @@ function openFile(path) {   // 内容经 /api/fs/read 代理 workspace read；�
   }).catch(() => {
     if (S.viewer && S.viewer.path === path) { S.viewer.loading = false; S.viewer.error = '网络错误' }
   })
+}
+// OfficeViewer 转换失败回落：切回文本态（原因进查看器警示条），OfficeViewer 随
+// loadText 重建 viewer（kind=''）而卸载
+function fallbackToText(msg) {
+  if (!S.viewer) return
+  S.viewer.note = 'PDF 预览不可用：' + msg
+  loadText(S.viewer.path)
 }
 watch(() => S.curWs, () => { S.viewer = null })   // 切工作区不留上一工作区的文件内容
 onMounted(() => window.addEventListener('keydown', onWinKey))
@@ -184,7 +207,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       <SubagentPane v-if="S.subView" />
       <template v-else>
         <FileTree v-show="!S.viewer" ref="fileTreeRef" @open-file="openFile" />
-        <CodeViewer v-if="S.viewer" />
+        <!-- kind 分流：pdf = 版式预览（组件自取转换结果），其余 = 文本抽取查看器。
+             key 按路径——同为 pdf 态点另一文件时组件重挂（onMounted 重拉转换） -->
+        <OfficeViewer v-if="S.viewer && S.viewer.kind === 'pdf'" :key="S.viewer.path"
+                      @fallback="fallbackToText" />
+        <CodeViewer v-else-if="S.viewer" />
       </template>
       <div class="filedrag" title="拖拽调宽" @mousedown="startFilesDrag"></div>
     </aside>

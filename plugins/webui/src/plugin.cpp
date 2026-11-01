@@ -107,6 +107,9 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     // office 工具表（/api/fs/read 的文档分流）：可选项，缺席静默——回退 workspace
     // 由其守卫点名 office.read，行为可预期
     office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
+    // office 预览转换表（/api/fs/preview 的提交面）：可选项，缺席静默——前端
+    // 收到「office 插件未装载」后回落文本抽取
+    preview_ = host_.service<vcoffice::PreviewTable>(vcoffice::kPreviewSvc);
 
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host_.log(4, "ithaca.webui: 领取 poster 失败");
@@ -352,6 +355,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     // 失效，靠前端按 id 去重掩住）
     if (m == "GET" && t == "/api/fs/list") return api_fs_list_(req);
     if (m == "GET" && t == "/api/fs/read") return api_fs_read_(req);
+    if (m == "GET" && t == "/api/fs/preview") return api_fs_preview_(req);
     if (m == "GET" && t == "/api/attachment") return api_attachment_(req);
     if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_(req);
     if (m == "GET" && t == "/api/mcp/status")

@@ -4,7 +4,7 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：内核观察实施 · 2026-11-01；观察 6/7 方向维持，观察 9 剩两半）
+## 当前发现（批次：观察 11 查因收口 · 2026-11-01；观察 6/7 方向维持，观察 9 剩两半）
 
 审核批次（2026-10-31）挂出的观察 1–4 与 8/10 本批随内核 kit 落地、产品仓同步消费
 （见落地状态）；观察 5 经内核复核归因不成立（闭环记录见落地状态）。仍开放的只剩：
@@ -30,13 +30,9 @@ agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参
 逆序收口一体）——方向：参数化原语而非宿主框架，装配决策（装载哪些/懒激活条件）
 留宿主。
 
-**观察 11：kit::http 的响应投递存在浏览器侧「永不 resolve」形态**（触发场景：二轮
-复查修 webui 决策坞 e2e 间歇失败——repro 实测两条 SSE 连接中带消费 handler 的那条
-被静默饿死（conn 恒 on、无 error 事件、帧全部走另一条），且偶发「服务端 defer 体
-已执行、浏览器 fetch 永不 resolve」的悬挂连接；产品侧已用「补洞轮询恒跑 + api()
-超时中止」自愈兜底，页面级恢复 ≤5s）。方向：kit::http 查因 broadcast/响应写面对
-多连接的投递可靠性（select 写失败是否静默、挂起-补响应的 conn 寻址在连接关闭后
-的语义），若确认内核缺陷再立项，产品侧兜底维持。
+**观察 11（已收口，见落地状态）：kit::http 投递可靠性疑点——查因坐实一半（SSE 广播
+突发丢帧，内核 323f3ea 修复），另一半（挂起连接永不 resolve）探针未复现，归因收敛
+到浏览器/客户端中止侧。**
 
 **svc 单槽维持不立项**：跨工作区并行的真墙是 workspace/runner/office 的单 jail
 （webui 门卫按运行池工作区一致性拦截），多工作区并行才需要命名实例。
@@ -81,6 +77,8 @@ agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探�
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-01 | 观察 11：kit::http 投递可靠性疑点（双 SSE 连接下消费连接静默饿死「conn 恒 on、无 error 事件」；偶发挂起连接「defer 体已执行、fetch 永不 resolve」） | 已落地（坐实一半：broadcast 只入队不发送 ⇒ select 循环来不及插轮次的密集广播把健康读者的 out 也顶过 buffer_cap、跳帧闸门误杀活跃连接——抛弃式探针直连内核复现：读者 21020/30000，缺口与一次轮次窗口的溢出量吻合；内核 323f3ea 修为追加后立即 flush，out 只计量客户端真实积压，30000/30000 × 3 稳定。另一半探针未复现：挂起-补发完整送达、断连静默丢弃为契约、挂起连接 16s reap 豁免存活，归因收敛到浏览器/客户端中止侧。产品侧补洞恒跑与 api() 超时为正确层级的防御，按原计划维持） |
+| 2026-11-01 | 观察 12：kit::http 文件流式（Response::file_path）在 out 排空后永久停摆——writable 集只收非空 out + fill_file 续推被 ready>0 门控，out 恰好送空而 remaining>0 时下轮 select 无任何就绪事件（4.4MB 实测卡死 buffer_cap，孤立连接必现；有其他连接产生事件时呈「蹭车」式龟速） | 已落地（内核 323f3ea：fd_set 构造对「有剩余文件」的连接同样挂 writable，续推由循环每轮 flush+fill 自然推进；产品仓 preview_on_done 的 body 整读兜底（≤64MB 上界）退役，回归 file_path 零拷贝流式——660KB 跨 buffer_cap 孤立连接探针完整送达） |
 | 2026-11-01 | 审核批次观察 1–4/8/10（能力层缺口）+ 观察 9 的 teardown 契约 + 观察 5 归疑复核 | 已落地（内核：kit::win 补 `ascii_lower`；win_http 补 `crack_url`/`UrlParts` 与 `winhttp_error_text`、http_fetch 内部 crack 同源化；kit::http `Request::query(name)`（%XX 解码、'+' 保留、名字精确匹配）；piped_process 补 `read_lines` 读循环拼装件；PathJail 增 UTF-8 根构造与 `Resolved` 聚合出参；HostBridge 析构兜底摘唤醒钩 + set_post_wake 写明 teardown 契约；EventHub 头注释补「类型化/广播 raw/slot 三路派发同为快照迭代」的重入声明。产品仓消费迁移：host profile 折叠件改走 kit（第 7 份副本退役）；llm_cloud 端点解析/错误人话改走 kit；webui query_val 退役（5 消费点改 Request::query）+ 错误人话改走 kit；runner/mcp 读循环收进 read_lines；workspace/office/runner 的 PathJail 构造与 office resolve 改用新形态；agent ctx_turn.cpp 的崩溃归因注释更正（快照迭代自 58dc137 即在，真实依据是载荷寿命 + 因果序两契约，纪律维持）。观察 5 闭环：a18232f 的「raw 槽通道非快照迭代」归因复核不成立——内核三路派发自 58dc137 起均为快照迭代；0xc0000005 的修复实际来自载荷深拷贝 + 推迟一拍（符合 ABI 两契约），精确根因未重新确立，不再挂账。工作树待提交） |
 | 2026-10-30 | 外来线程日志格式分裂（触发场景：多会话并行后控制台同屏两种前缀——宿主线程走宿主 sink `[日志 N]`，插件自建 worker/io 线程无 TLS 桥走内核 log_thunk 兜底 `[nostos][N]`+stderr） | 已落地（内核 host_api.hpp：HostBridge 构造注册进程级主桥、析构摘除，log_thunk 兜底回落主桥——外来线程日志与宿主 sink 同格式同流，stderr 兜底仅存于装配/拆卸窗口；产品侧 host sink 升级为标准日志行「时间戳 [级别名] 消息」，回归归一口径补行级时间戳。工作树待提交） |
 |------|------|------|

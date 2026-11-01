@@ -9,7 +9,9 @@ export const S = reactive({
   conn: 'off',          // 'on' | 'off'
   inFlight: false,
   lastPrompt: 0,
-  rate: '0',
+  rate: '',   // 会话平均输出速率 tok/s（''=尚无计量，显示面隐藏）；records 增量采样维护
+  liveRate: '',   // 本次回复输出速度 tok/s（DeepSeek 式：每条回复独立起算，首字等待
+                  // 不计，收口即隐；流式指示器专用）
   // /api/config（两层供应商）
   providers: [], current: '',
   model: '', pmode: 'auto-edit',
@@ -18,8 +20,10 @@ export const S = reactive({
   draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
-  // 代码查看器（右栏文件态 ⇄ 查看态）：{path, content, truncated, loading, error}；
-  // null = 右栏显示文件树。纯展示态——内容由 App.vue 经 /api/fs/read 拉取，不经 actions 层
+  // 代码查看器（右栏文件态 ⇄ 查看态）：{path, kind, content, truncated, loading,
+  // error, doc, note}；kind='pdf' = 版式预览态（OfficeViewer 拉取渲染），其余走
+  // 文本抽取；note = 查看器警示条（预览回落原因等）。null = 右栏显示文件树。
+  // 纯展示态——内容由 App.vue/OfficeViewer 拉取，不经 actions 层
   viewer: null,
   // 待裁决提案（ZCode 式决策坞：只在实时提案上出现，重放的历史提案不阻塞输入）
   pending: null,
@@ -51,7 +55,7 @@ export const S = reactive({
   provModelsEvt: null,
 })
 
-// 非响应式转态（记录游标/汇总卡聚合/速率窗口）：SSE 与重放两路径共用的
+// 非响应式转态（记录游标/汇总卡聚合/速率累计）：SSE 与重放两路径共用的
 // 可变私有面。放属性容器而非裸导出 let——ESM 导入绑定只读，属性才可写。
 export const X = {
   turnEdits: new Map(),   // 当前轮编辑聚合（apply/applied 累计，flushTurnEdits 结算）
@@ -59,4 +63,10 @@ export const X = {
   lastTurnId: null,       // 轮次边界判定（turn_id 变化 ⇒ 结算汇总卡）
   runs: new Map(),        // run_id → 输出块 {lines, exit, failed}（输出折叠进调用行，见 records）
   runCall: new Map(),     // run_id → 归属的 runner.run 调用行（「已启动」通告时配对）
+  // 输出速率累计（会话均值口径，records 增量采样维护）：rateToks=粗估输出
+  // tokens、rateMs=输出时长、rateLast=最近增量时刻（0=无进行中的输出期）。
+  // respToks/respStart=本次回复的粗估 tokens 与首增量时刻（回复均速，DeepSeek 式）。
+  // 放容器不放 records 模块局部——清零面在 sessions.js 的 resetView，双向 import 成环
+  rateToks: 0, rateMs: 0, rateLast: 0,
+  respToks: 0, respStart: 0,
 }

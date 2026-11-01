@@ -1,5 +1,5 @@
 // 记录状态机：SSE/重放的统一入口 render——流式合并、汇总卡聚合（同批同文件多次编辑折叠为一条）、去重只认数字 id（NOTE: session 字符串 id 会污染 lastId——踩过）；
-// 附 HTTP 重放 pollOnce（重放与补洞共用）与输出速率窗口。
+// 附 HTTP 重放 pollOnce（重放与补洞共用）与会话输出速率累计。
 // 视图重置/草稿态进出场属会话域（./sessions），session 事件在此分发到它。
 import { S, X } from './state'
 import { api, shellMsg } from './api'
@@ -149,6 +149,9 @@ export function render(rec) {
       }
     S.since = cut; S.lastId = cut - 1
     X.turnEdits = new Map(); X.turnEditsTurn = 0
+    // 被撤轮次的增量已混入速率累计、按位无法剔除——均值整体重统计
+    X.rateToks = 0; X.rateMs = 0; X.rateLast = 0; S.rate = ''
+    X.respToks = 0; X.respStart = 0; S.liveRate = ''
     S.fsRev++   // 文件树对齐磁盘真态（被撤轮次的文件改动仍在盘上）
     return
   }
@@ -219,17 +222,20 @@ function renderNow(rec) {
     case 'user':
       push(rec); S.live = null
       S.inFlight = true
+      rateClose()   // 新轮开始：防御性收口（上一响应通常已随 assistant 收口）
       return
     case 'assistant_delta':
       // 默认折叠（open:false）：思考/正文流不推着页面走，要点开才展开
       //（思考体的跟随滚动由 Stream.vue 接管——内部滚，不动页面）
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
       S.live.text += rec.text
-      pushRateSample(rec.text)
+      rateUpdate(rec.text)
+      respUpdate(rec.text)
       return
     case 'assistant_reasoning':
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
       S.live.reasoning += rec.text
+      rateUpdate(rec.text)   // 思考增量也是模型输出：不喂会让推理模型的速率时钟停摆虚高
       return
     case 'assistant':
       // 收口后思考块保留可回看（reasoning 由宿主落盘在记录上）；展开态从流式块
@@ -240,7 +246,7 @@ function renderNow(rec) {
       // inFlight = turn 进行中（带 tool_calls 的 done 只是一轮收束，工具/子代理
       // 阶段仍是同一 turn——停止入口必须全程在场，否则子代理挂起期无路可退）
       S.inFlight = rec.turn_done === false
-      S.rate = '0'
+      rateClose()   // 本响应流结束：收口输出期，其后的工具执行/空闲不计时（会话均值保留累计）
       if (rec.usage && rec.usage.total_tokens) {
         S.lastPrompt = rec.usage.prompt_tokens || 0
       }
@@ -395,20 +401,29 @@ function renderNow(rec) {
       push(rec); return
     }
     case 'error':
-      S.inFlight = false; S.rate = '0'
+      S.inFlight = false
+      rateClose()   // 流式中途报错同样收口输出期（会话均值保留累计）
       // 流式中途报错也要收掉 live 块：只复位 inFlight 会留下半截流式正文与光标，
       // 观感是「还在输出」（错误卡与残留正文并存，直到下一条 user 记录才清）
       push(rec); S.live = null; flushTurnEdits(); return
   }
 }
 
-// ---- 输出速率（滚动窗口）------------------------------------------------------
-// tok/s ≈ 增量字符的粗估折算（ASCII ≈ 4 字符/token、CJK ≈ 0.7 token/字，与后端
-// breakdown 的 utf8_tokens 同口径）在 6s 滚动窗口上的均值。整轮平均会随轮变长被
-// 稀释成「平均速度」；滚动窗口才是「当前输出速度」。SSE 静默期（思考/工具执行）
-// 无增量，由周期器把窗口排空归零。
-const RATE_WIN_MS = 6000
-const rateSamples = []   // { t: 采样时刻, k: 该增量的粗估 token 数 }
+// ---- 输出速率（双口径：会话累计均值 + 本次回复均速）---------------------------
+// 会话均值（S.rate，用量块显示）= 会话累计的流式输出粗估 tokens / 累计「有增量
+// 到达」的时长。输出期由本响应首个增量开启、assistant/error 收口关闭
+// （rateClose）——轮间空闲（工具执行/用户思考）与首增量前的等待（TTFT）不计入；
+// 响应内单次增量间隔超过 RATE_GAP_MS 视为链路断续（补洞场景的静默），超出部分
+// 同样不计。思考增量与正文增量同喂（推理输出也是输出，不喂会让速率时钟停摆虚高）。
+// 回复均速（S.liveRate，流式指示器显示，DeepSeek 式）= 本次回复的粗估 tokens /
+// 首正文增量起的 span，每条回复独立起算、收口即隐（respUpdate，思考流不计）。
+// tokens 沿用增量字符粗估（ASCII ≈ 4 字符/token、CJK ≈ 0.7 token/字，与后端
+// breakdown 的 utf8_tokens 同口径）：provider 的 completion_tokens 收口才可得，
+// 且含未流式可见的工具调用 JSON，与观测时长不可比，故不做真值混算。增量不落盘
+// ⇒ 重放不可重建，均值只统计本次打开以来的流式；S.rate/S.liveRate '' = 尚无
+// 计量（显示面隐藏）；切会话/撤回即清零重新统计。累计器放 X 而非模块局部：
+// 重置面在 sessions.js 的 resetView，双向 import 会成环。
+const RATE_GAP_MS = 10000
 function rateTok(text) {
   let ascii = 0, non = 0
   for (let i = 0; i < text.length; i++) {
@@ -418,19 +433,31 @@ function rateTok(text) {
   }
   return ascii / 4 + non * 0.7
 }
-function computeRate() {
+function rateUpdate(text) {
   const now = Date.now()
-  while (rateSamples.length && now - rateSamples[0].t > RATE_WIN_MS) rateSamples.shift()
-  if (!rateSamples.length) { S.rate = '0'; return }
-  const span = Math.max(1, Math.min(RATE_WIN_MS, now - rateSamples[0].t))
-  const toks = rateSamples.reduce((a, s) => a + s.k, 0)
-  S.rate = String(Math.round(toks / (span / 1000)))
+  if (X.rateLast && now - X.rateLast <= RATE_GAP_MS) X.rateMs += now - X.rateLast
+  X.rateLast = now
+  X.rateToks += rateTok(text)
+  if (X.rateMs > 0) S.rate = String(Math.round(X.rateToks / (X.rateMs / 1000)))
 }
-function pushRateSample(text) {
-  rateSamples.push({ t: Date.now(), k: rateTok(text) })
-  computeRate()
+/** 本次回复均速（DeepSeek 式）：只对正文增量起算——思考流不计入（思考期本就
+    不显示速度，显示窗口与口径一致；会话均值是另一条腿，思考在那里算输出）。
+    时长 = 首正文增量起的整段 span（响应内停顿即生成时间，不做间隔剔除）；
+    DeepSeek 收口后用 usage 真值修正，此处不做：completion_tokens 含不可见流的
+    工具调用 JSON，与观测时长不可比，混算反失真。 */
+function respUpdate(text) {
+  const now = Date.now()
+  if (!X.respStart) X.respStart = now
+  X.respToks += rateTok(text)
+  const sec = (now - X.respStart) / 1000
+  if (sec > 0) S.liveRate = String(Math.round(X.respToks / sec))
 }
-setInterval(computeRate, 500)   // 静默期归零；后台标签页被节流也无碍（回来即纠正）
+/** 输出期收口：此后到下一响应首个增量之间的空闲不并入输出时长；回复均速一并
+    复位（下条回复独立起算，旧值不带进新回复）。 */
+function rateClose() {
+  X.rateLast = 0
+  X.respToks = 0; X.respStart = 0; S.liveRate = ''
+}
 
 // ---- 数据通道 ----------------------------------------------------------------
 
@@ -465,8 +492,8 @@ async function pollOnceImpl() {
   }
 }
 
-/** 发送即重置速率窗口（上轮残留不清会把旧速度带进新轮的开头）。 */
+/** 发送前的兜底收口（上一响应若未经 assistant/error 收口，也不把空闲带进下一
+    响应）。会话均值跨轮累计，发送不再清零。 */
 export function liveStart() {
-  rateSamples.length = 0
-  S.rate = '0'
+  rateClose()
 }

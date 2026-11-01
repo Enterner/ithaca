@@ -4,7 +4,7 @@
 export { S, X } from './store/state'
 export { api, fetchConfig, fetchFsList, fetchFile, fetchMcpStatus, fetchAgentLog,
          ctxSizeOf, fmtCtx, parseCtx, fetchProviderModels,
-         fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT, isImageAtt, attUrl } from './store/api'
+         fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT, isImageAtt, attUrl, previewUrl } from './store/api'
 export { liveStart, pushLocal } from './store/records'
 export { openSession, newSession, delSession, renameSession, loadSessions } from './store/sessions'
 export { send, decide, setModel, setMode, saveConfig, pickFolder,

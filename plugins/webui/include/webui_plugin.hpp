@@ -36,6 +36,7 @@
 
 #include "vc_llm.hpp"
 #include "vc_tool.hpp"  // vc_api::ToolTable：文件树代理调用的 workspace 工具表形状
+#include "vcoffice/iface.hpp"  // vcoffice::PreviewTable：/api/fs/preview 的预览转换表
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/http.hpp>
@@ -262,6 +263,9 @@ private:
 
     http::Response api_fs_list_(const http::Request& req);
     http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
+    // 版式预览（docx/pptx/doc/ppt/pdf → PDF 流）：提交 office 转换（异步回调）
+    // 并挂起连接，回调里补发——见 api_fs.cpp 的实现注释
+    http::Response api_fs_preview_(const http::Request& req);
     // /api/fs/* 代理共用：table 由调用方按分流选定（workspace / office）
     json call_tool_json_(const vc_api::ToolTable* table, const char* tool,
                          const std::string& args_json);
@@ -285,6 +289,13 @@ private:
         // tool_register 兜底重解析；读写全在宿主线程（/api/fs/* 已迁闭包）
     const vc_api::ToolTable* office_tools_ = nullptr;  // office 工具表（可选项）：
         // /api/fs/read 的文档分流数据源；解析与重解析同 tools_ 款
+    const vcoffice::PreviewTable* preview_ = nullptr;  // office 预览转换表（可选项）：
+        // /api/fs/preview 的转换提交面；解析与重解析同 office_tools_ 款。
+        // 异步回调触不到插件成员（per-request 堆状态，见 api_fs.cpp），本指针
+        // 与 inflight_ 的读写全在宿主线程闭包内
+    std::atomic<int> preview_inflight_{0};   // 在途预览转换数（闭包 ++，回调 --；
+        // atomic——回调在 office 转换线程）。上限 = office 队列容量，防吃满
+        // max_streams 的文件流槽位
 
     // ---- 兄弟实例探测（聚合 alive 真值，见 start_prober_）----------------------
     std::thread prober_;

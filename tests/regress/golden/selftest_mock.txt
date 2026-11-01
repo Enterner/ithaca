@@ -10,6 +10,7 @@
 已加载插件 'vc.workspace' v0.1.0
 [INFO] ithaca.workspace: 就绪，jail 根 = <ROOT>\tests\regress\.ws
 已加载插件 'vc.office' v0.1.0
+[INFO] ithaca.office: 预览转换线程已启动
 [INFO] ithaca.office: 就绪，jail 根 = <ROOT>\tests\regress\.ws
 已加载插件 'vc.runner' v0.1.0
 [INFO] ithaca.runner: 就绪（权限模式 suggest，jail 根 = <ROOT>\tests\regress\.ws）

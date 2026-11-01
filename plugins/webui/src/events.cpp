@@ -34,6 +34,10 @@ void WebuiPlugin::subscribe_() {
             office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
             if (office_tools_ != nullptr)
                 host_.log(2, "ithaca.webui: office 工具表已接入（后到）");
+        } else if (svc == vcoffice::kPreviewSvcName && preview_ == nullptr) {
+            preview_ = host_.service<vcoffice::PreviewTable>(vcoffice::kPreviewSvc);
+            if (preview_ != nullptr)
+                host_.log(2, "ithaca.webui: office 预览转换表已接入（后到）");
         }
     }));
     // LLM 事件只订阅广播（slot=0，主会话）：子会话事件按槽单播、本插件不订阅

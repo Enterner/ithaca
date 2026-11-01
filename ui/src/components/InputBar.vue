@@ -91,23 +91,31 @@ const segWidths = computed(() => {
 const freePct = computed(() => Math.max(0, 100 - segWidths.value.reduce((a, b) => a + b, 0)))
 // ---- 会话用量与输出速率（卡内新增块）------------------------------------------
 // 用量源 = transcript 里 assistant 记录自带的 usage（每轮回报；provider 未回报时
-// 形状为空对象 ⇒ 全 0，重放同样可重建）。输入/输出 = 会话累计；缓存命中 = 累计
-// 命中 tokens 及占累计输入的比例（缺失时整段不显示）。速率读 S.rate——records
-// 的滚动窗口维护（含静默期归零），此处纯展示。
+// 形状为空对象 ⇒ 全 0，重放同样可重建）。输入/输出 = 会话累计；缓存率 = 逐轮
+// （命中/输入）的算术均值——累计比是按 token 量加权的均值，大轮会淹没小轮的
+// 表现；cache_tokens 字段缺失的轮 = provider 未计量（非真 0），不计入均值。
+// 速率读 S.rate——records 的会话累计均值（只计输出时段，空闲不计；增量不落盘
+// ⇒ 只统计本次打开以来的流式，''=尚无计量），此处纯展示。
 // hasUsage 区分「没回报」与「真是 0」：缺失显示「—」而非误导性的 0。
 const usage = computed(() => {
   let prompt = 0, completion = 0, cache = 0, seen = false
+  let crSum = 0, crN = 0   // 逐轮缓存率的和与轮数（均值分子/分母）
   for (const r of S.records)
     if (r.type === 'assistant' && r.usage && typeof r.usage.total_tokens === 'number') {
       seen = true
-      prompt += r.usage.prompt_tokens || 0
-      completion += r.usage.completion_tokens || 0
-      cache += r.usage.cache_tokens || 0
+      const u = r.usage
+      prompt += u.prompt_tokens || 0
+      completion += u.completion_tokens || 0
+      cache += u.cache_tokens || 0
+      if (typeof u.cache_tokens === 'number' && (u.prompt_tokens || 0) > 0) {
+        crSum += u.cache_tokens / u.prompt_tokens
+        crN++
+      }
     }
-  return { prompt, completion, cache, seen }
+  return { prompt, completion, cache, seen, crSum, crN }
 })
 const cachePct = computed(() =>
-  usage.value.prompt > 0 ? Math.round(usage.value.cache / usage.value.prompt * 100) : 0)
+  usage.value.crN > 0 ? Math.round(usage.value.crSum / usage.value.crN * 100) : 0)
 // ---- hero 态操作反馈（hero 不挂对话流，records 里的通告无处显示）--------------
 // hero 态下显示最后一条 local/notice/error 记录——上传失败、压缩结果等操作
 // 反馈终于可见（会话态有 Stream，不需要这条）
@@ -320,10 +328,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
       <input ref="fileEl" type="file" multiple style="display:none" @change="onFilesChosen">
       <div class="ctl-r">
-        <!-- 实时输出速率：流式期间常显（此前只藏悬停卡里，谈不上实时）；
-             S.live 有正文 = 正在输出文本增量，收口即隐 -->
-        <span v-if="S.live && S.live.text" class="liverate"
-              title="实时输出速率（6 秒滚动窗口）"><b>{{ S.rate }}</b> tok/s</span>
+        <!-- 本次回复输出速度（DeepSeek 式）：流式期间常显，每条回复独立起算
+             （首字等待不计），收口即隐。S.live 有正文 = 正在输出文本增量；
+             ''=首增量时长未知，暂隐 -->
+        <span v-if="S.live && S.live.text && S.liveRate" class="liverate"
+              title="本次回复输出速度（首字后起算，回复结束即隐）"><b>{{ S.liveRate }}</b> tok/s</span>
         <span class="ctxhost" @mouseenter="ctxHover(true)" @mouseleave="ctxHover(false)">
           <span id="ctxRing" :title="ctxCard ? null : ringTitle">
             <svg width="14" height="14" viewBox="0 0 36 36">
@@ -360,11 +369,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
             <div class="usage">
               <div class="urow">
                 <span class="ulab">输入</span><b class="un">{{ usage.seen ? fmt(usage.prompt) : '—' }}</b>
-                <small v-if="usage.cache" class="uextra">缓存命中 {{ fmt(usage.cache) }}（{{ cachePct }}%）</small>
+                <small v-if="usage.cache" class="uextra"
+                       title="缓存率 = 会话内逐轮（命中/输入）的平均，未回报轮不计入">缓存命中 {{ fmt(usage.cache) }}（均值 {{ cachePct }}%）</small>
               </div>
               <div class="urow">
                 <span class="ulab">输出</span><b class="un">{{ usage.seen ? fmt(usage.completion) : '—' }}</b>
-                <small class="uextra">速率 {{ S.rate }} tok/s</small>
+                <small v-if="S.rate" class="uextra"
+                       title="会话内输出时段的平均（轮间空闲与首字等待不计；只统计本次打开以来的流式）">平均 {{ S.rate }} tok/s</small>
               </div>
             </div>
             <div class="foot">

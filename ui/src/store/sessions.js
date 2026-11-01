@@ -13,11 +13,13 @@ export function resetView() {
   S.since = 0; S.lastId = -1; S.inFlight = false
   // 上下文环/速率/挂起条是「当前会话」的派生显示，不重置就会把旧会话的值带进
   // 新会话（踩过: 新建会话后上下文环仍显示上个会话的几 k 用量）
-  S.lastPrompt = 0; S.rate = '0'
+  S.lastPrompt = 0; S.rate = ''
   S.waitingSince = 0; S.waitingLeft = 0
   S.attachments = []   // 附件相对路径随会话（工作区）走，跨会话残留必然错配
   X.turnEdits = new Map(); X.turnEditsTurn = 0; X.lastTurnId = null
   X.runs = new Map(); X.runCall = new Map()   // run 归属随会话走，跨会话残留会错配输出
+  X.rateToks = 0; X.rateMs = 0; X.rateLast = 0   // 速率累计随会话走（增量不落盘，换会话即重新统计）
+  X.respToks = 0; X.respStart = 0; S.liveRate = ''   // 回复均速同上（新会话无进行中的回复）
 }
 /**
  * 进草稿态：＋新建后的空态引导。零请求——注册表/磁盘在首条消息前不动。
