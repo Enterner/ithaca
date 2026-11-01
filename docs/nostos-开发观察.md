@@ -4,7 +4,12 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：观察 6/7 落地 · 2026-11-02；观察 9 清退，观察 13–16 维持）
+## 当前发现（批次：沙盒权限「墙→闸」 · 2026-11-02——本批次无可优化点；观察 13–16 维持）
+
+**本批次无可优化点**：jail 与权限把关全在产品侧（shared/vckit/path_jail.hpp + 插件
+确认清单），语义改造零内核涉；批次内真实触发的平台事实（GetFullPathNameW 静默剥离
+段尾点/空格 ⇒ 卫生检查必须前置到规范化前）已随 path_jail.hpp 注释与单测留存，
+非内核缺口。
 
 **立项标准（本批起生效）**：内核侧立项一律以内核仓 `external/nostos/docs/内核规范.md`
 的六问准入清单为准（机制非策略 / 非协议引擎框架 / OS 未提供 / 零依赖 / ≥2 消费方
@@ -77,6 +82,7 @@ tframe 同款断言框架产品自备 62 行（tests/unit/ithaca_test_framework.
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-02 | 沙盒权限「墙→闸」批次：PathJail 根外路径解析为自身并标 outside（把关上移三档权限模式）、auto-edit 的 outside_root dry 预检、full-auto 全权访问 + 切换确认弹窗——内核零改动 | 已落地（产品仓随批次实施，check 全绿；详见提交与 path_jail.hpp 头注释） |
 | 2026-11-02 | 观察 6/7：槽订阅「判空→submit→失败回退同步」三行收口节拍、表槽 JSON 调用「dump→调槽→parse→拷出参」五步样板、出参生命周期口径两插件各说各话（agent 立即拷贝 / webui 持存活缓冲） | 已落地（产品 SDK 层 shared/vckit 收编：slot_call.hpp——slot_call_json/str 出参在槽返回后立即消费、状态码透传、json 类型无感适配仓里两份 vendored 副本，消费方存活缓冲整体退役；poster.hpp 补 poster_defer——判空/作废就地同步执行，「必须执行」节拍三行收一步。消费跟迁：agent 全部表槽调用点（ctx_strategy/session/compress）与 done/error 收口节拍、webui 工具代理 call_tool_json_；ingest 槽回包单键信封解包——双层 JSON 转义让大结果膨胀 ~15% 且模型要穿透转义读正文，解包后与内置管线口径逐字节一致恢复。Owner 配对核验已在 cleanup 路径统一（现状达标）；scratch 维持 agent 私有（单消费，随内核收缩裁决）。无内核改动——便利件归产品 SDK 层，与 poster 原语同层） |
 | 2026-11-01 | 内核职责收缩：对照主流内核纪律审核（OS 内核 × 插件框架内核两参照系，机制/策略分离 + framework 不含 service）⇒ kit 能力层大部分不属内核——应用协议与策略（http/win_http/active_gate/config）、文本引擎（regex）、OS 机制封装（process/piped_process/win 部分件）、零消费死面（log/timer/task/process/config），另 vendored json（全仓 74% 行数）托管在内核属第三方库错放；标准成文于内核仓 `docs/内核规范.md`（六问准入，后续立项以此为据） | 已落地（内核：删 kit/config、log、timer、task、process 五件（产品仓零 include）；win/win_http/path_jail/piped_process/poster/active_gate 六件迁产品 shared/vckit（namespace nostos::kit → vckit）；regex 迁回 workspace、http 迁回 webui、scratch 迁回 agent（均单消费者，插件私有）；vendored json 落产品 shared/nlohmann；CMake 删 nostos::kit/nostos::kit_http 两目标，README/src/README kit 章节退役；kit/subscriptions（ABI 配套）留守。产品：40 处 include + 全部 nostos::kit 符号跟迁（http 件命名空间 vc_webui::http、regex 归 vcws、scratch 归 vc_agent）；webui 自编 src/http.cpp 并链 ws2_32；host/shell 挂 shared include，shell 摘除 NOSTOS_ROOT 接线；AGENTS.md shared/ 纪律行扩为宿主/壳裸名取用 + vckit/nlohmann 落点。内核自有代码 ~8.7k → ~5.5k 行，仓体 33.5k → ~5.7k（-83%）。工作树待提交） |
 | 2026-11-01 | 观察 11：kit::http 投递可靠性疑点（双 SSE 连接下消费连接静默饿死「conn 恒 on、无 error 事件」；偶发挂起连接「defer 体已执行、fetch 永不 resolve」） | 已落地（坐实一半：broadcast 只入队不发送 ⇒ select 循环来不及插轮次的密集广播把健康读者的 out 也顶过 buffer_cap、跳帧闸门误杀活跃连接——抛弃式探针直连内核复现：读者 21020/30000，缺口与一次轮次窗口的溢出量吻合；内核 323f3ea 修为追加后立即 flush，out 只计量客户端真实积压，30000/30000 × 3 稳定。另一半探针未复现：挂起-补发完整送达、断连静默丢弃为契约、挂起连接 16s reap 豁免存活，归因收敛到浏览器/客户端中止侧。产品侧补洞恒跑与 api() 超时为正确层级的防御，按原计划维持） |

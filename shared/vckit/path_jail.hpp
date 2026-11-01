@@ -1,19 +1,27 @@
 #pragma once
-// vckit —— 路径 jail：把不可信来源给定的路径钉死在信任根内。
+// vckit —— 路径 jail：不可信来源给定路径的统一解析器 + 「在根判定器」。
 //
-// 「接受模型给定路径」类插件的共性安全原语：三道闸，缺一不可：
-//   1) 文本校验：拒绝 ".." 段、Windows 保留设备名、段尾的点与空格（Windows 会
-//      静默剥离——请求 "a." 实际落盘 "a"，名实不符）、控制字符；空段折叠，"." 段
-//      丢弃。绝对路径（盘符 / 根斜杠）不再一刀切拒绝——在根内的转成相对路径
-//      放行（模型常把工具输出里的绝对形态原样送回来，拒掉只会逼它无谓重试），
-//      根外按越界拒绝，边界本身不松。
-//   2) 规范化复核：GetFullPathNameW 之后必须仍落在根内。
-//   3) 物理复核：逐组件查重解析属性——词法规范化管不住 junction / 符号链接
-//      （GetFullPathNameW 不解析重解析点，根内 junction 即逃逸），组件带 reparse
-//      标记一律拒绝。
+// 语义（墙→闸）：jail 不再是硬边界——根内路径走完整安全闸放行；根外的绝对
+// 形态（盘符/根斜杠/UNC）与 .. 上溢折叠结果解析为自身并标 outside = true，交
+// 调用方处置（把关责任上移到权限模式层：suggest/auto-edit 走审批提案，
+// full-auto 放行）。安全闸只对「在根」路径全量生效，三道闸缺一不可：
+//   1) 文本卫生（规范化前对原始输入段）：拒绝控制字符、Windows 保留设备名、
+//      段尾的点与空格（canonical 会静默剥离——请求 "a." 实际落盘 "a"，名实
+//      不符，检查必须前置否则被吞段放空）、盘符相对形态（"C:foo"）；空段折叠，
+//      "." 段丢弃；".." 段交规范化折叠后做在根判定（上溢逃出根 ⇒ 标 outside，
+//      不再词法期一刀切拒——可达性是策略问题，归权限模式；卫生是 Windows
+//      正确性问题，归本原语）。
+//   2) 规范化分类：GetFullPathNameW 折叠后按根前缀唯一分类——在根内剥前缀转
+//      相对；根外解析为自身（full = 规范化绝对路径，norm = '/' 分隔的绝对形态，
+//      模型可见可复用：回传同一路径再次解析到同一文件）。
+//   3) 物理复核（仅在根路径）：逐组件查重解析属性——词法规范化管不住 junction /
+//      symlink（GetFullPathNameW 不解析重解析点，根内 junction 即静默导出根外，
+//      会让 auto-edit 免批的工作区内写落到根外）。根外路径跳过本闸：系统
+//      junction（"Documents and Settings" 类）合法存在，且根外的边界是审批不是
+//      围栏——本闸防的是「免批写被静默导出」，不是可达性。
 // 失败一律经 err 出参点名原因，由调用方回灌给模型自我纠正。
 //
-// NOTE: 安全边界单源——这是唯一实现，需要同一语义时 include 本头，不复制算法
+// NOTE: 安全原语单源——这是唯一实现，需要同一语义时 include 本头，不复制算法
 //（第二份独立实现必漂移：手抄结构体/判据与真实布局脱节的事故形态，office 的
 // STAT_CHUNK 镜像即前车之鉴）。
 
@@ -44,112 +52,107 @@ public:
 
     const std::wstring& root() const noexcept { return root_; }
 
-    // resolve 的聚合出参：与四参出参同语义，新消费方优先用它（少三行出参样板）。
+    // resolve 的聚合出参：与多参出参同语义，新消费方优先用它（少出参样板）。
     // err 非空 ⇒ 失败。full = 规范化全路径（调用方的存储键）；norm = 折叠后的
-    // 相对路径（'/' 分隔）；err = 失败原因（回灌给模型）。
+    // 相对路径（'/' 分隔；根外时为绝对形态）；outside = 是否落在根外；
+    // err = 失败原因（回灌给模型）。
     struct Resolved {
         std::wstring full;
         std::string norm;
+        bool outside = false;
         std::string err;
     };
     bool resolve(const std::string& rel_utf8, Resolved& out) const {
         out.err.clear();
-        return resolve(rel_utf8, out.full, out.norm, out.err);
+        out.outside = false;
+        return resolve(rel_utf8, out.full, out.norm, out.err, &out.outside);
     }
 
-    // 校验并解析：成功 ⇒ out_full（规范化全路径，调用方的存储键）+ out_norm（折叠
-    // 后的相对路径，'/' 分隔）；失败 ⇒ false + err 点名原因。
+    // 校验并解析：成功 ⇒ out_full（规范化全路径，调用方的存储键）+ out_norm
+    // （折叠后的相对路径，'/' 分隔；根外为绝对形态）+ 可选 outside 标记（调用方
+    // 关心在根判定时传入）；失败 ⇒ false + err 点名原因。outside 缺省 null 保持
+    // 只关心「解析成功与否」的既有调用点零改动。
     bool resolve(const std::string& rel_utf8, std::wstring& out_full, std::string& out_norm,
-                 std::string& err) const {
+                 std::string& err, bool* outside = nullptr) const {
+        if (outside != nullptr) *outside = false;
         if (rel_utf8.empty()) { err = "路径为空"; return false; }
         if (rel_utf8.size() > 512) { err = "路径过长（>512 字节）"; return false; }
         for (const char c : rel_utf8)
             if (static_cast<unsigned char>(c) < 0x20) { err = "路径含控制字符"; return false; }
 
-        // 绝对路径入口：盘符完整路径（X:\…）与根斜杠（/…、\…）。规范化后必须
-        // 落在根内——在根内剥根前缀转相对路径走同一条分段校验；根外一律越界
-        // 拒绝。盘符相对形态（"C:foo"，冒号后无分隔符）语义含混（相对该盘符
-        // 当前目录），明确不支持；裸 "/" 规范化后是当前盘根，必然根外。
+        // 绝对形态入口：盘符完整路径（X:\…）、根斜杠（/…、\…）、UNC（\\srv\…）。
+        // 盘符相对形态（"C:foo"，冒号后无分隔符）语义含混（相对该盘符当前目录），
+        // 明确不支持。绝对与相对统一汇入「规范化 → 在根判定」单点分类。
         const bool drive = rel_utf8.size() >= 2 && rel_utf8[1] == ':';
         const bool rooted = rel_utf8[0] == '/' || rel_utf8[0] == '\\';
-        std::string rel = rel_utf8;
+        if (drive && (rel_utf8.size() == 2 ||
+                      (rel_utf8[2] != '/' && rel_utf8[2] != '\\'))) {
+            err = "盘符相对路径不支持（用工作区内相对路径）";
+            return false;
+        }
+        // 第一道闸（段卫生，在规范化**前**）：GetFullPathNameW 会静默剥离段尾的
+        // 点与空格（"a." 规范化成 "a"）——后置检查会被吞段放空，名实不符的写法
+        // 无声落到别的文件上（踩过）。保留设备名同批；"." / ".." 是合法折叠指令
+        // 不在此列，空段跳过
+        if (!input_hygienic(rel_utf8, err)) return false;
+
+        std::wstring cand;
         if (drive || rooted) {
-            if (drive && (rel_utf8.size() == 2 ||
-                          (rel_utf8[2] != '/' && rel_utf8[2] != '\\'))) {
-                err = "盘符相对路径不支持（用工作区内相对路径）";
-                return false;
-            }
-            const std::wstring full = canonical(win::utf8_to_wide(rel_utf8));
-            if (!under_root(full)) {
-                err = "绝对路径越出工作区根（jail 边界）";
-                return false;
-            }
-            // under_root 保证前缀长度对齐且紧随分隔符——只留后缀，大小写差异
-            //（盘符大小写等）随前缀一起剥掉
-            rel = win::wide_to_utf8(full.substr(root_.size()).c_str());
+            cand = canonical(win::utf8_to_wide(rel_utf8));
+        } else {
+            // 相对输入：canonical(root + 输入) 一并折叠 "." / ".." / 重复分隔符。
+            // ".." 不在词法期拒——上溢逃出根的行为由在根判定统一分类（词法拒绝
+            // 挡不住「模型想出去」，只会逼它换写法重试；分类 + 审批才是把关点）
+            cand = canonical(root_ + L"\\" + win::utf8_to_wide(rel_utf8));
         }
 
-        // 分段折叠（分隔符是 ASCII；UTF-8 多字节序列不含 0x2F/0x5C，按字节切安全）
-        std::vector<std::string> parts;
-        {
-            std::string cur;
-            for (const char c : rel) {
-                if (c == '/' || c == '\\') {
-                    parts.push_back(std::move(cur));
-                    cur.clear();
-                } else {
-                    cur.push_back(c);
-                }
-            }
-            parts.push_back(std::move(cur));
-        }
-        out_norm.clear();
-        for (std::string& seg : parts) {
-            if (seg.empty() || seg == ".") continue;
-            if (seg == "..") { err = "包含 '..'（越界尝试）"; return false; }
-            if (seg.back() == '.' || seg.back() == ' ') {
-                err = "段以 '.' 或空格结尾（Windows 会静默剥离）: " + seg;
-                return false;
-            }
-            if (is_reserved_device(seg)) { err = "Windows 保留设备名: " + seg; return false; }
-            if (!out_norm.empty()) out_norm.push_back('/');
-            out_norm += seg;
-        }
-        if (out_norm.empty()) {
-            // 纯点形态（"."、"./"、".//"——折叠后为空）语义 = 根本身：直接返回根，
-            // 不再报"路径为空"（踩过：子代理列根目录送 "." 被拒，只好换路重试）
-            out_full = root_;
+        if (!under_root(cand)) {
+            // 根外：解析为自身，标 outside——把关上移权限模式层（suggest/auto-edit
+            // 审批、full-auto 放行），jail 只报分类事实
+            out_full = cand;
+            out_norm = win::wide_to_utf8(slashify(cand).c_str());
+            if (outside != nullptr) *outside = true;
             return true;
         }
 
-        const std::wstring canon = canonical(root_ + L"\\" + win::utf8_to_wide(out_norm));
-        if (!under_root(canon)) { err = "规范化后越出工作区根"; return false; }
-        // 第三道闸（重解析点）：GetFullPathNameW 是纯词法操作，不解析 junction /
-        // symlink——根内任何 junction 都能把"根内词法路径"映射到根外物理位置
-        //（pnpm 的 node_modules、模型自建的 mklink /J），前两道闸全部放行。
-        // 逐组件查 reparse 属性：任一存在的组件带重解析点 ⇒ 拒绝。等价于真实解析
-        //（GetFinalPathNameByHandle）但无需句柄、对不存在末端（新建文件）同样成立；
-        // 短名（PROGRA~1）、大小写、尾随空白等词法-物理差异不出目录边界，无需另防。
-        // TOCTOU 残窗（校验后组件被换成 junction）依赖调用方把校验与落盘收敛在
-        // 同一串行段内——本闸不承诺跨时间的安全。
+        // 在根：剥根前缀得折叠后相对形态（under_root 保证前缀对齐且紧随分隔符；
+        // 规范化产物分隔符恒为 '\'）。空后缀 = 根本身（"."、"．//" 类纯点形态）
+        std::wstring rel_w;
+        if (cand.size() > root_.size()) rel_w = cand.substr(root_.size() + 1);
+
+        // norm：'/' 分隔的折叠后相对路径（快照/展示/模型锚点的稳定形态——永不含
+        // ".." 与空段；根本身为空串）
+        const std::string norm =
+            rel_w.empty() ? std::string{} : win::wide_to_utf8(slashify(rel_w).c_str());
+
+        // 第三道闸（重解析点，仅在根路径）：GetFullPathNameW 是纯词法操作，不解析
+        // junction / symlink——根内任何 junction 都能把"根内词法路径"映射到根外
+        // 物理位置（pnpm 的 node_modules、模型自建的 mklink /J），前两道闸全部
+        // 放行。逐组件查 reparse 属性：任一存在的组件带重解析点 ⇒ 拒绝。等价于
+        // 真实解析（GetFinalPathNameByHandle）但无需句柄、对不存在末端（新建
+        // 文件）同样成立；短名（PROGRA~1）、大小写、尾随空白等词法-物理差异不出
+        // 目录边界，无需另防。TOCTOU 残窗（校验后组件被换成 junction）依赖调用方
+        // 把校验与落盘收敛在同一串行段内——本闸不承诺跨时间的安全。
         {
             std::wstring probe = root_;
             std::size_t pos = 0;
-            for (;;) {
-                const auto slash = out_norm.find('/', pos);
-                const std::string seg = out_norm.substr(
-                    pos, slash == std::string::npos ? std::string::npos : slash - pos);
-                probe += L"\\" + win::utf8_to_wide(seg);
+            while (pos < rel_w.size()) {
+                const auto slash = rel_w.find(L'\\', pos);
+                const std::wstring seg = rel_w.substr(
+                    pos, slash == std::wstring::npos ? std::wstring::npos : slash - pos);
+                probe += L"\\" + seg;
                 const DWORD attr = ::GetFileAttributesW(probe.c_str());
                 if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
-                    err = "路径含符号链接/junction（重解析点拒绝）: " + seg;
+                    err = "路径含符号链接/junction（重解析点拒绝）: " +
+                          win::wide_to_utf8(seg.c_str());
                     return false;
                 }
-                if (slash == std::string::npos) break;
+                if (slash == std::wstring::npos) break;
                 pos = slash + 1;
             }
         }
-        out_full = canon;
+        out_full = cand;
+        out_norm = norm;
         return true;
     }
 
@@ -180,6 +183,44 @@ private:
         return s;
     }
 
+    // 分隔符统一为 '/'——norm 是给模型/展示看的形态，'/' 跨工具口径一致。
+    static std::wstring slashify(std::wstring p) {
+        for (wchar_t& c : p)
+            if (c == L'\\') c = L'/';
+        return p;
+    }
+
+    // 段级卫生（Windows 正确性防线，非策略边界）：保留设备名、段尾点/空格。
+    // 对在根与根外统一执行，且必须在规范化前对原始输入做（canonical 吞段尾
+    // 点/空格，见 resolve 内注释）。
+    static bool input_hygienic(const std::string& rel_utf8, std::string& err) {
+        std::string cur;
+        for (const char c : rel_utf8) {
+            if (c == '/' || c == '\\') {
+                if (!seg_ok(cur, err)) return false;
+                cur.clear();
+            } else {
+                cur.push_back(c);
+            }
+        }
+        return seg_ok(cur, err);
+    }
+
+    // 单段判定：空段与折叠指令（"." / ".."）放行，名字段查段尾点/空格与保留
+    // 设备名。UTF-8 多字节序列不含 0x2F/0x5C，按字节切段安全。
+    static bool seg_ok(const std::string& seg, std::string& err) {
+        if (seg.empty() || seg == "." || seg == "..") return true;
+        if (seg.back() == '.' || seg.back() == ' ') {
+            err = "段以 '.' 或空格结尾（Windows 会静默剥离）: " + seg;
+            return false;
+        }
+        if (is_reserved_device(seg)) {
+            err = "Windows 保留设备名: " + seg;
+            return false;
+        }
+        return true;
+    }
+
     // 仅裸名（con.txt 合法；con 不合法），大小写无关。
     static bool is_reserved_device(const std::string& seg) {
         std::string up;
@@ -204,6 +245,7 @@ public:
     struct Resolved {
         std::wstring full;
         std::string norm;
+        bool outside = false;
         std::string err;
     };
     explicit PathJail(std::wstring) {}
@@ -216,7 +258,8 @@ public:
         out.err = "路径 jail 仅 Windows 支持";
         return false;
     }
-    bool resolve(const std::string&, std::wstring&, std::string&, std::string& err) const {
+    bool resolve(const std::string&, std::wstring&, std::string&, std::string& err,
+                 bool* = nullptr) const {
         err = "路径 jail 仅 Windows 支持";
         return false;
     }

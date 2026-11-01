@@ -1,8 +1,9 @@
 #pragma once
 // 编辑事务：LLM 只产出两种 op——write（整文件重写）与 replace（精确
 // search/replace 块，不产出行号补丁）。事务语义与内核"激活即事务"同构：
-//   · 校验阶段全部通过才动手——任一失败（路径越界 / replace 0 或多命中 / 目标缺失）
-//     ⇒ 整批拒绝，零写盘；错误点名到 op 序号与路径，回灌给模型自我纠正；
+//   · 校验阶段全部通过才动手——任一失败（路径被卫生闸拒 / replace 0 或多命中 /
+//     目标缺失）⇒ 整批拒绝，零写盘；错误点名到 op 序号与路径，回灌给模型自我
+//     纠正（jail 根外的路径不再是失败——解析成功并标 outside，审批把关在 agent）；
 //   · 写盘阶段任一步失败 ⇒ 按 LIFO 用批前原状恢复已写文件（本批新写的删除），
 //     rolled_back = true。
 // dry_run ⇒ 只校验 + 生成 diff，不落盘——错误在批准门之前暴露。
@@ -40,7 +41,7 @@ struct OpError {
 };
 
 struct FileEdit {
-    std::string path;      // 折叠后的相对路径（'/' 分隔；同文件多 op 取首次写法）
+    std::string path;      // 折叠后的路径（'/' 分隔；根内相对、根外绝对；同文件多 op 取首次写法）
     std::wstring full;     // jail 解析出的全路径（Store 的键）
     std::string before;    // 批前内容（新文件为空串，is_new = true）
     std::string after;     // 批内末次编辑的结果（同文件多 op 折叠后 = 最终态）
@@ -48,6 +49,7 @@ struct FileEdit {
     std::size_t add = 0;   // diff 统计：新增行数（与统计尾行同源，随事件结构化下发）
     std::size_t rem = 0;   // diff 统计：删除行数
     bool is_new = false;
+    bool outside = false;  // 落在 jail 根外——agent 据 dry 结果的 outside_root 决定是否升级为审批提案
     int ops_count = 1;     // 折叠进本项的 op 数（≥2 时展示标注「N 处编辑」）
 };
 
@@ -210,10 +212,12 @@ inline ApplyResult apply_ops(const vckit::PathJail& jail, TextStore& store, cons
         FileEdit edit;
         std::string err;
         edit.path = op.path;
-        if (!jail.resolve(op.path, edit.full, edit.path, err)) {
+        bool outside = false;
+        if (!jail.resolve(op.path, edit.full, edit.path, err, &outside)) {
             r.errors.push_back({static_cast<int>(i), op.path, "路径被拒: " + err});
             break;
         }
+        edit.outside = outside;
         const std::wstring key = wc_lower(edit.full);
         const std::size_t hit = find_slot(key);
         std::string current;

@@ -154,7 +154,12 @@ private:
     nostos_status tool_list(const char** out) {
         // 工具自述：name + description + JSON schema——agent 据此拼 LLM 的 tools 数组，
         // 本插件不解释、agent 不硬编码（新增工具插件零 agent 改动的根基）。
-        json schema_path = {{"type", "string"}, {"description", "工作区内相对路径"}};
+        // 路径口径（墙→闸）：根内相对路径 + 任意绝对路径都可解析——工作区外的
+        // 改动由 agent 按权限模式把关（读免批；写/命令审批或 full-auto 放行）
+        json schema_path = {{"type", "string"},
+                            {"description",
+                             "相对工作区根的路径（如 src/main.cpp），或任意绝对路径"
+                             "（如 C:/data/x.txt——工作区外文件改动按权限模式审批）"}};
         // NOTE: properties 必须显式建 json::object——花括号初始化会把 {"k",v} 对
         // 变成 [ ["k",v], ... ] 数组对，DeepSeek/OpenAI 的 JSON Schema 不认（踩过: 400）
         auto object_with = [](std::initializer_list<json::value_type> props,
@@ -170,7 +175,8 @@ private:
         json tools = json::array(
             {json{{"name", "read"},
                   {"description",
-                   "读取工作区内文本文件。返回带行号（行首 = 文件真实行号 + 制表符），"
+                   "读取文本文件（工作区内相对路径或任意绝对路径，工作区外可直读）。"
+                   "返回带行号（行首 = 文件真实行号 + 制表符），"
                    "标注出处直接引用行号即可。"
                    "一次调用即可读满 2000 行，无需手动分小块；更大的文件用 offset"
                    "（起始行号，1 起）/limit（行数）续读，单行超 2000 字符截断行尾。"
@@ -185,7 +191,7 @@ private:
                                  json::array({"path"}))}},
              json{{"name", "list"},
                   {"description",
-                   "列出目录内容。默认 mode=aggregate 聚合视图：每目录一条汇总（文件数/子目录数/字节量），大目录一次看全貌；要看具体文件名再 mode=flat（可配 pattern/per_dir）下钻。可选："
+                   "列出目录内容（工作区内相对路径或任意绝对路径均可）。默认 mode=aggregate 聚合视图：每目录一条汇总（文件数/子目录数/字节量），大目录一次看全貌；要看具体文件名再 mode=flat（可配 pattern/per_dir）下钻。可选："
                    "pattern=文件名通配（* ?，大小写不敏感，只过滤文件、目录保留）；"
                    "per_dir=flat 模式单目录条目上限（超出折叠为 omitted 标注）。"
                    "返回含 listed（实际条数）与 truncated 标记"},
@@ -543,6 +549,13 @@ private:
             snaps.push_back(vcws::FileSnap{e.path, e.full, e.before, e.after, e.is_new});
         }
         json j{{"ok", r.ok}, {"dry_run", dry}, {"rolled_back", r.rolled_back}, {"turn_id", turn_id}};
+        // outside_root：本批任一文件落在 jail 根外——agent 在 auto-edit 模式据 dry
+        // 结果的此标记决定「免批落盘」还是「升级为审批提案」（判源单点：jail 归属
+        // 权在插件，agent 不复制在根判定）
+        bool any_outside = false;
+        for (const auto& e : r.edits)
+            if (e.outside) any_outside = true;
+        j["outside_root"] = any_outside;
         j["files"] = std::move(files);
         if (r.ok && !dry)
             j["note"] = "已落盘；diff 正文随结果回传，applied 事件同步展示给用户";

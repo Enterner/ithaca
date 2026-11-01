@@ -22,8 +22,8 @@ constexpr char kSystemPrompt[] =
     "作为工具结果回给你，读错误输出自我修复；"
     "4) 工具失败时读错误信息自我纠正；"
     "5) Python 依赖一律装进工作区内的虚拟环境（python -m venv .venv，之后用"
-    " .venv 里的 python/-m pip 安装与运行）——完全访问模式下工作区外不可写，"
-    "装到用户级目录会失败或不可见；"
+    " .venv 里的 python/-m pip 安装与运行）——依赖隔离且随工作区整体清理，"
+    "装到用户级目录会污染用户环境且难以回收；"
     "6) 大而独立的子工作（聚焦检索/代码审查/批量机械修改）可用 task 派子代理"
     "并行处理：prompt 必须自包含（子代理看不到本对话），子代理只跑只读或明确"
     "授权的改动；其报告须经验证再采纳，不可盲信；"
@@ -337,18 +337,46 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
         settle_(ctx, false);
         return false;
     }
-    if (vcagent::needs_confirm(ctx.full_name, confirm_) && !auto_all_) {
-        // 泛化试算 + 提案（先置状态再 emit——嵌套派发会在本帧内回到
-        // on_decision，状态没就位会被自己的守卫丢弃——M3 踩过）。
+    // 提案判定：确认清单命中（suggest 全量 / auto-edit 的命令）或 auto-edit 下
+    // apply 的 outside_root 预检命中（工作区外编辑升级为提案——判源 = 插件 dry
+    // 结果的标记，jail 归属权在 workspace，agent 不复制在根判定）。
+    // auto_all_（本轮免批）一票放行全部，含工作区外改动。
+    bool propose = vcagent::needs_confirm(ctx.full_name, confirm_) && !auto_all_;
+    std::string dry_out;
+    json dry;
+    bool dry_done = false;   // 预检已跑过 dry（结果在 dry_out/dry），提案段不再重跑
+    if (!propose && !auto_all_ && mode_ == vcagent::kModeAutoEdit &&
+        ctx.full_name == vcagent::kApplyTool) {
         json dry_args = ctx.args;
         dry_args["dry_run"] = true;
-        const std::string dry_out = exec(*b, ctx.tool, dry_args);
+        dry_out = exec(*b, ctx.tool, dry_args);
+        dry = json::parse(dry_out, nullptr, false);
+        dry_done = true;
+        if (dry.is_object() && dry.value("ok", true) == false) {
+            // dry 失败与确认路径同规：错误经 tool_result 回灌 LLM 自修——真实
+            // 执行会复现同一校验失败，直接回灌省一趟
+            ctx.result = dry_out;
+            ctx.done = true;
+            emit_tool_result(ctx.full_name, false, ctx.result);
+            append_results_and_continue();
+            return true;   // 回灌已发车：挂起即返，循环尾不得再跑（会重复回灌）
+        }
+        propose = dry.value("outside_root", false);
+    }
+    if (propose) {
+        // 泛化试算 + 提案（先置状态再 emit——嵌套派发会在本帧内回到
+        // on_decision，状态没就位会被自己的守卫丢弃——M3 踩过）。
+        if (!dry_done) {
+            json dry_args = ctx.args;
+            dry_args["dry_run"] = true;
+            dry_out = exec(*b, ctx.tool, dry_args);
+            dry = json::parse(dry_out, nullptr, false);
+        }
         pending_.index = dispatched_;
         state_ = State::AwaitingDecision;
         // diff_text 只装行级 diff（原始结果 JSON 不可读——webui 截图自审抓到）；
         // 同文件多 op 已在 workspace 折叠，edits>1 时标注「N 处编辑」
         std::string diff_text;
-        json dry = json::parse(dry_out, nullptr, false);
         if (dry.is_object() && dry.contains("files") && dry["files"].is_array())
             for (const auto& f : dry["files"]) {
                 if (f.contains("path")) {
@@ -490,7 +518,8 @@ void AgentCtx::try_finish_tools_impl() {
 }
 
 // 确认清单 = 权限模式映射（permission.hpp 的纯函数，单测直接覆盖它）：
-// suggest 逐条问 / auto-edit 编辑免批 / full-auto 全自动（沙箱兜底在 runner）；
+// suggest 逐条问 / auto-edit 命令逐条问 + 工作区外编辑走 outside_root 预检 /
+// full-auto 全自动（把关责任在用户对模式的选择，沙箱默认关闭）；
 // 未识别值按 auto-edit 兜底
 void AgentCtx::rebuild_confirm_() {
     confirm_ = vcagent::mode_confirm(mode_);

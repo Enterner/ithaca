@@ -7,9 +7,10 @@
 //
 // 执行口把关（安全边界在执行者，agent 只转发）：
 //   · 权限把关：三档权限模式——suggest/auto-edit 由 agent 确认清单把关
-//     （提案→decision），full-auto 在 AppContainer 沙箱内执行（读宽写窄：系统+
-//     PATH 工具目录只读、工作区可写、断网——机制详见 proc.hpp 沙箱段）；
-//   · cwd 限定 jail 内；dry_run=true 只解析并回显 would_run（批准门素材）；
+//     （提案→decision），full-auto 无审批执行（AppContainer 沙箱默认关闭，
+//     ITHACA_RUN_SANDBOX=1 才启用且 ACL 只授工作区——机制详见 proc.hpp 沙箱段）；
+//   · cwd 经 jail 解析（根内相对或任意绝对路径；jail 已墙→闸，只做解析与在根
+//     判定，不做策略拒绝）；dry_run=true 只解析并回显 would_run（批准门素材）；
 //   · 超时（默认 600s，上限 1h）⇒ kill_tree 整树终止 + 截断通告。
 //
 // 线程：每条 run 三个自有线程（两路读取 + 一路等待/回收），事件全部经
@@ -117,15 +118,17 @@ public:
             std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
         // Windows 沙箱取舍（对齐成熟 CLI 的实际形态——Windows 上命令不经沙箱，
-        // 安全边界 = 三档权限审批 + cwd jail + 输出/超时纪律）：AppContainer 两层
+        // 安全边界 = 三档权限审批 + 输出/超时纪律；jail 自墙→闸后退化为解析器，
+        // cwd 可落在任意目录，把关在权限模式不在路径）：AppContainer 两层
         // 路径在本机 Insider 26200 实测残缺（v1 SECURITY_CAPABILITIES 拒发 87；
         // v2 低盒令牌下 cmd 的 dir 内建拒绝、MSYS 工具初始化必挂 0xC0000142）
         // ——可用命令面反而残缺。默认非沙箱执行；ITHACA_RUN_SANDBOX=1 强制恢复
-        // 沙箱路径（诊断/未来 Windows 沙箱可用时）
+        // 沙箱路径（诊断/未来 Windows 沙箱可用时；沙箱 ACL 只授工作区目录，
+        // 该组合按 cwd 在工作区内设计，full-auto 放开的根外 cwd 不在授权内）
         const char* fs_env = std::getenv("ITHACA_RUN_SANDBOX");
         force_sandbox_ = fs_env != nullptr && std::string_view(fs_env) == "1";
         sandboxed_.store((mode_ == "full-auto") && force_sandbox_);
-        // 工作区热切——重建 jail 边界，立即生效
+        // 工作区热切——重建 jail 解析根，立即生效
         subs_.push_back(host_.on(vc_api::workspace_set, [this](const void* p) {
             const auto* e = static_cast<const vc_api::WorkspaceSet*>(p);
             if (e->root == nullptr || *e->root == '\0') return;
@@ -203,8 +206,9 @@ private:
         const json tools = json::array({json{
             {"name", "run"},
             {"description",
-             "在工作区内执行命令并等待退出，返回退出码与合并输出（stderr 行带 "
-             "[stderr] 前缀；超长输出截断）。执行权限由三档权限模式管理。"
+             "执行命令并等待退出，返回退出码与合并输出（stderr 行带 "
+             "[stderr] 前缀；超长输出截断）。执行权限由三档权限模式管理；"
+             "cwd 可为工作区相对路径或任意绝对路径（命令按模式审批）。"
              "命令优先在 POSIX bash（Git Bash）中执行——&& | > 重定向、引号、$() "
              "等 POSIX 语义全部原生；环境无 Git Bash 时回退 Windows cmd（怪癖："
              "&& 链中段失败静默中断后续段、echo 保留参数尾随空格——此时建议拆开"
@@ -251,12 +255,13 @@ private:
         const std::string cmd = args.value("command_line", std::string{});
         if (cmd.empty()) return tool_error("command_line 为空");
 
-        // cwd：jail 内相对路径（空 = 根）
+        // cwd：jail 解析（根内相对路径 / 任意绝对路径；空 = 根）——墙→闸后根外
+        // 目录可解析为自身，把关在权限模式（suggest/auto-edit 命令逐条批，
+        // full-auto 放行）
         const std::shared_ptr<vckit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
         std::wstring cwd_wide = jail->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
-            // 纯点/斜杠路径（"."、" ./ "类）在 PathJail 折叠后为空，语义 = 根本身；
-            // ".." 含转义企图，不在此列——必须走 resolve 被拒
+            // 纯点/斜杠路径（"."、" ./ "类）在 PathJail 折叠后为空，语义 = 根本身
             const bool dots_only = rel.find("..") == std::string::npos &&
                                    rel.find_first_not_of("./\\") == std::string::npos;
             std::string err;
@@ -297,8 +302,8 @@ private:
         // spawn（宿主线程；读线程/等待线程接管后续）
         auto child = std::make_unique<vcrun::ChildPipes>();
         std::string err;
-        // full-auto：AppContainer 沙箱（读宽写窄 + 断网）；其余模式由
-        // agent 确认清单把关（建议/自动编辑模式逐条批准）
+        // full-auto + ITHACA_RUN_SANDBOX=1：AppContainer 沙箱（读宽写窄 + 断网，
+        // 默认关闭）；其余组合由 agent 确认清单把关（建议/自动编辑模式逐条批准）
         bool degraded = false;
         // bash 路径的 stdin 写入推迟到读取线程就绪之后（见下方 WriteFile）：
         // 匿名管道缓冲有限，大脚本 + 早输出时三方互等（bash 忙执行不读 stdin、

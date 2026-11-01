@@ -250,11 +250,14 @@ struct WorkspaceSet {
 };
 
 // 权限模式三档（M-W7，Codex 式；webui 设置面板/顶栏切换，宿主启动 env 可设默认）：
-//   suggest    —— 逐条问：编辑与命令都走提案→批准（runner.run/apply 的 dry_run 试算）
-//   auto-edit  —— 编辑免批（applied 携带 diff 事后展示），命令逐条问
-//   full-auto  —— 全自动：命令尽力进 AppContainer 沙箱（文件系统限工作区、断网）；
-//                沙箱路径不可用时自动降级非沙箱并显式通告（runner 运行期裁决，
-//                沙箱内可用 shell 形态也由 runner 按实测收敛，不做绝对承诺）
+//   suggest    —— 逐条问：编辑与命令都走提案→批准（runner.run/apply 的 dry_run
+//                试算；工作区外改动同规，提案卡展示绝对路径）
+//   auto-edit  —— 工作区内编辑免批（applied 携带 diff 事后展示），命令逐条问，
+//                工作区外编辑升级为提案（判源 = apply dry 的 outside_root 标记）
+//   full-auto  —— 全自动无审批：路径不受工作区限制（jail 退化为解析器 + 在根
+//                判定器，见 shared/vckit/path_jail.hpp）；AppContainer 沙箱默认
+//                关闭（ITHACA_RUN_SANDBOX=1 才启用且 ACL 只授工作区），把关责任
+//                在用户对模式的选择
 // agent 据此重算确认清单；runner 据此决定沙箱启动。mode 调用期有效，要留存必须拷贝。
 struct PermissionMode {
     static constexpr std::string_view name = "vc.permission.mode";

@@ -187,7 +187,11 @@ private:
     }
 
     nostos_status tool_list(const char** out) {
-        json schema_path = {{"type", "string"}, {"description", "工作区内相对路径"}};
+        // 路径口径与 workspace 同规（墙→闸）：根内相对 + 任意绝对路径；只读工具，
+        // 读取免审批
+        json schema_path = {{"type", "string"},
+                            {"description",
+                             "相对工作区根的路径，或任意绝对路径（工作区外文档同样可读）"}};
         // NOTE: properties 必须显式建 json::object——花括号初始化会把 {"k",v} 对
         // 变成数组对，OpenAI 的 JSON Schema 不认（workspace 同款教训）
         auto object_with = [](std::initializer_list<json::value_type> props,
