@@ -12,7 +12,7 @@ namespace vc_webui {
 
 // 发送管线（/api/session/new 从 select 线程调；/api/input 从宿主线程挂起闭包调）：
 // 落盘用户记录 + 延迟广播/开 turn。NOTE: 持连接表锁的 handle 栈内禁直接广播/
-// 发射——跨线程锁序倒挂即死锁（踩过：POST /api/input 即 500）；广播一律经
+// 发射——跨线程锁序倒挂即死锁（踩过: POST /api/input 即 500）；广播一律经
 // poster defer 到宿主线程。多会话并行：turn 立即发车（归属 = 活跃会话），其余
 // 会话的在跑 turn 不受影响；跨工作区并发已被 open/new 门卫拦截。
 void WebuiPlugin::start_turn_(const std::string& text, const std::string& attachments_json) {
@@ -183,8 +183,7 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
         json rec = json{{"type", "notice"},
                         {"level", 2},
                         {"text", "模型已保存为 " + model + "（重启后生效；" + diag + "）"}};
-        persist_(rec, session_);  // 只落盘；广播随响应后内联（已在宿主线程）
-        broadcast_(rec);
+        record_(std::move(rec), session_.c_str());
     }
     server_->respond(conn, json_resp({{"ok", true}, {"live", live}}));
     });

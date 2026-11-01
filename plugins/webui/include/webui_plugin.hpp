@@ -25,7 +25,7 @@
 // 把业务体投宿主线程后挂起，真响应走 kit 挂起-补响应原语补发。数据面触碰
 // （records_/session_/pending_turn_/index_/out_/agent_logs_*/ui_registry_/
 // config_ 等）全部收敛宿主线程：poster 闭包与事件回调同经宿主排水串行化，
-// 无共享无锁（data_mu_ 已随迁移退役）。prober 线程自持 probe_mu_ 守护探测缓存。
+// 无共享无锁。prober 线程自持 probe_mu_ 守护探测缓存。
 // 例外：两条一次性 detach 线（供应商模型清单、选目录对话框）——网络往返/模态
 // 对话框不能占宿主排水，停机也不可为它们 join（对话框要等人点）。停机纪律 =
 // 线程对插件零触碰：spawn 前在宿主线程快照 server_（shared_ptr 值捕获），广播
@@ -40,19 +40,22 @@
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/http.hpp>
 #include <nostos/kit/poster.hpp>  // poster_submit：多个翻译单元共用
-#include <nostos/kit/win.hpp>  // utf8_to_wide：模型清单拉取的宽字符转换
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（探测/模型清单）
 
-#include <windows.h>  // HANDLE：fs_watcher 状态成员
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>  // HANDLE：fs_watcher 状态成员（宏守卫自带——kit/win.hpp 曾经
+                      // 前置供 NOMINMAX，下沉到消费 TU 后守卫跟到这里）
 
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
-#include <set>
 #include <mutex>
 #include <nostos/nlohmann/json.hpp>
 #include <string>
@@ -64,7 +67,6 @@
 
 namespace fs = std::filesystem;
 namespace http = nostos::kit::http;
-namespace win = nostos::kit::win;  // 一发 HTTP 请求小件（探测/模型清单）
 
 namespace vc_webui {
 
@@ -78,7 +80,8 @@ using json = nlohmann::json;
 //
 // 宿主是无窗口进程，无主对话框会沉底（被浏览器页面盖住 ⇒ "点了没反应"）——
 // 激活瞬间经本线程挂的 CBT 钩子置顶（真实踩过）。
-std::string pick_folder_dialog(const std::string& title, const std::string& initial_dir = {});
+// 内置 mock 供应商默认模型目录（定义在 config.cpp；迁移建档/非数组回种共用）
+json default_mock_models();
 
 class WebuiPlugin : public http::Handler {
 public:
@@ -147,6 +150,16 @@ private:
             server_->respond(conn, json_resp({{"ok", false}, {"error", what}}, 500));
         } catch (...) {
         }
+    }
+
+    // 只读端点的 defer 样板收敛：fn 在宿主线程执行、返回值即响应体（json_resp
+    // 补头/状态码），conn 寻址与补发收在闭包内。fn 无参——读取端点用不到 conn；
+    // 需要 conn 寻址的写路径仍走 defer_。
+    template <typename F>
+    http::Response defer_json_(const http::Request& req, F&& fn) {
+        return defer_(req, [this, fn = std::forward<F>(fn)](std::uint64_t conn) {
+            server_->respond(conn, json_resp(fn()));
+        });
     }
 
     // defer_ 闭包内的错误补发出口：ok:false + error（与 respond 直调同语义）
@@ -280,7 +293,6 @@ private:
     std::map<std::string, std::pair<bool, int>> probe_cache_;   // key → {alive, port}
     fs::path manifest_path_;
     std::string llm_mode_ = "cloud";   // 供应商模式：mock（测试）| cloud（默认，见 activate）
-    bool mcp_reload_pending_ = false;  // mcp/plugins 节变化 → 落盘成功后才发射 McpReload（时序见 config.cpp 踩过②）
     fs::path home_{};      // %USERPROFILE%\.ithaca
     fs::path web_root_{};  // SPA 目录
     std::string session_;          // 活跃会话 id；"" = 无会话态（前端草稿态兜底）

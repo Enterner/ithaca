@@ -1,6 +1,6 @@
 #pragma once
 // 文本护栏（收敛点）：UTF-8 校验 / 码点安全截断 / 宽字符小写折叠——本仓
-// 唯一实现，多插件与单测经 shared/ include 路径共用（踩过：各自为政的年代里，
+// 唯一实现，多插件与单测经 shared/ include 路径共用（踩过: 各自为政的年代里，
 // runner 的 sanitize_utf8 放行 overlong、webui 的按字节截断劈码点）。
 // TODO: 内核 kit 收编后整体迁移。
 #include <cwctype>
@@ -51,7 +51,7 @@ inline std::string trim_utf8(const std::string& s, std::size_t cap) {
 // 则后移到码点首字节，尾部被 cap 劈开的残码点收回上一边界。前提：s 是完整
 // UTF-8（nlohmann dump 产物）。offset 进出都是相对 s 的字节偏移，出参已对齐
 // 码点边界（分页续读锚点）。产物可直接进 JSON——trim_utf8 只管「截断到 cap」
-// 不管切片尾部，双边界必须由本函数一次做完（踩过：recall 分页尾部残留不完整
+// 不管切片尾部，双边界必须由本函数一次做完（踩过: recall 分页尾部残留不完整
 // 码点 ⇒ dump 抛 type_error.316，异常被 emit catch-all 吞掉，turn 挂死）。
 inline std::string utf8_window(const std::string& s, std::size_t& offset, std::size_t cap) {
     if (offset > s.size()) offset = s.size();

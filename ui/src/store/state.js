@@ -14,7 +14,7 @@ export const S = reactive({
   providers: [], current: '',
   model: '', pmode: 'auto-edit',
   // 会话
-  sessions: [], curSession: '', curWs: '', sessTitle: '',
+  sessions: [], curSession: '', curWs: '',
   draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
@@ -23,10 +23,10 @@ export const S = reactive({
   viewer: null,
   // 待裁决提案（ZCode 式决策坞：只在实时提案上出现，重放的历史提案不阻塞输入）
   pending: null,
-  // 挂起等待（子代理/后台任务进行中）：waitingSince = 「等待 N 个…」通告到达
-  // 时刻（挂起条计时用）；waitingLeft = 尚未核销的挂起数（tool 结果逐个核销）。
-  // 纯前端可视态——取消走 /api/decision 4（agent 级联取消在途子请求）。
-  waitingSince: 0, waitingLeft: 0,
+  // 挂起等待（子代理/后台任务进行中）：waitingLeft = 尚未核销的挂起数
+  // （tool 结果逐个核销，归零撤挂起条）。纯前端可视态——取消走 /api/decision 4
+  //（agent 级联取消在途子请求）。
+  waitingLeft: 0,
   // 子代理过程视图：subView = 选中的子会话槽 turn_no（0 = 关闭）；subLive =
   // 各子代理的流式增量缓冲（turn_id → 累积文本；delta 只广播不落盘，重放无此节）；
   // subDone = 已收口的子代理（turn_id → true，主会话 spawn 卡的状态判定）；

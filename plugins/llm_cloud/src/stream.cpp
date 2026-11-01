@@ -28,12 +28,9 @@ struct HandleRAII {
 // ---- 请求线程 ----------------------------------------------------------------
 
 void CloudPlugin::run_request_(int rid, json messages, json tools, std::string model,
-                               std::string key_utf8, std::wstring key_wide,
-                               std::string base_utf8, std::wstring base_wide,
+                               std::wstring key_wide, std::wstring base_wide,
                                std::uint64_t slot,
                                std::atomic<bool>& stopping, std::atomic<HINTERNET>& active) {
-    (void)key_utf8;
-    (void)base_utf8;  // 契约面保留 utf8 形态（日志/诊断用）；网络面只用宽字符
     const auto t0 = std::chrono::steady_clock::now();
     const auto elapsed_ms = [t0] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -120,7 +117,7 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                                       ep.secure ? WINHTTP_FLAG_SECURE : 0)};
     if (req.h == nullptr) { err = nostos::kit::win::winhttp_error_text(GetLastError()); return false; }
     // 首字节窗 300s：thinking 模型读大上下文后服务端可能长时间不吐首字节，
-    // 固定短窗会掐死合法长思考轮（踩过：122s 无数据 ⇒ 请求失败，同任务另一轮
+    // 固定短窗会掐死合法长思考轮（踩过: 122s 无数据 ⇒ 请求失败，同任务另一轮
     // 顺利通过——纯时序非确定性，不是模型/网络异常）。收到响应头后恢复 120s：
     // 流式期的判断单位是增量间隔，长窗反而拖慢取消与错误发现。
     WinHttpSetTimeouts(req.h, /*resolve*/ 10000, /*connect*/ 20000, /*send*/ 30000,
@@ -135,7 +132,7 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                  {"stream_options", json{{"include_usage", true}}}};
     if (tools.is_array() && !tools.empty()) {
         // DeepSeek/OpenAI 的 function.name 只允许 [a-zA-Z0-9_-]；内部工具名带点
-        // （workspace.read）⇒ 请求侧净化、响应侧经 name_back 还原（踩过：HTTP 400）
+        // （workspace.read）⇒ 请求侧净化、响应侧经 name_back 还原（踩过: HTTP 400）
         json safe_tools = json::array();
         for (const auto& t : tools) {
             json tool = t;
@@ -159,7 +156,7 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
     struct RequestCloser {  // cancel 与线程收尾谁先到都只关一次
         std::atomic<HINTERNET>& slot;
         HINTERNET& live;    // req.h 的别名：关闭后必须置空，否则 HandleRAII 析构对
-                            // 已关句柄二次 WinHttpCloseHandle（踩过：成功/失败/取消
+                            // 已关句柄二次 WinHttpCloseHandle（踩过: 成功/失败/取消
                             // 三条路径全中——句柄值被并发请求复用时误关兄弟请求）
         ~RequestCloser() {
             if (HINTERNET h = slot.exchange(nullptr)) {
@@ -238,18 +235,18 @@ bool CloudPlugin::do_request_(int rid, const json& messages, const json& tools,
                 piece["choices"][0]["delta"]["tool_calls"].is_array()) {
                 for (const auto& tc : piece["choices"][0]["delta"]["tool_calls"]) {
                     if (!tc.is_object()) continue;
-                    TcAcc& slot = st.tc[tc.value("index", 0)];
+                    TcAcc& acc = st.tc[tc.value("index", 0)];   // 非外层路由 slot
                     if (tc.contains("id") && tc["id"].is_string())
-                        slot.id = tc["id"].get<std::string>();
+                        acc.id = tc["id"].get<std::string>();
                     if (tc.contains("function") && tc["function"].is_object()) {
                         const auto& fn = tc["function"];
                         if (fn.contains("name") && fn["name"].is_string()) {
                             const std::string raw = fn["name"].get<std::string>();
                             const auto it = st.name_back.find(raw);
-                            slot.name = it != st.name_back.end() ? it->second : raw;
+                            acc.name = it != st.name_back.end() ? it->second : raw;
                         }
                         if (fn.contains("arguments") && fn["arguments"].is_string())
-                            slot.args += fn["arguments"].get<std::string>();
+                            acc.args += fn["arguments"].get<std::string>();
                     }
                 }
             }

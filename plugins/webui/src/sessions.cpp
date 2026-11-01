@@ -9,7 +9,9 @@
 
 #include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断（收敛点）
 
+#include <chrono>  // std::chrono：sink 水位计时
 #include <cstdlib>  // std::atoi：/api/agent-log 的 turn 查询参数
+#include <set>  // std::set：agent 存档目录枚举
 
 namespace vc_webui {
 
@@ -161,7 +163,7 @@ void WebuiPlugin::agent_log_append_(const std::string& owner, int turn_id, const
         out.flush();
     }
     // 广播副本必须换类型名：type=subagent 会被前端当主会话记录 push 进主对话流，
-    // subagent_detail 才进右栏实时缓冲（踩过：类型未换 ⇒ 右栏永不实时更新，
+    // subagent_detail 才进右栏实时缓冲（踩过: 类型未换 ⇒ 右栏永不实时更新，
     // 刷新后明细反而"出现在主会话"）。打归属标：后台链的明细不进当前视图
     json evt = line;
     evt["type"] = "subagent_detail";

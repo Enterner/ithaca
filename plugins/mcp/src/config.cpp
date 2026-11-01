@@ -39,8 +39,8 @@ void McpPlugin::load_config_and_start_() {
             cfg["mcp"].contains("servers") && cfg["mcp"]["servers"].is_array())
             servers = cfg["mcp"]["servers"];
     }
-    // 插件 UI 贡献的值域：webui 设置面板写 plugins.mcp，此处读出
-    // （未配置 = 契约级默认；非法值由 value() 类型守卫兜底）。
+    // 超时覆盖值域：config.json 的 plugins.mcp.* 手改生效（无设置面板；
+    // 未配置 = 契约级默认，非法值由 value() 类型守卫兜底）。
     if (cfg.contains("plugins") && cfg["plugins"].is_object() &&
         cfg["plugins"].contains("mcp") && cfg["plugins"]["mcp"].is_object()) {
         const json& vals = cfg["plugins"]["mcp"];
@@ -109,14 +109,14 @@ void McpPlugin::start_server_(const std::string& name, const std::string& comman
     }
     s->tools = resp["result"]["tools"];
 
+    const std::size_t tool_n = s->tools.size();   // 移交前取值（push move 掉 s）
     {
         std::lock_guard lk(mu_);
         sessions_.push_back(std::move(s));
     }
     emit_status_();
-    if (const auto& live = find_session_(name))
-        host_.log(2, "ithaca.mcp: server「" + name + "」就绪（工具 " +
-                         std::to_string(live->tools.size()) + " 个）");
+    host_.log(2, "ithaca.mcp: server「" + name + "」就绪（工具 " +
+                     std::to_string(tool_n) + " 个）");
 }
 
 }  // namespace vc_mcp

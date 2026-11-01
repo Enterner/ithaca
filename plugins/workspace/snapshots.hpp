@@ -56,7 +56,6 @@ public:
         }
     }
 
-    bool empty() const noexcept { return stack_.empty(); }
     std::size_t depth() const noexcept { return stack_.size(); }
 
     const TurnGroup* peek_latest() const { return stack_.empty() ? nullptr : &stack_.back(); }

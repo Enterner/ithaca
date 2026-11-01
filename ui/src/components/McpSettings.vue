@@ -127,7 +127,7 @@ function onCancel() { load() }   // 取消 = 丢弃草稿重拉
                   spellcheck="false" class="grow"></textarea>
         <label>环境变量 <span class="hint">（可选，每行 KEY=VALUE，覆盖继承值）</span></label>
         <textarea :value="envText(cur())" @input="setEnv(cur(), $event.target.value)"
-                  spellcheck="false" placeholder="留空 = 继承宿主环境" class="autoheight"></textarea>
+                  spellcheck="false" placeholder="留空 = 继承宿主环境" ></textarea>
         <label style="margin-top:14px">状态</label>
         <div class="tools">
           <div class="trow" v-for="t in toolsOf(cur().name)" :key="t">{{ t }}</div>

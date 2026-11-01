@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { ROOT, flag, presetArg } from "./common.mjs";
+import { ROOT, presetArg } from "./common.mjs";
 
 const preset = presetArg();
 const testOnly = process.argv.includes("--test-only");

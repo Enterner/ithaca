@@ -77,6 +77,10 @@ void AgentCtx::recompute_threshold_() {
 // 压缩判定共用入口：finish_turn 与 cleanup_turn_ 都走这里（失败/取消收口不漏
 // 判定——否则反复取消/失败的长会话上下文只增不减）。计划不可折叠 ⇒ false，
 // 调用方走原收口；若下一请求仍超窗，由 on_llm_error 的超窗自救接手。
+bool AgentCtx::llm_summary_ready_() const {
+    return ctx_tbl_ == nullptr || ctx_tbl_->summary_prompt != nullptr;
+}
+
 bool AgentCtx::maybe_compress_() {
     if (subagent_) return false;  // 子代理总闸：单任务短命上下文，压缩语义（回 Idle/
                                   // 摘要异步收口/退避校验）全部不适用
@@ -85,7 +89,7 @@ bool AgentCtx::maybe_compress_() {
     if (ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr) {
         const vcagent::CompressPlan plan = acquire_plan_("turn_end");
         if (!plan.valid) return false;
-        if (summary_enabled_ && ctx_tbl_->summary_prompt != nullptr) {
+        if (summary_enabled_ && llm_summary_ready_()) {
             pending_plan_ = plan;
             request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
             return true;
@@ -99,13 +103,13 @@ bool AgentCtx::maybe_compress_() {
         return false;
     const vcagent::CompressPlan plan = vcagent::plan_compress(messages_, !raw_dir_.empty());
     if (!plan.valid) return false;
-    if (!hard && summary_enabled_) {
+    if (!hard && summary_enabled_ && llm_summary_ready_()) {
         pending_plan_ = plan;
         request_digest_();  // 异步收口：摘要回包/失败在 on_done/on_llm_error 分流
         return true;
     }
     // NOTE: 机械路径也必须先冻结计划——replace_with_digest_ 的 cut 区间/折叠统计
-    // 读 pending_plan_（不设则全零：digest 插到 0 号位、原文一条不裁——踩过：
+    // 读 pending_plan_（不设则全零：digest 插到 0 号位、原文一条不裁——踩过: 
     // 手动压缩曾因此只插不剪）
     pending_plan_ = plan;
     apply_digest_(plan.digest, false);  // apply_digest_ 内收口（回 Idle + flush 排队）
@@ -163,7 +167,7 @@ void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
 }
 
 // 折叠应用核心：区间替换 + 旧 digest 并入 + 任务卡锚点吸收 + 持久化 + 通告。
-// 先插 digest 再跳过的顺序纪律见阶段一（踩过：跳过分支先 continue 会漏掉插入，
+// 先插 digest 再跳过的顺序纪律见阶段一（踩过: 跳过分支先 continue 会漏掉插入，
 // digest 整条丢失）。
 void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     // 任务卡折叠重建：在切割前的完整历史上合成——被折叠的 user 消息切割后即不在
@@ -171,22 +175,7 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     // 零前缀代价（卡跨轮冻结的吸收点就在这）。表接管时 mission 槽收到同一份
     // 完整历史；null/失败 = 保留旧卡（锚点不全好过丢卡）。
     json mission_fresh;
-    bool mission_valid = false;
-    if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {
-        const std::string msgs = messages_.dump();
-        const char* out = nullptr;
-        if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &out) == NOSTOS_OK &&
-            out != nullptr) {
-            json parsed = json::parse(out, nullptr, /*allow_exceptions=*/false);
-            if (parsed.is_object()) {
-                mission_fresh = std::move(parsed);
-                mission_valid = true;
-            }
-        }
-    } else {
-        mission_fresh = vcagent::build_mission(messages_);
-        mission_valid = true;
-    }
+    const bool mission_valid = mission_from_slot_or_builtin_(mission_fresh);
     // 折叠前原文归档：cut 区间全文写入 raw/，ref 附进 digest 正文——agent 视图
     // 丢掉的每一行都可 recall 回查
     json cut = json::array();
@@ -210,7 +199,7 @@ void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     bool digest_placed = false;
     for (std::size_t k = 0; k < messages_.size(); ++k) {
         // 先插 digest（到末段起点处——紧贴 mission 之后），再做跳过判断：
-        // 跳过分支先 continue 会漏掉插入（踩过：digest 整条丢失）
+        // 跳过分支先 continue 会漏掉插入（踩过: digest 整条丢失）
         if (!digest_placed && k == pending_plan_.cut_begin) {
             nm.push_back(digest);
             digest_placed = true;

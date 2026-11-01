@@ -57,7 +57,7 @@ nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
     // 一次取齐——并发在途与热切并存时，worker 手里的凭据/端点/模型是自洽的一份。
     // 子会话请求（slot!=0）且子档案齐全 ⇒ 按子档案发起（跨 provider 派遣的唯一
     // 通路）；档案缺失回落主档案——"子用主模型"是默认形态。
-    std::string model, key_utf8, base_utf8;
+    std::string model, key_utf8;
     std::wstring key_wide, base_wide;
     bool sub_used = false;
     {
@@ -67,7 +67,6 @@ nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
         model = sub_used ? sub_model_ : model_;
         key_utf8 = sub_used ? sub_key_ : key_;
         key_wide = sub_used ? sub_key_wide_ : key_wide_;
-        base_utf8 = sub_used ? sub_base_utf8_ : base_utf8_;
         base_wide = sub_used ? sub_base_wide_ : base_wide_;
     }
     if (sub && !sub_used)
@@ -81,7 +80,7 @@ nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
         if (requests_.count(request_id) != 0) {
             host_.log(4, "ithaca.llm.cloud: request_id " + std::to_string(request_id) +
                              " 已在途（调用方 bug，拒绝重入）");
-            return NOSTOS_ERR_FAILED;
+            return NOSTOS_ERR_BAD_STATE;   // 与 llm_mock 同口径：状态错误非基础设施失败
         }
         if (requests_.size() >= kMaxConcurrent) {
             host_.log(3, "ithaca.llm.cloud: 并发请求已达上限 " +
@@ -90,10 +89,10 @@ nostos_status CloudPlugin::start_(int request_id, json messages, json tools,
         }
         RequestWorker& w = requests_[request_id];
         w.th = std::thread([this, request_id, messages = std::move(messages),
-                            tools = std::move(tools), model, key_utf8, key_wide,
-                            base_utf8, base_wide, slot, workerp = &w]() mutable {
+                            tools = std::move(tools), model, key_wide,
+                            base_wide, slot, workerp = &w]() mutable {
             run_request_(request_id, std::move(messages), std::move(tools), model,
-                         key_utf8, key_wide, base_utf8, base_wide, slot,
+                         key_wide, base_wide, slot,
                          workerp->stopping, workerp->active);
         });
     }

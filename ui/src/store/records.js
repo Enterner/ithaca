@@ -167,7 +167,7 @@ export function render(rec) {
 
 function renderNow(rec) {
   // NOTE: 轮次边界结算在 turn_id 变化时触发——无 assistant 收口的轮次（拒绝/
-  // 报错轮）的编辑汇总也能随自己那轮落位，不堆到下一轮（踩过：曾全堆在底部）
+  // 报错轮）的编辑汇总也能随自己那轮落位，不堆到下一轮（踩过: 曾全堆在底部）
   { const tid = rec.turn_id
     if (typeof tid === 'number') {
       if (X.lastTurnId !== null && tid !== X.lastTurnId) flushTurnEdits()
@@ -177,14 +177,11 @@ function renderNow(rec) {
     if (rec.id <= S.lastId) return
     S.lastId = rec.id
   }
-  if (rec.type === 'error') {
-    S.inFlight = false; S.rate = '0'
-  }
   // 挂起等待的收口：turn 收口/失败/取消、新输入（新 turn）都会终结挂起期；
   // 未决调用行一并强闭（防截胡下一 turn 的结果配对）
   if (rec.type === 'error' || rec.type === 'user' ||
       (rec.type === 'assistant' && rec.turn_done)) {
-    S.waitingSince = 0; S.waitingLeft = 0
+    S.waitingLeft = 0
     closeOpenCalls(); removeWaitline()
   }
   switch (rec.type) {
@@ -257,7 +254,7 @@ function renderNow(rec) {
         S.subDone[rec.turn_id] = rec.phase
         if (S.waitingLeft > 0) {
           S.waitingLeft--
-          if (S.waitingLeft === 0) { S.waitingSince = 0; removeWaitline() }
+          if (S.waitingLeft === 0) removeWaitline()
         }
       }
       // phase 2/3 工具明细（宿主现行已写独立存档，旧会话重放仍会带来）与
@@ -284,12 +281,12 @@ function renderNow(rec) {
       push(rec); return
     case 'tool':
       // apply 的成功结果与本轮修改汇总卡同信息（同文件同增删），不渲染；
-      // 失败结果保留——那是唯一的错误反馈（踩过：双行同文）
+      // 失败结果保留——那是唯一的错误反馈（踩过: 双行同文）
       if (rec.ok && /apply$/.test(rec.tool || '')) return
       // 挂起核销：等待期内的每条工具结果 = 一个挂起的子代理/后台任务落定
       // （顺序纪律：等待通告只由 dispatch_loop 尾部发出，其后的 tool 结果
       // 必然属于挂起项）
-      if (S.waitingLeft > 0) { S.waitingLeft--; if (S.waitingLeft === 0) { S.waitingSince = 0; removeWaitline() } }
+      if (S.waitingLeft > 0) { S.waitingLeft--; if (S.waitingLeft === 0) removeWaitline() }
       { const call = lastOpenCall(rec.tool)
         if (!call) {
           // 孤儿结果：run 的终态结果（exit 形态）此刻调用行必已被 run_exit 收口
@@ -392,12 +389,13 @@ function renderNow(rec) {
       }
       const m = /^等待 (\d+) 个/.exec(rec.text || '')
       if (m) {
-        S.waitingSince = Date.now(); S.waitingLeft = Number(m[1])
+        S.waitingLeft = Number(m[1])
         upsertWaitline(rec.text); return
       }
       push(rec); return
     }
     case 'error':
+      S.inFlight = false; S.rate = '0'
       // 流式中途报错也要收掉 live 块：只复位 inFlight 会留下半截流式正文与光标，
       // 观感是「还在输出」（错误卡与残留正文并存，直到下一条 user 记录才清）
       push(rec); S.live = null; flushTurnEdits(); return

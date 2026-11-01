@@ -51,7 +51,7 @@ void McpPlugin::reload_async_() {
                 for (auto& s : sessions_) s->shutdown();
                 sessions_.clear();
             }   // 锁只包清理；拉起（含 ≤30s 握手）绝不持锁——否则 discover/list
-                // 与 execute 全部被堵死（踩过：自死锁，turn 卡在 user 记录）
+                // 与 execute 全部被堵死（踩过: 自死锁，turn 卡在 user 记录）
             // NOTE: detach 线程唯一的生命周期闸门——deactivate 后必须就此打住，
             // 否则已清场的插件继续拉起 server 并回发状态（DLL 卸载即悬空执行）
             if (stopping_.load()) break;
@@ -71,9 +71,6 @@ void McpPlugin::deactivate() noexcept {
 }
 
 // ---- 状态回发 + 落盘（activate/reload/server 变化后调用；mu_ 串行化）-------
-// NOTE: 不再贡献设置 UI（原「MCP 超时」节已撤）——超时回落内置默认值，
-// config.json 的 plugins.mcp.init_timeout_ms/call_timeout_ms 手改仍生效
-// （config.cpp 读取面不变）。
 
 void McpPlugin::emit_status_() {
     // 停用后不再回发/落盘：deactivate 清场期间在飞的 reload 线程可能走到这里

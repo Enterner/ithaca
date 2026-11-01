@@ -93,7 +93,7 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
             c.call_id = tc.value("id", std::string{});
             if (tc.contains("function") && tc["function"].is_object()) {
                 c.full_name = tc["function"].value("name", std::string{});
-                c.tool = tool_last(c.full_name);  // "workspace.read" → "read"（踩过：漏设 ⇒ 空工具名）
+                c.tool = tool_last(c.full_name);  // "workspace.read" → "read"（踩过: 漏设 ⇒ 空工具名）
                 const std::string a = tc["function"].value("arguments", std::string{});
                 json parsed = json::parse(a, nullptr, false);
                 if (parsed.is_object()) c.args = parsed;
@@ -140,10 +140,7 @@ void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
     }
     if (!subagent_ && state_ == State::TurnActive && runs_.empty() &&
         compress_retries_ < kMaxOverwindowResend && overflow) {
-        const vcagent::CompressPlan plan =
-            ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
-                ? acquire_plan_("overflow")
-                : vcagent::plan_compress(messages_, !raw_dir_.empty());
+        const vcagent::CompressPlan plan = plan_now_("overflow");
         if (plan.valid) {
             ++compress_retries_;
             pending_plan_ = plan;
@@ -185,19 +182,15 @@ void AgentCtx::on_session_cmd_impl(const vc_api::SessionCmd& c) {
     }
     // 主动压缩 = turn 边界自动压缩的立即版（同一管线）。LLM 摘要期间保持占用
     // （state TurnActive）——摘要回包中途若开新 turn，apply_digest_ 的区间替换
-    // 会踩在半截对话上（踩过预防）。
+    // 会踩在半截对话上。
     // 策略缝：表接管时计划出自 plan 槽（reason=manual）；LLM 精修还需策略给
     // summary_prompt 槽（内置路径恒有 kSummarySystem）。
-    const vcagent::CompressPlan plan =
-        ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
-            ? acquire_plan_("manual")
-            : vcagent::plan_compress(messages_, !raw_dir_.empty());
+    const vcagent::CompressPlan plan = plan_now_("manual");
     if (!plan.valid) {
         notice("上下文还比较小，暂无需压缩");
         return;
     }
-    const bool llm_brief_ready =
-        ctx_tbl_ != nullptr ? ctx_tbl_->summary_prompt != nullptr : true;
+    const bool llm_brief_ready = llm_summary_ready_();
     if (summary_enabled_ && llm_brief_ready) {
         state_ = State::TurnActive;
         pending_plan_ = plan;

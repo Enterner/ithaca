@@ -34,7 +34,7 @@ nostos_plugin_module(webui_plugin
 target_include_directories(webui_plugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # kit::http 的实现在 kit 目标里；事件订阅与 JSON 编解码同款依赖
 target_link_libraries(webui_plugin PRIVATE nostos::kit nostos::kit_http)
-# 原生文件夹选择对话框：shell32（SHBrowseForFolder）+ ole32（CoInitializeEx/CoTaskMemFree）
+# 原生文件夹选择对话框：shell32（IFileDialog/SHCreateItemFromParsingName）+ ole32（CoInitializeEx/CoTaskMemFree）
 # 实例健康探测（多实例聚合 alive 真值）：winhttp
 if (WIN32)
     target_link_libraries(webui_plugin PRIVATE shell32 ole32 winhttp)

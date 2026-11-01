@@ -21,7 +21,7 @@ inline constexpr const char* kTaskTool = "task";
 // task 工具自述：类型清单进 description（模型据此选 subagent_type）。
 // NOTE: 逐层显式构造而非整体初始化列表——嵌套初始化列表有歧义归一规则（某层
 // 元素不是两元素对组 ⇒ 整层退化成数组而非对象），错位后无编译期信号，只在运行期
-// 以畸形 tools 自述爆雷（踩过：排序比较器按 function.name 取值即挂死）。
+// 以畸形 tools 自述爆雷（踩过: 排序比较器按 function.name 取值即挂死）。
 inline json build_task_tool_json(const std::vector<std::string>& type_names) {
     std::string types;
     for (const auto& t : type_names) {

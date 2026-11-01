@@ -45,6 +45,12 @@ static vcagent::CompressPlan plan_from_json(const json& j) {
     return p;
 }
 
+vcagent::CompressPlan AgentCtx::plan_now_(const char* reason, long long estimate) {
+    return ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
+               ? acquire_plan_(reason, estimate)
+               : vcagent::plan_compress(messages_, !raw_dir_.empty());
+}
+
 vcagent::CompressPlan AgentCtx::acquire_plan_(const char* reason, long long estimate) {
     if (ctx_tbl_ == nullptr || ctx_tbl_->plan == nullptr) return {};
     // 信号透传（原始值，判定口径在策略内）。NOTE: 取当前值快照——plan 同步

@@ -17,7 +17,8 @@
 namespace vc_webui {
 
 // 机制与踩坑说明见头文件声明处注释（宿主无主对话框的四个系统默认行为纠正）。
-std::string pick_folder_dialog(const std::string& title, const std::string& initial_dir) {
+std::string pick_folder_dialog(const std::string& title,
+                               const std::string& initial_dir = {}) {
     IFileDialog* fd = nullptr;
     if (FAILED(CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER,
                                 IID_PPV_ARGS(&fd))) || !fd)
@@ -28,7 +29,6 @@ std::string pick_folder_dialog(const std::string& title, const std::string& init
         fd->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
     fd->SetTitle(nostos::kit::win::utf8_to_wide(title.empty() ? "选择工作文件夹" : title).c_str());
     fd->SetOkButtonLabel(L"选择文件夹");
-    // 文件选择框置顶显示钩子
     HHOOK cbt = SetWindowsHookExW(WH_CBT,
     [](int code, WPARAM wp, LPARAM lp) -> LRESULT {
         if (code == HCBT_ACTIVATE) {

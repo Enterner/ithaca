@@ -60,8 +60,7 @@ async function onCancel() { await decide(4) }
     <div v-if="spawn" class="subpane-desc">{{ spawn.text }}</div>
     <div ref="bodyEl" class="subpane-body">
       <template v-for="(r, i) in recs" :key="i">
-        <div v-if="r.phase === 2" class="toolline"
-             v-html="'⚙ ' + esc(line(r))"></div>
+        <div v-if="r.phase === 2" class="toolline">⚙ {{ line(r) }}</div>
         <div v-else-if="r.phase === 3" class="toolline"
              :class="{ warn: (r.text || '').startsWith('✗') }">⚙ {{ line(r) }}</div>
       </template>

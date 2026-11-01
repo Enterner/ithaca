@@ -12,7 +12,7 @@ namespace {
 
 // 命令行拼装：command 恒加引（路径可含空格），参数仅含空白时加引——cmd /c 型命令
 // （npx 系 server 的 Windows 标准接法）对全参数加引有「剥首尾引号」改写规则，会把
-// 命令行改写坏（踩过：cmd /c npx 链上 npm 前缀解析炸掉）。kit 收完整命令行串，
+// 命令行改写坏（踩过: cmd /c npx 链上 npm 前缀解析炸掉）。kit 收完整命令行串，
 // 引号责任在调用方——本函数即 mcp 侧的引号策略落点。
 std::string compose_command_line(const std::string& command,
                                  const std::vector<std::string>& args) {

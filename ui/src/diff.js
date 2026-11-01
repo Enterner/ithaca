@@ -102,7 +102,7 @@ export function diffHtml(diffText) {
 // ---- 查看器对照模式------------------------
 // 自绘管线 = 现盘全文 + hunk 标记，经 diffHtml 渲染（与会话卡同管线同样式）：
 // 未修改行即纯源码（仅行号 gutter），修改行红绿底 + 词级加重。CodeViewer.vue 按
-// 新鲜度路由（§7.1）：新鲜态走 Monaco diff editor（语法高亮），这里服务陈旧降级
+// 新鲜度路由：新鲜态走 Monaco diff editor（语法高亮），这里服务陈旧降级
 // 分支（文件已再次变更 / read 截断）。
 
 /** diff 文本 → 结构化 hunk。rows 保留 hunk 内原始行序（ctx/del/add 交错），

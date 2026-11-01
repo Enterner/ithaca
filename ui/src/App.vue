@@ -103,8 +103,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
       <button class="new-chat" @click="newSession()">+ 新会话</button>
       <Sidebar style="display:flex; flex-direction:column; min-height:0; flex:1;" />
-      <!-- 齿轮（行内布局）：曾绝对定位 bottom:30px，与 side-foot 的 border-top 重叠；
-           会话累计 tokens 已并入输入栏的上下文构成卡（那里才是语境所在） -->
+      <!-- 齿轮走 side-foot 的行内布局（脱离文档流的绝对定位会压 side-foot 的
+           border-top）；会话累计 tokens 在输入栏的上下文构成卡（语境所在） -->
       <div class="side-foot">
         <n-tooltip placement="top" :show-arrow="false">
           <template #trigger>
@@ -153,7 +153,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <div class="hero">
           <div class="hero-title">Ithaca<span class="beta">预览版</span></div>
           <button class="hero-ws" title="选择工作文件夹" @click="pickFolder">
-            📂 {{ S.curWs ? curWs : '选择工作文件夹' }} ▾
+            📂 选择工作文件夹 ▾
           </button>
           <div class="inbar" style="width:min(var(--content-w), 92%); padding:0;">
             <InputBar />

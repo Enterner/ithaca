@@ -9,23 +9,17 @@ defineProps({
   clickable: { type: Boolean, default: false },
   warn: { type: Boolean, default: false },
 })
+import { trackPress, pressed } from '../press'
 const emit = defineEmits(['toggle'])
-let pressPos = null
-function trackPress(e) { pressPos = { x: e.clientX, y: e.clientY } }
+const pos = { x: null, y: null }
 function onClick(e) {
-  const p = pressPos
-  pressPos = null
-  if (p) {
-    const dx = e.clientX - p.x, dy = e.clientY - p.y
-    if (dx * dx + dy * dy > 25) return   // 拖选文字松开：不是点击
-  }
-  emit('toggle')
+  if (pressed(e, pos)) emit('toggle')
 }
 </script>
 
 <template>
   <div class="fblock" :class="{ open, click: clickable, warn }"
-       @mousedown="trackPress" @click="onClick">
+       @mousedown="trackPress($event, pos)" @click="onClick">
     <div class="fb-head"><slot name="head" /></div>
     <div class="fold" :class="{ open }"><div class="fold-in"><slot /></div></div>
   </div>

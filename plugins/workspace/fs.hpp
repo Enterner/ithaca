@@ -28,7 +28,6 @@ public:
 // 磁盘实现。write 隐式建父目录（"写新路径"的常规期望；越界已由 jail 拦住）。
 class DiskStore final : public TextStore {
 public:
-    std::string last_error_;   // 最近一次写失败的系统原因
     bool read(const std::wstring& key, std::string& out) override {
         std::ifstream in(key, std::ios::binary);
         if (!in) return false;
@@ -46,7 +45,7 @@ public:
         std::ofstream out(key, std::ios::binary | std::ios::trunc);
         if (!out) {
             // NOTE: 失败原因必留痕——EACCES=权限/安全软件拦截，ENOENT=目录缺失……
-            // （踩过：安全软件拦未签名 exe 写盘，dry 通过、真实落盘一律失败，错误必须点名）
+            // （踩过: 安全软件拦未签名 exe 写盘，dry 通过、真实落盘一律失败，错误必须点名）
             last_error_ = std::generic_category().message(errno ? errno : EIO);
             return false;
         }
@@ -67,6 +66,9 @@ public:
         std::error_code ec;
         return fs::exists(fs::path(key), ec) && !ec;
     }
+
+private:
+    std::string last_error_;   // 最近一次写失败的系统原因（last_error 读出面）
 };
 
 // 内存实现（单元测试）。留出继承位：测试替身可覆盖 write 制造"写盘失败"的回滚场景。
@@ -89,6 +91,5 @@ private:
     std::unordered_map<std::wstring, std::string> files_;
 };
 
-// ---- UTF-8 工具已收敛到 text.hpp：utf8_valid / trim_utf8 ----------------
 
 }  // namespace vcws

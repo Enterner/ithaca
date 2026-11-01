@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.24)
 
 # ── host/ —— ithaca_host：ithaca 通用宿主（独立工程）────────────────────────────
 #
-# 它只做四件事：装配内核、按路径加载插件（LazyGate 懒激活）、16ms 一拍排水、干净退出。
-# 不含任何业务 —— 它不知道 agent / llm 是谁；唯一的应用知识是契约头（contract/）
-# 与 --selftest（M0 冒烟：直接驱动 vc.llm.v1 校验全链路，业务编排永远在 agent，M3）。
+# 它只做四件事：装配内核、按路径加载插件（LazyGate 懒激活）、排水循环（post 唤醒
+# + 空闲 250ms 兜底拍）、干净退出。除 Ctrl+C 取消语义（vc.agent 特判）与 --selftest
+# 冒烟外不含业务——应用知识只有契约头（contract/）与 profile 装配层。
 #
 # 独立构建：cmake -S app -B app/build-debug && cmake --build --preset debug（在本目录）
 

@@ -12,7 +12,7 @@ export function resetView() {
   S.records = []; S.live = null; S.pending = null
   S.since = 0; S.lastId = -1; S.inFlight = false
   // 上下文环/速率/挂起条是「当前会话」的派生显示，不重置就会把旧会话的值带进
-  // 新会话（踩过：新建会话后上下文环仍显示上个会话的几 k 用量）
+  // 新会话（踩过: 新建会话后上下文环仍显示上个会话的几 k 用量）
   S.lastPrompt = 0; S.rate = '0'
   S.waitingSince = 0; S.waitingLeft = 0
   S.attachments = []   // 附件相对路径随会话（工作区）走，跨会话残留必然错配
@@ -26,15 +26,10 @@ export function resetView() {
 export function enterDraft(ws) {
   S.draft = { workspace: ws || '' }
   resetView()
-  S.curSession = ''; S.curWs = ws || ''; S.sessTitle = ''
+  S.curSession = ''; S.curWs = ws || ''
 }
 
 // ---- 注册表与元数据 ----------------------------------------------------------
-
-/** 会话元数据（/api/session 响应）对齐侧栏/顶栏。 */
-export function sessionMeta(m) {
-  S.sessTitle = m.title
-}
 
 function syncPendingWithServer(serverPending) {
   // 决策坞以后端事实为准（pending 是运行时状态，重启即 false）：
@@ -70,7 +65,6 @@ export async function loadSessions() {
   const meta = await api('/api/session')
   S.curSession = meta.id
   S.curWs = meta.workspace || ''
-  sessionMeta(meta)
   syncPendingWithServer(!!meta.pending)
 }
 
@@ -123,12 +117,11 @@ export async function openSession(id) {
   loadSessions()   // 硬化：不只依赖 SSE
 }
 
-/** ＋新建 = 进草稿态：零请求，注册表/磁盘在首条消息前不动。
- *  壳模式同构（页内 hero 选目录，选完由壳拉起新实例并整页切换——见 folder_picked）。
- *  多会话并行：运行中的 turn 不受新建影响；跨工作区并发由服务端拒绝并在发送处报错。 */
-export async function newSession(ws) {
-  enterDraft(ws)
-}
+/** ＋新建 = 进草稿态（enterDraft 的公开名——组件侧语义入口）：零请求，注册表/
+ *  磁盘在首条消息前不动。壳模式同构（页内 hero 选目录，选完由壳拉起新实例并
+ *  整页切换——见 folder_picked）。多会话并行：运行中的 turn 不受新建影响；
+ *  跨工作区并发由服务端拒绝并在发送处报错。 */
+export const newSession = enterDraft
 
 /** 删除会话（后端连带 transcript/state；loadSessions 对齐侧栏）。 */
 export async function delSession(id) {

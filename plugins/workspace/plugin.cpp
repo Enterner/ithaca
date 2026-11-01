@@ -30,8 +30,7 @@
 #include <nostos/kit/regex.hpp>   // search 的正则（有界 NFA——std::regex 的回溯可被挂死）
 #include <nostos/kit/win.hpp>
 
-#include <algorithm>  // std::count/clamp/max：read 行统计与分页参数收敛
-#include <cstdio>
+#include <algorithm>  // std::count/clamp/max：read 行统计、search 行号与分页参数收敛
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
@@ -49,6 +48,7 @@ namespace {
 using nlohmann::json;
 
 constexpr std::size_t kListEntriesCap = 5000;   // list 条目护栏：浏览走默认聚合，flat 的
+inline constexpr std::uintmax_t kSearchFileCap = 1024 * 1024;   // search 单文件整读上限
                                                 // 定位是精确计数/全量过滤——上限只做遍历
                                                 // 终止与体量护栏，不是浏览上限
 constexpr int kListDepthCap = 6;               // list 递归深度上限
@@ -83,9 +83,9 @@ std::string clip_diff(const std::string& d) {
 std::string entry_rel(const fs::directory_entry& it, const std::string& rel_prefix,
                       std::error_code& se) {
     // symlink 与 junction 都要拦：MSVC STL 把 IO_REPARSE_TAG_MOUNT_POINT 映射为
-    // file_type::junction，is_symlink() 对它返回 false（踩过：pnpm 的 node_modules
+    // file_type::junction，is_symlink() 对它返回 false（踩过: pnpm 的 node_modules
     // junction 被照常递归，遍历越过 jail 边界）；状态查询出错同样跳过——出错条目
-    // 按"不可知"处理，与重解析点同侧（旧写法 is_symlink(se) && !se 在出错时反而不跳）
+    // 按"不可知"处理，与重解析点同侧（状态查询出错照跳——漏跳会越过 jail 边界）
     const fs::file_type ft = it.status(se).type();
     if (se || ft == fs::file_type::symlink || ft == fs::file_type::junction) return {};
     const std::string name =
@@ -156,7 +156,7 @@ private:
         // 本插件不解释、agent 不硬编码（新增工具插件零 agent 改动的根基）。
         json schema_path = {{"type", "string"}, {"description", "工作区内相对路径"}};
         // NOTE: properties 必须显式建 json::object——花括号初始化会把 {"k",v} 对
-        // 变成 [ ["k",v], ... ] 数组对，DeepSeek/OpenAI 的 JSON Schema 不认（踩过：400）
+        // 变成 [ ["k",v], ... ] 数组对，DeepSeek/OpenAI 的 JSON Schema 不认（踩过: 400）
         auto object_with = [](std::initializer_list<json::value_type> props,
                               json required) {
             json properties = json::object();
@@ -187,7 +187,6 @@ private:
                   {"description",
                    "列出目录内容。默认 mode=aggregate 聚合视图：每目录一条汇总（文件数/子目录数/字节量），大目录一次看全貌；要看具体文件名再 mode=flat（可配 pattern/per_dir）下钻。可选："
                    "pattern=文件名通配（* ?，大小写不敏感，只过滤文件、目录保留）；"
-                   "mode 默认 aggregate（聚合视图，每目录一条：文件数/子目录数/字节量）；flat=平铺看具体文件名；"
                    "per_dir=flat 模式单目录条目上限（超出折叠为 omitted 标注）。"
                    "返回含 listed（实际条数）与 truncated 标记"},
                   {"schema", object_with(
@@ -310,7 +309,7 @@ private:
         listed_ = 0;
         truncated_ = false;
         if (aggregate_) walk_agg(full, norm, depth);
-        else walk(full, norm, depth, 0);
+        else walk(full, norm, depth);
         // listed 量化反馈：配合 truncated，模型能算出「看到了多少 / 还有多少量级」
         return json{{"ok", true},
                     {"entries", entries_},
@@ -318,7 +317,8 @@ private:
                     {"truncated", truncated_}};
     }
 
-    void walk(const fs::path& dir, const std::string& rel_prefix, int depth, int dir_files) {
+    void walk(const fs::path& dir, const std::string& rel_prefix, int depth) {
+        int dir_files = 0;   // 本目录文件计数（per_dir 折叠判据；递归各自归零）
         if (depth <= 0 || listed_ >= kListEntriesCap) {
             truncated_ = truncated_ || listed_ >= kListEntriesCap;
             return;
@@ -340,7 +340,7 @@ private:
                 entries_.push_back(json{{"path", child_rel}, {"type", "dir"}, {"size", 0}});
                 ++listed_;
                 if (listed_ >= kListEntriesCap) { truncated_ = true; return; }
-                walk(it->path(), child_rel, depth - 1, 0);
+                walk(it->path(), child_rel, depth - 1);
                 continue;
             }
             ++dir_files;
@@ -467,7 +467,8 @@ private:
                 return;
             }
             std::error_code ze;
-            if (it->file_size(ze) > 1024 * 1024 || ze) continue;  // 大文件跳过
+            // search 对文件整读 slurp、无分页护栏——1MiB 是读前闸门
+            if (it->file_size(ze) > kSearchFileCap || ze) continue;
             std::string content;
             if (!store_->read(it->path().wstring(), content)) continue;
             if (content.find('\0') != std::string::npos) continue;  // 二进制跳过
@@ -581,9 +582,9 @@ private:
                         {"error", "撤销被拒：turn #" + std::to_string(turn_id) +
                                       " 存在外部改动（陈旧检测）"},
                         {"conflicts", conflicts}};
-        // 写回：单个失败不再弃恢复——继续恢复其余文件并保留组（重试只处理
-        // 未恢复项）。旧写法一失败即 return：组不弹出且重试裁决恒不符，该 turn
-        // 的撤销能力整组报废
+        // 写回：单个失败不弃恢复——继续恢复其余文件并保留组（重试只处理未恢复
+        // 项）；一失败即弃会让组不弹出且重试裁决恒不符，该 turn 的撤销能力整组
+        // 报废
         json restored = json::array();
         json failures = json::array();
         for (auto it = group->files.rbegin(); it != group->files.rend(); ++it) {
@@ -607,7 +608,7 @@ private:
         if (has_turn) snaps_.pop_turn(turn_id);
         else snaps_.pop_latest();
         // 撤销结果必须广播——EditUndone 是 tui/webui「已撤销」卡的唯一事件源
-        // （踩过：契约事件曾长期无生产者，撤销后 UI 无终态）
+        // （踩过: 契约事件曾长期无生产者，撤销后 UI 无终态）
         const vc_api::EditUndone ev{turn_id, static_cast<int>(snaps_.depth())};
         host_.emit(vc_api::edit_undone, &ev);
         return json{{"ok", true},

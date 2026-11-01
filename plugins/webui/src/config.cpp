@@ -9,11 +9,24 @@
 
 #include "vcws/text.hpp"  // vcws::ascii_lower：名称去重的大小写折叠（共享件）
 
-#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件 + ERROR_WINHTTP_*（模型清单拉取）
+#include <nostos/kit/win.hpp>  // utf8_to_wide：模型清单拉取的宽字符转换
+#include <nostos/kit/win_http.hpp>  // 一发 HTTP 请求小件（模型清单拉取）
 
 #include <algorithm>  // std::find：供应商/模型名去重（大小写不敏感）
 
 namespace vc_webui {
+
+// 供应商配置校验失败的统一回灌文案（五个校验出口共用；改口径只动这里）
+static const char* const kProviderErr =
+    "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+
+// 内置 mock 供应商默认模型目录（单一出处；plugin.cpp 的迁移建档/回种共用）
+json default_mock_models() {
+    return json::array({json{{"id", "mock-model"},
+                             {"context", vc_api::kDefaultContextWindow},
+                             {"enabled", true}}});
+}
+namespace win = nostos::kit::win;  // 模型清单拉取（utf8_to_wide/http_fetch/错误人话）
 
 // 实例差异项键清单（共享/覆盖两层配置的分界）——merge 与 persist 三处共用，
 // 单一出处：新增覆盖键漏改任一处即静默失效
@@ -135,9 +148,7 @@ json WebuiPlugin::config_public_() {
                                      {"base_url", ""},
                                      {"enabled", true},
                                      {"has_key", false},
-                                     {"models", json::array({json{{"id", "mock-model"},
-                                 {"context", vc_api::kDefaultContextWindow},
-                                 {"enabled", true}}})}});
+                                     {"models", default_mock_models()}});
         current = "mock";
     } else if (!providers.empty()) {
         current = config_.value("current_provider", "");
@@ -176,7 +187,7 @@ static bool validate_providers(const json& in, const json& existing, json& clean
     std::vector<std::string> seen;
     for (const auto& p : in) {
         if (!p.is_object() || cleaned.size() >= 32) {
-            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            err = kProviderErr;
             return false;
         }
         const std::string name = p.contains("name") && p["name"].is_string()
@@ -184,12 +195,12 @@ static bool validate_providers(const json& in, const json& existing, json& clean
         const std::string type = p.contains("type") && p["type"].is_string()
                                      ? p["type"].get<std::string>() : "cloud";
         if (name.empty() || name.size() > 64 || type != "cloud") {
-            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            err = kProviderErr;
             return false;
         }
         const std::string low = vcws::ascii_lower(name);
         if (std::find(seen.begin(), seen.end(), low) != seen.end()) {
-            err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+            err = kProviderErr;
             return false;
         }
         seen.push_back(low);
@@ -208,7 +219,7 @@ static bool validate_providers(const json& in, const json& existing, json& clean
         if (p.contains("models") && p["models"].is_array())
             for (const auto& m : p["models"]) {
                 if (!m.is_object() || models.size() >= 32) {
-                    err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+                    err = kProviderErr;
                     return false;
                 }
                 const std::string mid = m.contains("id") && m["id"].is_string()
@@ -218,7 +229,7 @@ static bool validate_providers(const json& in, const json& existing, json& clean
                 const std::string mlow = vcws::ascii_lower(mid);
                 if (mid.empty() || mid.size() > 64 || ctx < 1024 ||
                     std::find(mseen.begin(), mseen.end(), mlow) != mseen.end()) {
-                    err = "供应商配置非法（名称/模型 ID 重复或为空、上下文 ≥1024、超 32 个等）";
+                    err = kProviderErr;
                     return false;
                 }
                 mseen.push_back(mlow);
@@ -348,15 +359,12 @@ http::Response WebuiPlugin::api_config_save_(const http::Request& req) {
     }
     // NOTE: mcp/plugins 任一变化即发 McpReload——发射必须排在 persist_config_()
     // 之后：mcp 插件 reload 读磁盘文件，poster 排水抢在落盘前会读到旧清单
-    //（踩过：只置位不发射热重载从未生效；抢跑则原样重启旧 server 组）。
-    if (mcp_changed || plugins_changed) {
-        mcp_reload_pending_ = true;
-    }
+    //（踩过: 只置位不发射热重载从未生效；抢跑则原样重启旧 server 组）。
+    const bool need_reload = mcp_changed || plugins_changed;
     if (!persist_config_())
         return respond_err_(conn, "数据目录不可写：" + config_path_().string() +
                                       " —— 重启宿主时加 -DataHome 参数换个位置");
-    if (mcp_reload_pending_) {
-        mcp_reload_pending_ = false;
+    if (need_reload) {
         nostos::kit::poster_submit(poster_, [this] {
             const vc_api::McpReload r{};
             host_.emit(vc_api::mcp_reload, &r);   // poster 排水后宿主线程发射

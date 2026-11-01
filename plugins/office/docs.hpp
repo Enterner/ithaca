@@ -24,7 +24,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -36,7 +35,7 @@
 #endif
 #include <windows.h>
 #include <objbase.h>
-// IFilter 接口与 STAT_CHUNK 取官方头——手抄 ABI 镜像必然漂移（踩过：STAT_CHUNK
+// IFilter 接口与 STAT_CHUNK 取官方头——手抄 ABI 镜像必然漂移（踩过: STAT_CHUNK
 // 的 attribute 是 FULLPROPSPEC，x64 真实 64 字节，按 GUID 的 16 字节镜像只有 40
 // ⇒ 第三方过滤器按真实布局写满 64、缓冲 40，每次 GetChunk 栈越界写 24 字节；
 // 文本仍能抽出来是因为 flags 偏移 8 碰巧对齐，栈帧损坏被产物正确性掩盖）。
@@ -368,7 +367,7 @@ inline bool extract_ooxml(const unsigned char* p, size_t n, const std::string& k
 
 // ---- IFilter（pdf/doc/ppt/xls 等注册格式）------------------------------------
 // 接口与 STAT_CHUNK 均来自官方 <filter.h>（SDK um/ 下仍在）。语义值同头内
-// FILTER_E_END_OF_CHUNKS / FILTER_S_LAST_CHUNK / FILTER_S_LAST_TEXT，不再就地声明。
+// FILTER_E_END_OF_CHUNKS / FILTER_S_LAST_CHUNK / FILTER_S_LAST_TEXT。
 inline bool extract_ifilter(const std::wstring& path, const std::string& ext, DocText& d) {
     // COM 现场初始化（宿主线程默认无 COM）；线程已在别的模式时沿用（RPC_E_CHANGED_MODE）
     const long hr_init = CoInitializeEx(nullptr, 0x2 /*COINIT_APARTMENTTHREADED*/);

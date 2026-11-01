@@ -112,8 +112,7 @@ public:
         const char* env = std::getenv("ITHACA_WORKSPACE_DIR");
         std::atomic_store(&jail_, std::make_shared<nostos::kit::PathJail>(
             env != nullptr && *env != '\0' ? env : "."));
-        // 权限模式默认值：webui 事件可热切；ITHACA_RUN_ALLOW
-        // 白名单机制已移除（把关责任上移到权限模式与沙箱）
+        // 权限模式默认值：webui 事件可热切；把关责任在权限模式与沙箱
         mode_ = vc_api::normalize_permission_mode(
             std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
@@ -156,8 +155,7 @@ public:
             host.log(4, "ithaca.runner: 领取 poster 失败（宿主 ABI 过旧或未实现）");
             return NOSTOS_ERR_FAILED;
         }
-        const vc_api::ToolRegister note{vcrun::kToolSvcName};
-        host_.emit(vc_api::tool_register, &note);
+        vcplugin::notify_tool_register(host_, vcrun::kToolSvcName);
         host.log(2, "ithaca.runner: 就绪（权限模式 " + mode_ + "，jail 根 = " +
                         nostos::kit::win::wide_to_utf8(
                             std::atomic_load(&jail_)->root().c_str()) + "）");
@@ -196,7 +194,6 @@ private:
         bool eof[2] = {false, false};  // 读取端 EOF（[0]=stdout [1]=stderr，mu 保护）
         std::atomic<std::size_t> bytes{0};
         std::atomic<bool> truncated{false};
-        bool truncation_announced = false;
     };
 
     // ---- ToolTable 槽位 ----------------------------------------------------------
@@ -322,7 +319,7 @@ private:
             bash_stdin = child->take_stdin();
         } else {
             // Windows 没有 shell 层：CreateProcess 直启可执行文件，&&/|/> 重定向
-            // 与 echo/dir 等 cmd 内建一律不解析（踩过："python -c … && echo b"
+            // 与 echo/dir 等 cmd 内建一律不解析（踩过: "python -c … && echo b"
             // 的 && 被 python 当 argv 吞掉）——cmd 路径统一经 /d /s /c 包装
             const std::string shell_cmd = "cmd /d /s /c \"" + cmd + "\"";
             if (!vcrun::spawn(nostos::kit::win::utf8_to_wide(shell_cmd), cwd_wide, *child,
@@ -359,7 +356,7 @@ private:
 
         const auto reader = [this, entry](HANDLE h, int stream) {
             // 读取线程：只读 + 缓冲（mu 保护）——poster 投递集中在 poster 线程，
-            // 消除「两读取线程并发过 poster 边界」的投递竞态（踩过：并发即崩）。
+            // 消除「两读取线程并发过 poster 边界」的投递竞态（踩过: 并发即崩）。
             // 读循环拼装走 kit::read_lines（LineSplitter 在其内）
             nostos::kit::read_lines(h, [entry, stream](const std::string& line) {
                 std::lock_guard<std::mutex> lock(entry->mu);
@@ -450,7 +447,7 @@ private:
             // 未读数据（echo 后即退是最常见形态），读取端 EOF 才是"输出终止"的
             // 可靠信号；进程退出只作兜底：流永不 EOF（孙进程继承句柄/无读取线程）
             // 时经 2s 宽限再收口。两路都到齐才读退出码，否则 GetExitCodeProcess
-            // 会把 STILL_ACTIVE(259) 当真退出码（踩过：单 bool 任一流 EOF 即收口）。
+            // 会把 STILL_ACTIVE(259) 当真退出码（踩过: 单 bool 任一流 EOF 即收口）。
             if (both_eof && take.empty()) {
                 if (entry->rd_out.joinable()) entry->rd_out.join();
                 if (entry->rd_err.joinable()) entry->rd_err.join();

@@ -7,7 +7,6 @@
 //
 // 上限：单条目解压 kEntryCap——同时是 zip 爆炸（decompression bomb）的解压护栏。
 
-#include <cstdlib>
 #include <string>
 #include <vector>
 

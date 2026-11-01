@@ -14,7 +14,7 @@ const selPath = ref('')         // 当前点开的文件（查看器打开时高
 
 const emit = defineEmits(['open-file'])
 
-function slotOf(path) {
+function slotOf() {
   return { children: [], truncated: false, error: '', loading: false }
 }
 
@@ -127,7 +127,7 @@ function iconFor(name) {
   return { c: 'c-dim', s: ext === 'txt' || ext === 'md' ? ICON_TEXT : ICON_FILE }
 }
 
-defineExpose({ refresh, rootCount: computed(() => root.children.length) })
+defineExpose({ rootCount: computed(() => root.children.length) })
 </script>
 
 <template>

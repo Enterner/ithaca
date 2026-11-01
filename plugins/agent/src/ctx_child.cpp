@@ -79,7 +79,7 @@ bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
         notice("子代理已派出 [" + type->name + "] " + desc);
     // 工作记录视图（落 transcript 不进上下文）：spawn 卡 + 主会话挂起条的数据源。
     // turn_id 带子的（与子 ctx 后续所有记录同号）——UI 按 turn_id 分组，带父号
-    // 会让 spawn 卡掉进别的组、右栏点开是空（踩过：重启撞号后新 spawn 被旧
+    // 会让 spawn 卡掉进别的组、右栏点开是空（踩过: 重启撞号后新 spawn 被旧
     // 完成卡标记为「已结束」）
     emit_subagent_(raw->turn_no_, 0, type->name.c_str(),
                    desc.empty() ? prompt : desc + "——" + trim(prompt, 120));

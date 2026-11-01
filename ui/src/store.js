@@ -3,11 +3,10 @@
 // state ← api ← records/sessions ← actions/boot（无环；X 转态容器在 state）。
 export { S, X } from './store/state'
 export { api, fetchConfig, fetchFsList, fetchFile, fetchMcpStatus, fetchAgentLog,
-         curProvModels, ctxSizeOf, fmtCtx, parseCtx, fetchProviderModels,
+         ctxSizeOf, fmtCtx, parseCtx, fetchProviderModels,
          fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT, isImageAtt, attUrl } from './store/api'
-export { render, liveStart, pushLocal } from './store/records'
+export { liveStart, pushLocal } from './store/records'
 export { openSession, newSession, delSession, renameSession, loadSessions } from './store/sessions'
 export { send, decide, setModel, setMode, saveConfig, pickFolder,
          loadPluginUi, savePluginVals, saveMcpVals } from './store/actions'
 export { boot } from './store/boot'
-export { mdHtml } from './md'

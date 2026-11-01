@@ -26,15 +26,14 @@
 #include "vc_events.hpp"
 
 #include "vcagent/context.hpp"  // vcagent 纯函数层：plan_compress/compact_result/recall_result/…
+#include "vcws/text.hpp"  // vcws::ascii_lower：错误文案折叠
 
 #include <nostos/abi/plugin.hpp>
 #include <nostos/kit/active_gate.hpp>
 
-#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <string>
 #include <vector>
 

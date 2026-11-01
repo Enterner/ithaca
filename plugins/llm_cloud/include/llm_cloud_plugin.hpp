@@ -123,8 +123,7 @@ private:
     //      里没有"当前请求"。 ----------------------------------------------------
 
     void run_request_(int rid, json messages, json tools, std::string model,
-                      std::string key_utf8, std::wstring key_wide,
-                      std::string base_utf8, std::wstring base_wide, std::uint64_t slot,
+                      std::wstring key_wide, std::wstring base_wide, std::uint64_t slot,
                       std::atomic<bool>& stopping, std::atomic<HINTERNET>& active);
     bool do_request_(int rid, const json& messages, const json& tools,
                      const std::string& model, const std::wstring& key_wide,

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
 # ── shell/ithaca —— ithaca 桌面壳（Win32 + WebView2 内嵌 webui）────────────
-# 独立构建：cd shell && cmake --preset debug && cmake --build --preset debug
-# 产物：shell/build-<preset>/<config>/vc_app.exe（双击 = 开窗；宿主由壳经
-#       vcweb.ps1 -NoBrowser 托管，附着已有实例时退出不动宿主）
+# 独立构建：cmake -S shell -B shell/build（本目录无 presets；顶层构建走仓根
+#           CMakePresets，产物落 build/<preset>/bin/）
+# 宿主由壳 SpawnInstance 经 cmd 链拉起 ithaca_host.exe（附着已有实例时退出不动宿主）
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(ithaca LANGUAGES CXX)
     set(CMAKE_CXX_STANDARD 20)

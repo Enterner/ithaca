@@ -6,7 +6,6 @@
 
 #include <nostos/kit/win.hpp>  // utf8_to_wide（turn 剧本文件路径）
 
-#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 
@@ -89,19 +88,17 @@ void MockPlugin::load_script_() {
     }
 }
 
-bool MockPlugin::delay_env_() {
+void MockPlugin::delay_env_() {
     if (const char* v = std::getenv("ITHACA_MOCK_DELAY_MS")) {
         const int n = std::atoi(v);
         delay_ms_ = n < 0 ? 0 : (n > 2000 ? 2000 : n);
-        return true;
     }
-    return false;
 }
 
 nostos_status MockPlugin::set_model_thunk(void* self, const char* model) noexcept {
     auto* p = static_cast<MockPlugin*>(self);
-    p->model_name_ = (model != nullptr ? model : "");
-    p->host_.log(2, "ithaca.llm.mock: 模型热切为 " + p->model_name_ + "（回放不变）");
+    p->host_.log(2, "ithaca.llm.mock: 模型热切为 " +
+                        std::string(model != nullptr ? model : "") + "（回放不变）");
     return NOSTOS_OK;
 }
 

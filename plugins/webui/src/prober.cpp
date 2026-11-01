@@ -4,11 +4,14 @@
 
 #include "webui_plugin.hpp"
 
+#include <chrono>  // std::chrono：探测间隔时长
+#include <nostos/kit/win.hpp>  // sleep_interruptible：探测间隔
 #include <nostos/kit/win_http.hpp>  // 一发 HTTP 探测小件（兄弟实例健康检查）
 
 #include <sstream>  // std::ostringstream：整读兄弟实例 index.json
 
 namespace vc_webui {
+namespace win = nostos::kit::win;  // 探测请求小件
 
 // manifest 行解析（探测线程与聚合端点共用一份口径）：剥 CR/尾空格 → 找 TAB 分隔
 // → 跳 ACTIVE 指示行。返回 false = 空行/格式行/ACTIVE（调用方 continue）
@@ -25,7 +28,7 @@ static bool parse_manifest_line(std::string& line, std::string& key, std::string
 
 // ---- 兄弟实例健康探测（多实例聚合 alive 真值）------------------------------
 // 背景：聚合端点原以 port 文件存在判 alive——宿主死亡后文件残留 ⇒ 死会话被标
-// 存活，前端整页导航到死端口（踩过：切换会话 nav FAIL 循环）。本线程每 2s 对
+// 存活，前端整页导航到死端口（踩过: 切换会话 nav FAIL 循环）。本线程每 2s 对
 // manifest 各 key 的实际端口做 /api/health 探测并缓存真值；聚合端点读缓存。
 // 仅壳模式（ITHACA_SHELL_MANIFEST 已设）运行。
 void WebuiPlugin::start_prober_() {

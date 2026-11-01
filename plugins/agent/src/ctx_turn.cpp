@@ -176,7 +176,7 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
     // 纯耗 token
     if (!subagent_) ensure_mission_();
     // 开轮即落盘（含本条 user 消息与任务卡）：持久化点若只在 turn 收口/压缩，
-    // 进程在 turn 中途死掉时本条请求从历史蒸发，重放与恢复都不留痕（踩过：
+    // 进程在 turn 中途死掉时本条请求从历史蒸发，重放与恢复都不留痕（踩过: 
     // 子代理在途挂死 → 重启 → 「继续」被接进上一个任务的语境）。恢复后未应答
     // 的 user 消息是合法序列，下轮正常续接。子代理不持久化（session_path_ 为空）
     persist_session_();
@@ -219,7 +219,7 @@ void AgentCtx::send_chat_impl() {
     }
     inflight_ = next_chat_seq();
     // 请求体组装（折叠重建与首发共用一份口径）：slot/subagent 必须随体——预检
-    // 折叠重建的请求同样要走槽路由（踩过：重建体丢 slot ⇒ 响应按槽单播无人接收，
+    // 折叠重建的请求同样要走槽路由（踩过: 重建体丢 slot ⇒ 响应按槽单播无人接收，
     // turn 静默悬挂且无任何错误痕迹；窗口小到预检折叠常触发时必现）
     const auto make_body = [&] {
         json b = {{"messages", messages_}, {"slot", turn_no_}};
@@ -242,10 +242,7 @@ void AgentCtx::send_chat_impl() {
                               ? true
                               : (session_threshold_ > 0 && est > session_threshold_);
         if (gate) {
-            vcagent::CompressPlan plan = ctx_tbl_ != nullptr && ctx_tbl_->plan != nullptr
-                                             ? acquire_plan_("precheck", est)
-                                             : vcagent::plan_compress(messages_,
-                                                                      !raw_dir_.empty());
+            vcagent::CompressPlan plan = plan_now_("precheck", est);
             if (plan.valid) {
                 pending_plan_ = plan;
                 replace_with_digest_(plan.digest, "发送前预检");
@@ -348,9 +345,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
         json dry_args = ctx.args;
         dry_args["dry_run"] = true;
         const std::string dry_out = exec(*b, ctx.tool, dry_args);
-        pending_.tool = ctx.full_name;
         pending_.index = dispatched_;
-        pending_.args = ctx.args;
         state_ = State::AwaitingDecision;
         // diff_text 只装行级 diff（原始结果 JSON 不可读——webui 截图自审抓到）；
         // 同文件多 op 已在 workspace 折叠，edits>1 时标注「N 处编辑」

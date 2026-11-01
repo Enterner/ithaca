@@ -141,21 +141,25 @@ void AgentCtx::revoke_interrupt_() {
 // 个位数）；锚点的吸收点在压缩折叠（replace_with_digest_ 切割前合成）。策略缝：
 // 表接管时卡内容由 mission 槽产出（null/失败 = 本轮不建档）；产出须沿用
 // is_mission 标记形态（契约注明），原位替换靠标记识别。
+bool AgentCtx::mission_from_slot_or_builtin_(json& out) {
+    if (ctx_tbl_ == nullptr || ctx_tbl_->mission == nullptr) {
+        out = vcagent::build_mission(messages_);
+        return true;
+    }
+    const std::string msgs = messages_.dump();
+    const char* o = nullptr;
+    if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &o) != NOSTOS_OK || o == nullptr)
+        return false;
+    out = json::parse(o, nullptr, /*allow_exceptions=*/false);
+    return out.is_object();
+}
+
 void AgentCtx::ensure_mission_() {
     for (std::size_t k = 0; k < messages_.size(); ++k)
         if (vcagent::is_mission(messages_[k])) return;
     json mission;
-    if (ctx_tbl_ != nullptr && ctx_tbl_->mission != nullptr) {
-        const std::string msgs = messages_.dump();
-        const char* out = nullptr;
-        if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &out) != NOSTOS_OK ||
-            out == nullptr)
-            return;   // 表接管：null/失败 = 本轮不动（策略的显式决策）
-        mission = json::parse(out, nullptr, /*allow_exceptions=*/false);
-        if (!mission.is_object()) return;
-    } else {
-        mission = vcagent::build_mission(messages_);
-    }
+    if (!mission_from_slot_or_builtin_(mission))
+        return;   // 表接管：null/失败/非对象 = 本轮不动（策略的显式决策）
     const std::size_t at = (!messages_.empty() && messages_[0].is_object() &&
                             messages_[0].value("role", "") == "system") ? 1 : 0;
     messages_.insert(messages_.begin() + static_cast<long>(at), mission);

@@ -12,7 +12,7 @@ import { MOCK_FULL, CLOUD_FULL } from "./plugins.mjs";
 const has = (name) => process.argv.includes(name);
 
 // 启动前清场：隐藏窗口启动的宿主不可见、易残留——抢 8790 端口、并发写同一
-// state 文件（踩过：残留宿主让 dev 起不来/状态互踩）
+// state 文件（踩过: 残留宿主让 dev 起不来/状态互踩）
 spawnSync("taskkill", ["/F", "/IM", "ithaca_host.exe"], { stdio: "ignore" });
 
 const preset = flag("--preset") ?? "debug";
@@ -52,7 +52,7 @@ if (fs.existsSync(cfgPath)) {
     console.log(`已创建默认配置 ${cfgPath} —— 首次使用请在网页 ⚙ 设置里填写 DeepSeek Key`);
 }
 
-// 宿主级默认工作区：必须可写。空/不存在 ⇒ 数据目录下的 workspace（踩过：
+// 宿主级默认工作区：必须可写。空/不存在 ⇒ 数据目录下的 workspace（踩过: 
 // 从 system32 启动 ⇒ jail 回退到启动目录 ⇒ agent 写文件被 Windows 拒绝、整批回滚）
 if (!cfg.workspace || !fs.existsSync(cfg.workspace)) {
     cfg.workspace = path.join(dataHome, "workspace");
@@ -80,7 +80,6 @@ env.ITHACA_LLM_ACTIVE = provider;
 cfg.provider = provider;
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
-// 两个 provider 同时装载：热切 = 撤旧发布 + 发新发布（ithaca.llm.set_active，webui 设置里即时切换）
 // 供应商模式决定装载（产品拍板：mock 仅测试，两 llm 插件互斥——热切竞态随之消失）
 const exe = hostExe(preset);
 const plugins = pluginDlls(provider === "mock" ? MOCK_FULL : CLOUD_FULL, preset);

@@ -1,7 +1,7 @@
 <script setup>
 // 右栏 · 代码查看器：Monaco 只读展示 + 编辑对照。
 // 查看态：现盘内容（App.vue 经 /api/fs/read 拉好放进 S.viewer，本组件不发请求）。
-// 对照态按新鲜度分档（§7.1）：reverseApply 校验通过（最新折叠 diff 的 after = 现盘）
+// 对照态按新鲜度分档：reverseApply 校验通过（最新折叠 diff 的 after = 现盘）
 // ⇒ Monaco diff editor（inline 单栏）——与查看态同渲染器，语法高亮 + 自带词级加重；
 // 校验失败（文件已再次变更 / read 截断）⇒ 自绘管线兜底：fullTextDiff 展开 +
 // diffHtml 着色（与会话卡同管线；hunk 内容是历史事实，行号可能错位，note 警告）。
@@ -216,7 +216,7 @@ function showDiff() {
   const diffText = diffForPath(S.viewer?.path)
   if (!diffText) return
   const hunks = parseHunks(diffText)
-  // 新鲜度分档（§7.1）：diff 的 modified 侧对得上现盘 ⇒ 新鲜 → Monaco diff editor；
+  // 新鲜度分档：diff 的 modified 侧对得上现盘 ⇒ 新鲜 → Monaco diff editor；
   // 对不上 ⇒ 文件已再次变更，降级自绘管线（渲染仍继续——hunk 内容是历史事实）
   const r = reverseApply(S.viewer?.content || '', hunks)
   if (r.error) {

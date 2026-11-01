@@ -142,7 +142,7 @@ export async function saveConfig(providers, current) {
 
 /** 弹原生目录选择；结果经 SSE folder_picked 事件回页面。 */
 export async function pickFolder() {
-  // NOTE: 必须 POST——api() 无 body 会发 GET（踩过：hero 选目录按钮 404 静默无效）
+  // NOTE: 必须 POST——api() 无 body 会发 GET（踩过: hero 选目录按钮 404 静默无效）
   await api('/api/pick-folder', {})
 }
 

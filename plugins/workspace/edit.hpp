@@ -75,7 +75,7 @@ inline bool parse_ops(const nlohmann::json& doc, std::vector<EditOp>& out,
         }
         EditOp op;
         // op 键名兼容：真实 LLM 常写 "type":"write"（合理命名）而非 "op"——都接受
-        // （踩过：DeepSeek 首选 type 键 ⇒ 未知 op ⇒ 写盘失败整批回滚）
+        // （踩过: DeepSeek 首选 type 键 ⇒ 未知 op ⇒ 写盘失败整批回滚）
         const std::string kind = item.contains("op") && item["op"].is_string()
                                      ? item["op"].get<std::string>()
                                      : (item.contains("type") && item["type"].is_string()
@@ -177,11 +177,7 @@ inline bool validate_op(const EditOp& op, const std::string* current, FileEdit& 
     return true;
 }
 
-// 事务执行。同批对同文件的后续 op 看到前序 op 的 after（overlay）——LLM 分步编辑
-// 同一文件的常规形状。文件标识键 = wc_lower(edit.full)（jail 解析产物的小写折叠），
-// **不用模型原文**——路径写法变体（"./x"、大小写、反斜杠）指向同一真实文件，
-// 按原文做键会让编辑静默丢失。同文件多 op 折叠为一条
-// planned（before=批前原状，after=末次结果，ops_count 计数），diff 随之只出一张。
+// 中途失败的统一收口：已完成的 planned 随错误一并返回（apply_ops 出口用它）
 inline ApplyResult rejected_midway(ApplyResult r, std::vector<FileEdit> planned,
                                    int index, const std::string& path,
                                    const std::string& message) {
@@ -191,6 +187,11 @@ inline ApplyResult rejected_midway(ApplyResult r, std::vector<FileEdit> planned,
     return r;
 }
 
+// 事务执行。同批对同文件的后续 op 看到前序 op 的 after（overlay）——LLM 分步编辑
+// 同一文件的常规形状。文件标识键 = wc_lower(edit.full)（jail 解析产物的小写折叠），
+// **不用模型原文**——路径写法变体（"./x"、大小写、反斜杠）指向同一真实文件，
+// 按原文做键会让编辑静默丢失。同文件多 op 折叠为一条
+// planned（before=批前原状，after=末次结果，ops_count 计数），diff 随之只出一张。
 inline ApplyResult apply_ops(const nostos::kit::PathJail& jail, TextStore& store, const std::vector<EditOp>& ops,
                              bool dry_run) {
     ApplyResult r;
@@ -256,7 +257,7 @@ inline ApplyResult apply_ops(const nostos::kit::PathJail& jail, TextStore& store
         }
     }
 
-    // 校验结论：ok 必须由证据显式赋值 = errors.empty()（踩过：早退守卫把"没有
+    // 校验结论：ok 必须由证据显式赋值 = errors.empty()（踩过: 早退守卫把"没有
     // 错误"误判成失败——默认值 false 直接当结论用，写盘从未发生）。
     r.ok = r.errors.empty();
     if (!r.ok || dry_run) {

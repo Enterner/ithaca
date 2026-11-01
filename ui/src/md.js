@@ -9,7 +9,7 @@ export function mdHtml(text) {
 }
 export { esc }
 
-// 工具名 → 中文显示（对话流 ● 卡与右栏明细行共用）。read/list/search/run/
+// 工具名 → 中文显示（工具行与右栏明细行共用）。read/list/search/run/
 // recall/task 的摘要已是自含动词的中文短句——显示时不再叠英文原名（英文函数名
 // 是给模型的，不进对话流）；旧数据 brief 还是原始 JSON（以 { 开头）时回退原名。
 // apply/undo 及未知工具（mcp 等）保留「中文名/原名 + 摘要」。
@@ -63,7 +63,7 @@ function toolParts(tool, rawBrief, ws) {
   return { label: toolLabel(tool, brief, ws), brief }
 }
 
-/** 工具行 → 展示 HTML（对话流 ● 卡；内容全部经 esc——信任级别与正文一致）。
+/** 工具行 → 展示 HTML（工具行卡片；内容全部经 esc——信任级别与正文一致）。
  *  ws = 当前工作区根（根路径落真实目录用；旧记录重放同样受益）。 */
 export function toolLineHtml(tool, rawBrief, ws) {
   const { label, brief } = toolParts(tool, rawBrief, ws)

@@ -18,12 +18,8 @@ inline constexpr const char* kModeSuggest = "suggest";
 inline constexpr const char* kModeAutoEdit = "auto-edit";
 inline constexpr const char* kModeFullAuto = "full-auto";
 
-inline bool valid_mode(const std::string& m) {
-    return m == kModeSuggest || m == kModeAutoEdit || m == kModeFullAuto;
-}
-inline std::string normalize_mode(const std::string& m) {
-    return valid_mode(m) ? m : std::string(kModeAutoEdit);
-}
+// 归一/校验用契约单源（vc_events.hpp 的 valid/normalize_permission_mode——三档
+// 与回落语义全仓只此一份），本头只留常量与确认清单映射。
 
 // 确认清单 = 模式映射（runner.run 的把关在 suggest/auto-edit 走提案卡；
 // full-auto 交给沙箱）

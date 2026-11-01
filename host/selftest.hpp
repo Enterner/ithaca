@@ -20,7 +20,7 @@ class SelftestHarness {
 public:
     // 订阅观测端 + 剧本落盘 + env 指路（host.start() 之前调用）。
     // NOTE: 订阅句柄必须活到裁决时刻——放调用方块内会在块尾析构＝立刻全部退订
-    // （踩过：selftest 的 done/proposal 全部收不到，20s 超时）。
+    // （踩过: selftest 的 done/proposal 全部收不到，20s 超时）。
     void install(nostos::Host<>& host, const std::filesystem::path& ws_dir);
     // 装载完成后调用：agent 在场 ⇒ 剧本 8 轮闭环（M3/M4/M5 全开）；仅 provider ⇒ 等 1 个 done
     void set_agent_present(bool v);

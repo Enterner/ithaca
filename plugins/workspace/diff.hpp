@@ -135,7 +135,7 @@ inline void middle_snake(MyersCtx& c, std::size_t alo, std::size_t ahi, std::siz
 
 // 中蛇分治：产出 [alo,ahi)×[blo,bhi) 的对齐 ops。sx/sy/ex/ey 是**子区间局部**坐标，
 // 发 op 时必须平移回中段绝对下标（base + alo / base + blo）——漏平移时顶层碰巧正确、
-// 嵌套递归内容全错位（踩过：上下文行显示文件开头的行）。op 顺序严格单调。
+// 嵌套递归内容全错位（踩过: 上下文行显示文件开头的行）。op 顺序严格单调。
 inline void myers_rec(MyersCtx& c, std::size_t alo, std::size_t ahi, std::size_t blo,
                       std::size_t bhi) {
     const std::size_t n = ahi - alo, m = bhi - blo;

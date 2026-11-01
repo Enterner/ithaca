@@ -47,10 +47,8 @@ AgentCtx& AgentPlugin::ensure_ctx_(const std::string& id) {
         //（可选能力不阻激活）
         c.tool_svcs_ = {"ithaca.tool.workspace", "ithaca.tool.office",
                         "ithaca.tool.mcp", "ithaca.tool.runner"};
-    // 权限模式：确认清单由模式映射（见 rebuild_confirm_）；ITHACA_PERMISSION_MODE
-    // 设默认，vc.permission.mode 事件热切。（旧 ITHACA_AGENT_CONFIRM_TOOLS
-    // 静态确认清单机制随白名单一并移除）
-    // 权限模式：env 缺省，事件活值优先（boot 回放先于首槽的时序兜底）
+    // 权限模式：确认清单由模式映射（见 rebuild_confirm_）——env 设默认，事件
+    // 活值优先（boot 回放先于首槽的时序兜底）
     c.mode_ = vc_api::normalize_permission_mode(
         !mode_live_.empty() ? mode_live_.c_str()
                             : (std::getenv("ITHACA_PERMISSION_MODE") != nullptr

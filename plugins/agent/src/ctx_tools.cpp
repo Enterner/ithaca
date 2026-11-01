@@ -30,7 +30,7 @@ bool AgentCtx::discover_tools() {
             notice("工具自述无效，已跳过: " + svc_name + "（" + err + "）");
             continue;
         }
-        bound_.push_back(Bound{nostos::svc_id_of(svc_name), svc_name, table});
+        bound_.push_back(Bound{svc_name, table});
     }
     // 内置工具：context.recall（外置存储回查；仅 raw 外置可用时暴露——策略表
     // 接管时按其 capabilities 自述开合，外置目录/回查口径随策略）
@@ -172,10 +172,10 @@ void AgentCtx::emit_tool_result(const std::string& name, bool ok, const std::str
     host_.emit(vc_api::tool_result, &e);
 }
 
-void AgentCtx::notice(const std::string& text, int sys) {
+void AgentCtx::notice(const std::string& text) {
     if (subagent_) return;  // 子代理静默：过程通告不进父会话对话流
     nostos::kit::Scratch scratch;
-    const vc_api::Notice e{2, scratch.hold(text), sys, nullptr, 0, 0,
+    const vc_api::Notice e{2, scratch.hold(text), 0, nullptr, 0, 0,
                            scratch.hold(session_id_)};
     host_.emit(vc_api::notice, &e);
 }
@@ -204,7 +204,6 @@ static std::string human_path(const std::string& p, const std::string& root) {
     return p.rfind("./", 0) == 0 ? p.substr(2) : p;
 }
 
-// apply 参数 → op 清单："试算 write a.txt；replace b.txt ×2"（解析不出 ⇒ 空，回退）
 // 调用参数 → 人话摘要（解析不出 ⇒ 空，回退原 JSON 截断）
 std::string AgentCtx::summarize_call(const std::string& tool, const json& args,
                                      const std::string& ws_root) {
@@ -320,7 +319,7 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
     }
     if (tool == "run") {
         // 异步 ack（{"ok":true,"run_id":N}）不是执行结果：显示 "exit -1" 是纯误导
-        // （踩过：用户把 ack 当失败）。真正的退出码随 run.exit 归流后另行回卡
+        // （踩过: 用户把 ack 当失败）。真正的退出码随 run.exit 归流后另行回卡
         if (const int rid = r.value("run_id", 0); rid > 0 && !r.contains("exit_code"))
             return "已转后台（run#" + std::to_string(rid) + "）";
         int code = -1;

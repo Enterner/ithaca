@@ -8,6 +8,7 @@
 // 渲染成本两面收口：md/diff 逐记录缓存（收口记录不可变，算一次挂对象上）+
 // 尾部窗口渐进挂载（历史窗口段——切会话/重放只挂最近一段，触顶扩窗补更早历史）。
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { trackPress, pressed } from '../press'
 import { S, isImageAtt, attUrl, api, pushLocal } from '../store'
 import { mdHtml, esc, toolLineHtml, toolName } from '../md'
 import { diffHtml, stripHeads } from '../diff'
@@ -117,14 +118,14 @@ function resRow(rec) {
   if (rec.type !== 'tool_call') return null
   const r = rec._result
   const nOut = rec._runs ? rec._runs.reduce((n, b) => n + b.lines.length, 0) : 0
-  if (!r) return nOut > 0 ? { text: nOut + ' 行输出', out: true } : null   // 运行中已有输出
+  if (!r) return nOut > 0 ? { text: nOut + ' 行输出' } : null   // 运行中已有输出
   if (r.exit !== undefined && r.exit !== null)
     // 失败：有输出只标 ✗（错误文本在自动展开的输出块里）；静默失败留 exit N
     //——输出块为空，退出码是唯一线索。成功同判：输出行数才值得占位
-    return r.ok ? (nOut > 0 ? { text: nOut + ' 行输出', out: true } : null)
+    return r.ok ? (nOut > 0 ? { text: nOut + ' 行输出' } : null)
                 : (nOut > 0 ? { text: '✗', out: true, warn: true }
                             : { text: '✗ exit ' + r.exit, warn: true })
-  return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok, out: false } : null
+  return r.brief ? { text: (r.ok ? '' : '✗ ') + r.brief, warn: !r.ok } : null
 }
 // 每渲染周期每条可见调用卡只算一次结果行（模板里多处取用——直接调 resRow 会对
 // rec._runs 反复 reduce；Map 按 record 对象取，O(1)）。只扫窗口内记录：组件任何
@@ -151,13 +152,7 @@ function runOutText(rec) {
 // ---- 折叠行的选字豁免（仅汇总卡内编辑行用——流内行型已收编 FoldBlock）--------
 // 在可折叠行上拖选文字松开，click 仍会触发折叠切换——mousedown 记起点、
 // click 比位移，>5px 视为选择操作不放行
-let pressPos = null
-function trackPress(e) { pressPos = { x: e.clientX, y: e.clientY } }
-function pressed(e) {
-  if (!pressPos) return true
-  const dx = e.clientX - pressPos.x, dy = e.clientY - pressPos.y
-  return dx * dx + dy * dy <= 25
-}
+const pressPos = { x: null, y: null }   // 拖选豁免共用件（press.js）
 
 // 提案卡：只负责展示（diff + 逐文件勾选）；裁决走输入栏上方的决策坞（ZCode 式）。
 // 勾选/裁决标记挂在记录对象上（store render 时初始化），重放与实时共用。
@@ -273,8 +268,8 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               </span>
             </div>
             <template v-for="f in rec.files" :key="f.path">
-              <div class="erow" :class="{ open: f.open }" @mousedown="trackPress"
-                   @click="pressed($event) && (f.open = !f.open)">
+              <div class="erow" :class="{ open: f.open }" @mousedown="trackPress($event, pressPos)"
+                   @click="pressed($event, pressPos) && (f.open = !f.open)">
                 <Chev :open="!!f.open" /><span class="p">{{ f.path }}</span>
                 <span v-if="f.isNew" class="ntag">新文件</span>
                 <span class="st">
@@ -331,7 +326,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
           <!-- 挂起等待动态行（单条、核销即撤）：与系统通告同款居中弱化 -->
           <div v-else-if="rec._wait" class="sysline">⏳ {{ rec.text }}</div>
           <!-- 系统通告（sys=1）居中分隔；「模型已切换」「权限模式 = 」通告隐藏
-              （选择器自身即反馈，写流属刷屏噪音——踩过：反复切换连发刷屏）；
+              （选择器自身即反馈，写流属刷屏噪音——踩过: 反复切换连发刷屏）；
               「后台任务已启动」不落流（调用行已示，records 层已滤） -->
           <div v-else-if="rec.sys" class="sysline">── {{ rec.text }} ──</div>
           <div v-else-if="/^(模型已切换|权限模式 = |宿主停止|没有进行中的 turn|子代理已派出|子代理完成（|子代理失败: )/.test(rec.text || '')" style="display:none"></div>

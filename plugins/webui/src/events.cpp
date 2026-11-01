@@ -15,34 +15,29 @@ namespace vc_webui {
 
 void WebuiPlugin::subscribe_() {
     // 事件面与 tui 同构；raw 订阅形态（agent/tui 同款）：on(event_id, fn(const void*))
-    // workspace 工具表后到接入的兜底：activate 时解析不到（装载顺序在 webui
-    // 之后）就等它 tool_register 时再解析——回调在宿主线程上执行，TLS 桥在。
+    // 工具表后到接入的兜底（workspace / office 共一份订阅）：activate 时解析
+    // 不到（装载顺序在 webui 之后）就等 tool_register 时再解析——回调在宿主
+    // 线程上执行，TLS 桥在。可选项，缺席静默：workspace 缺席 fs 端点回工具
+    // 不可用；office 缺席 fs/read 分流回退 workspace，由其守卫点名 office.read
     subs_.push_back(host_.on(vc_api::tool_register, [this](const void* p) {
         const auto* e = static_cast<const vc_api::ToolRegister*>(p);
-        if (e->svc_name == nullptr ||
-            std::string_view(e->svc_name) != vcws::kToolSvcName || tools_ != nullptr)
-            return;
-        const vc_api::ToolTable* t = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-        tools_ = t;   // 读写全在宿主线程（/api/fs/* 已迁闭包）
-        if (t != nullptr) {
-            host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
-            backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
+        if (e->svc_name == nullptr) return;
+        const std::string_view svc(e->svc_name);
+        if (svc == vcws::kToolSvcName && tools_ == nullptr) {
+            const vc_api::ToolTable* t = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
+            tools_ = t;   // 读写全在宿主线程（/api/fs/* 已迁闭包）
+            if (t != nullptr) {
+                host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
+                backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
+            }
+        } else if (svc == vcoffice::kToolSvcName && office_tools_ == nullptr) {
+            office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
+            if (office_tools_ != nullptr)
+                host_.log(2, "ithaca.webui: office 工具表已接入（后到）");
         }
     }));
-    // office 工具表后到接入的兜底（/api/fs/read 文档分流的数据源）：同 workspace
-    // 款——可选项，缺席静默（分流回退 workspace，由其守卫点名 office.read）
-    subs_.push_back(host_.on(vc_api::tool_register, [this](const void* p) {
-        const auto* e = static_cast<const vc_api::ToolRegister*>(p);
-        if (e->svc_name == nullptr ||
-            std::string_view(e->svc_name) != vcoffice::kToolSvcName ||
-            office_tools_ != nullptr)
-            return;
-        office_tools_ = host_.service<vc_api::ToolTable>(vcoffice::kToolSvc);
-        if (office_tools_ != nullptr)
-            host_.log(2, "ithaca.webui: office 工具表已接入（后到）");
-    }));
     // LLM 事件只订阅广播（slot=0，主会话）：子会话事件按槽单播、本插件不订阅
-    // ——不可见性由 slot 路由结构性保证（迁移前靠载荷标志过滤，已随 slot 迁移退役）
+    // ——不可见性由 slot 路由结构性保证，本插件无需过滤
     subs_.push_back(host_.on(vc_api::llm_delta, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);
         if (e->text == nullptr) return;
@@ -232,7 +227,6 @@ void WebuiPlugin::subscribe_() {
         if (e->plugin == nullptr || e->schema_json == nullptr) return;
         json schema = json::parse(e->schema_json, nullptr, false);
         if (!schema.is_array()) return;
-        // 载荷三串均调用期有效——立即拷贝。ui_registry_ 全在宿主线程触碰，无锁。
         ui_registry_[e->plugin] = {
             {"label", e->label != nullptr ? std::string(e->label) : std::string(e->plugin)},
             {"schema", std::move(schema)}};

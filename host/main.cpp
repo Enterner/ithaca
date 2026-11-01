@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
 #if defined(_WIN32)
     // Per-Monitor-V2 DPI 感知（与 shell 同款）：本进程弹的原生对话框（webui 选工作
     // 文件夹）按物理像素渲染——缺省时 DWM 位图拉伸，既糊又有渲染不全的首帧
-    // （踩过：对话框首帧灰底白块）。宿主本身无窗口，对其他行为零影响。
+    // （踩过: 对话框首帧灰底白块）。宿主本身无窗口，对其他行为零影响。
     if (HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
         using SetDpiCtxFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
         const auto set_dpi = reinterpret_cast<SetDpiCtxFn>(
@@ -146,7 +146,7 @@ int main(int argc, char** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
     // Debug CRT 断言改道 stderr（断言文本 + 源文件行号进 host.log 后即弃进程）：
-    // 默认弹窗形态在多实例/连续断言时会叠出一排模态框卡死无人值守链路（实测踩过：
+    // 默认弹窗形态在多实例/连续断言时会叠出一排模态框卡死无人值守链路（实测踩过: 
     // 工具轮次连发断言 → 8 个弹窗叠罗汉，宿主假死）。Debug 构建专属，Release 无 CRT
     // 断言路径不受影响。
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -159,8 +159,12 @@ int main(int argc, char** argv) {
     signal(SIGABRT, on_sigabrt);  // abort 落点留痕（Debug 断言改道后仍可能直走 abort）
 #endif
 
+    // 用法文本单一出处（--profile 缺值与无插件两出口共用；签名一变改这里一处）
+    static const char* const kUsage =
+        "用法：ithaca_host [--profile <路径|名字>] [--selftest] [--seconds N] <插件路径...>\n";
+
     bool selftest = false;
-    int seconds = 0;  // 0 = 一直跑（Ctrl+C 退出）
+    int seconds = 0;
     std::string profile_arg;
     std::vector<std::string> paths;
     for (int i = 1; i < argc; ++i) {
@@ -172,8 +176,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--profile" && i + 1 < argc) {
             profile_arg = argv[++i];
         } else if (arg == "--profile") {  // 缺值：装配目标不明，立即拒绝
-            std::printf("用法：ithaca_host [--profile <路径|名字>] [--selftest] "
-                        "[--seconds N] <插件路径...>\n--profile 缺少值。\n");
+            std::printf("%s--profile 缺少值。\n", kUsage);
             return 2;
         } else {
             paths.emplace_back(arg);
@@ -194,9 +197,8 @@ int main(int argc, char** argv) {
         paths.insert(paths.begin(), prof.plugins.begin(), prof.plugins.end());
     }
     if (paths.empty()) {
-        std::printf("用法：ithaca_host [--profile <路径|名字>] [--selftest] "
-                    "[--seconds N] <插件路径...>\n"
-                    "例：ithacaweb.bat 会拼好全部插件产物路径再启动。\n");
+        std::printf("%s例：npm run dev（webui 开发链）或 scripts/启动宿主.cmd（桌面链）。\n",
+                    kUsage);
         return 2;
     }
 

@@ -7,6 +7,7 @@
 #include <nostos/kit/win.hpp>  // utf8_to_wide（env 与热切的宽字符转换）
 
 #include <cstdlib>
+#include <set>
 
 namespace vc_llm_cloud {
 
@@ -130,14 +131,11 @@ nostos_status CloudPlugin::info_thunk(void* self, const char** out_json) noexcep
     // 未知模型不报——消费方回落兜底阈值：虚报窗口（报大）会让压缩阈值越过真实
     // 窗口回到爆窗，宁缺勿滥。max_output_tokens 暂不报——各家输出上限口径未
     // 核实，待模型表补全。
-    static const std::map<std::string, long long> kContextWindows = {
-        {"deepseek-chat", vc_api::kDefaultContextWindow},
-        {"deepseek-reasoner", vc_api::kDefaultContextWindow},
-        {"deepseek-v4-pro", vc_api::kDefaultContextWindow},
-        {"deepseek-flash", vc_api::kDefaultContextWindow},
+    static const std::set<std::string> kKnownModels = {
+        "deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro", "deepseek-flash",
     };
-    if (const auto it = kContextWindows.find(p->model_); it != kContextWindows.end())
-        info["context_window"] = it->second;
+    if (kKnownModels.count(p->model_) != 0)
+        info["context_window"] = vc_api::kDefaultContextWindow;
     p->info_buf_ = info.dump();
     *out_json = p->info_buf_.c_str();
     return NOSTOS_OK;

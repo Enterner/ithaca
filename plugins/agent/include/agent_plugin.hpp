@@ -127,7 +127,7 @@ struct AgentCtx {
     // 事件/快照分组按 id 反查的根基）。request_id=0 保留给 agent 自发收口事件。
     // NOTE: 发号与恢复抬升必须共用同一个计数器——抬到旁路计数器等于没抬，
     // 恢复会话后新 turn 仍从 1 重来，raw/ 归档按 turn 命名即跨会话互相覆盖
-    // （踩过：adopt 曾抬在第二个 static 上，恢复即撞号）。
+    // （踩过: adopt 曾抬在第二个 static 上，恢复即撞号）。
     static std::atomic<int>& turn_seq() { static std::atomic<int> seq{0}; return seq; }
     static int next_turn_no() { return ++turn_seq(); }
     static int next_chat_seq() { static std::atomic<int> seq{0}; return ++seq; }
@@ -259,6 +259,14 @@ struct AgentCtx {
     // 策略内，action=none ⇒ 无效计划）；estimate ≥ 0 时并入 signals。无表返回
     // 无效计划——调用点自行走内置门槛 + plan_compress。
     vcagent::CompressPlan acquire_plan_(const char* reason, long long estimate = -1);
+    // 策略缝取计划单点：表接管走 plan 槽，无表回落内置 plan_compress（raw 开关随取）
+    vcagent::CompressPlan plan_now_(const char* reason, long long estimate = -1);
+    // 「LLM 摘要可得」单点：表接管看 summary_prompt 槽，内置路径恒有摘要指令
+    bool llm_summary_ready_() const;
+    // mission 槽调用收敛（replace_with_digest_ / ensure_mission_ 共用）：表接管 =
+    // dump messages → mission 槽 → parse object（null/失败/非对象 = false，处置
+    // 归调用方）；无表 = 内置 build_mission（恒 true）
+    bool mission_from_slot_or_builtin_(json& out);
     // 表接管的工具结果收编（槽失败 ⇒ 原文内联兜底，调用方保底通路）
     std::string strategy_ingest_(const std::string& full_name, const std::string& content,
                                  std::size_t seq);
@@ -294,7 +302,6 @@ struct AgentCtx {
     // ---- 工具桥（src/ctx_tools.cpp）-----------------------------------------------
 
     struct Bound {
-        std::uint64_t svc = 0;
         std::string svc_name;
         const vc_api::ToolTable* table = nullptr;
     };
@@ -310,7 +317,7 @@ struct AgentCtx {
     // 上下文）：spawn/delta/tool/收口各点共用此出口。turn_id 必须传子的——UI 按
     // turn_id 分组，spawn 发生在父 ctx，带父号会让记录掉错组（踩过）
     void emit_subagent_(int turn_id, int phase, const char* tool, const std::string& text);
-    void notice(const std::string& text, int sys = 0);
+    void notice(const std::string& text);
     // 带机器路由元数据的通告（Notice 尾部追加字段）：kind 标类别，前端状态机按
     // 它路由（text 仅供人读）；run_id/count 按 kind 语义填充
     void notice_meta(const std::string& text, std::string_view kind,
@@ -406,9 +413,7 @@ struct AgentCtx {
 
     // 等待批准的上下文
     struct Pending {
-        std::string tool;
         std::size_t index = 0;
-        json args;
     } pending_;
 
     // ---- 子代理（状态全部随 ctx 走，方法只触自身与 host_）----------------------

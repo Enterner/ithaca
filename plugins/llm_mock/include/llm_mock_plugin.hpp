@@ -39,16 +39,6 @@
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-
 namespace vc_llm_mock {
 
 using nlohmann::json;
@@ -80,7 +70,7 @@ private:
     // ---- 入口与配置面（src/plugin.cpp）------------------------------------------
 
     void load_script_();
-    bool delay_env_();
+    void delay_env_();
 
     // ---- 请求登记面（src/request.cpp）-------------------------------------------
 
@@ -112,7 +102,6 @@ private:
     std::map<int, MockWorker> requests_;  // request_id -> 在途请求（回放互不归属）
     std::mutex requests_mu_;
 
-    std::string model_name_ = "mock-1";
     std::atomic<std::size_t> turn_index_{0};  // 剧本游标（并发下原子推进）
     int delay_ms_ = 120;
     bool turns_mode_ = false;

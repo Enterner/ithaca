@@ -64,7 +64,7 @@ inline constexpr std::size_t kTaskInlineCap = 1024;
 
 // 消息文本提取：content 兼容两形态——字符串直取；多模态 parts 数组提取 text
 // 部件拼接（图片部件不可文本化，跳过）。压缩折叠/任务卡/摘要只消费文本，
-// content 为数组的 user 消息（多模态）经此容忍，不得 get<string> 直取（踩过：
+// content 为数组的 user 消息（多模态）经此容忍，不得 get<string> 直取（踩过: 
 // value("content") 对数组抛 type_error.302，turn 内部异常收口）。
 inline std::string message_text(const json& m) {
     const auto it = m.find("content");
@@ -207,7 +207,7 @@ inline std::string compact_result(const std::string& tool, const json& r,
     if (last == "read") {
         // "ok" 显式随包——折叠侧 segment_calls 以 ok 判定 outcome（批次五评测发现：
         // 紧凑形态缺 ok ⇒ 成功调用在折叠行恒标 failed）。ref_field 在对象内插入——
-        // 拼在闭合括号后是非法 JSON（踩过：折叠归档里 segment_calls 解析丢弃）
+        // 拼在闭合括号后是非法 JSON（踩过: 折叠归档里 segment_calls 解析丢弃）
         return "{\"ok\":true,\"tool\":\"read\",\"path\":" + json(r.value("path", "")).dump() +
                ",\"bytes\":" +
                std::to_string(r.contains("content") && r["content"].is_string()
@@ -787,7 +787,8 @@ inline CompressPlan plan_compress(const json& messages, bool raw_enabled) {
 
 // ---- 阶段二：LLM 自总结折叠 --------
 // 摘要请求的 system 指令：锚点逐字 / ref 全量保留 / 结构固定——机械 digest 仍是
-// 兜底产物，摘要只是换掉折叠的实现，纪律（§一~四）不放松。
+// 兜底产物，摘要只是换掉折叠的实现，头注列的纪律（锚点逐字 / raw 外置 /
+// ref 索引）不放松。
 inline constexpr const char* kSummarySystem =
     "你是上下文压缩摘要器。把给定的历史 turn 记录折叠为一份供后续对话使用的摘要。"
     "纪律：1) 文件路径、命令、参数值、符号名逐字节保留，不得改写或省略；"

@@ -58,7 +58,7 @@ inline json read_paged(std::string&& content, const std::string& norm, const jso
     // 行按 \n 切、行内 \r 原样保留——重组与原文逐字节一致，apply 的精确块
     // 匹配不受分页展示影响。行首带行号（cat -n 形态，编号 = 文件真实行号，
     // 随 offset 对齐）：模型标注行号直接引用，不再需要逐符号 search 定位
-    // （踩过：正文无行号 ⇒ 子代理为标行号发起几十次单符号搜索）
+    // （踩过: 正文无行号 ⇒ 子代理为标行号发起几十次单符号搜索）
     const bool empty = content.empty();
     const int total_lines =
         empty ? 0

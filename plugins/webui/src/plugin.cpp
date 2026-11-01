@@ -142,9 +142,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         providers.push_back(json{
             {"name", "Mock 本地回放"}, {"type", "mock"}, {"builtin", true},
             {"enabled", was_mock},
-            {"models", json::array({json{{"id", "mock-model"},
-                                         {"context", vc_api::kDefaultContextWindow},
-                                         {"enabled", true}}})}});
+            {"models", default_mock_models()}});
         providers.push_back(json{
             {"name", "DeepSeek 官方"}, {"type", "cloud"},
             {"base_url", config_.value("base_url", vc_api::kDefaultCloudBaseUrl)},
@@ -160,22 +158,19 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     // 异常、页面静默卡死。非数组一律按类型回种默认列表（踩过）。
     for (auto& p : config_["providers"]) {
         if (!p.is_object() || p["models"].is_array()) continue;
-        if (p.value("type", "cloud") == "mock")
-            p["models"] = json::array(
-                {json{{"id", "mock-model"},
-                      {"context", vc_api::kDefaultContextWindow}, {"enabled", true}}});
+        if (p.value("type", "cloud") == "mock") p["models"] = default_mock_models();
         else
             p["models"] = default_cloud_models();
     }
     // 启动对齐：当前使用供应商的 key/base_url/窗口 热切给 llm 插件（poster 异步）。
     // NOTE: 载荷以 llm_mode_ 为准（mock 模式恒发 mock）——config 的
     // current_provider 可能是另一模式的（共享 config 跨模式留存），对齐成
-    // 另一模式会把本模式的插件休眠掉（踩过：mock 宿主启动即被对齐成 cloud
+    // 另一模式会把本模式的插件休眠掉（踩过: mock 宿主启动即被对齐成 cloud
     // 休眠 ⇒ LLM 不可用）
     post_llm_set_active_();
     // 直连/便携启动（桌面壳直发宿主，不经启动器注入 env）：按 config 工作区
     // 热切——仅限 hero 态（无活跃会话）做引导；有活跃会话时工作区已随会话
-    // switch_to_ 矫正，此处再发会把会话工作区盖成 config 残留（踩过：启动恢复
+    // switch_to_ 矫正，此处再发会把会话工作区盖成 config 残留（踩过: 启动恢复
     // 会话后 config 旧工作区反向覆盖）。空 = hero 引导（首次 assign 再切）。
     if (session_.empty() && std::getenv("ITHACA_WORKSPACE_DIR") == nullptr &&
         config_.value("workspace", "") != "") {
@@ -300,37 +295,26 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         r.content_type = "text/event-stream";
         return r;
     }
-    if (m == "GET" && t == "/api/health") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp({{"ok", true}, {"session", session_}}));
-        });
-    }
-    if (m == "GET" && t == "/api/config") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(config_public_()));
-        });
-    }
+    if (m == "GET" && t == "/api/health")
+        return defer_json_(req, [this] { return json{{"ok", true}, {"session", session_}}; });
+    if (m == "GET" && t == "/api/config")
+        return defer_json_(req, [this] { return config_public_(); });
     if (m == "POST" && t == "/api/config") return api_config_save_(req);
-    if (m == "GET" && t.rfind("/api/transcript", 0) == 0) {
+    if (m == "GET" && t == "/api/transcript") {
         const long after = std::atol(req.query("after").c_str());
-        return defer_(req, [this, conn = req.conn_id, after](std::uint64_t) {
+        return defer_json_(req, [this, after] {
             json arr = json::array();
             for (std::size_t i = static_cast<std::size_t>(after); i < records_.size(); ++i)
                 arr.push_back(records_[i]);
-            server_->respond(conn, json_resp({{"records", std::move(arr)},
-                                              {"next", records_.size()}}));
+            return json{{"records", std::move(arr)}, {"next", records_.size()}};
         });
     }
-    if (m == "GET" && t == "/api/session") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(session_meta_()));
+    if (m == "GET" && t == "/api/session")
+        return defer_json_(req, [this] { return session_meta_(); });
+    if (m == "GET" && t == "/api/agent-log")
+        return defer_json_(req, [this, turn = std::atoi(req.query("turn").c_str())] {
+            return api_agent_log_(turn);
         });
-    }
-    if (m == "GET" && t == "/api/agent-log") {
-        return defer_(req, [this, turn = std::atoi(req.query("turn").c_str())](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_agent_log_(turn)));
-        });
-    }
     if (m == "GET" && t == "/api/sessions") {
         return defer_(req, [this](std::uint64_t conn) {
             // 逐条补 working/pending（侧栏 ⟳/● 徽标的数据源）：按事件归属记账
@@ -357,44 +341,30 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/session/cmd") return api_session_cmd_(req);
     if (m == "POST" && t == "/api/model") return api_model_(req);
     if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req);
-    if (m == "GET" && t == "/api/permission-mode") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(
-                {{"mode", vc_api::normalize_permission_mode(
-                              config_.value("permission_mode", "auto-edit"))}}));
+    if (m == "GET" && t == "/api/permission-mode")
+        return defer_json_(req, [this] {
+            return json{{"mode", vc_api::normalize_permission_mode(
+                                      config_.value("permission_mode", "auto-edit"))}};
         });
-    }
     if (m == "POST" && t == "/api/permission-mode") return api_permission_mode_(req);
-    // NOTE: 传 req.target（含 query）——上面的 t 已剥 query（静态资源缓存穿透
-    // 用），带参 API 从原始 target 自行解析。踩过: 传剥完的 t ⇒ 参数永远解析
-    // 不到（transcript 的 after= 曾因此静默失效，靠前端按 id 去重掩住）
-    if (m == "GET" && t.rfind("/api/fs/list", 0) == 0) return api_fs_list_(req);
-    if (m == "GET" && t.rfind("/api/fs/read", 0) == 0) return api_fs_read_(req);
-    if (m == "GET" && t.rfind("/api/attachment", 0) == 0) return api_attachment_(req);
+    // 带参 GET 用整 req 传入——query 解析在 Request::query（单源），端点内部
+    // 自取。踩过: 历史上只传剥完的 t ⇒ 参数解析不到（transcript 的 after= 静默
+    // 失效，靠前端按 id 去重掩住）
+    if (m == "GET" && t == "/api/fs/list") return api_fs_list_(req);
+    if (m == "GET" && t == "/api/fs/read") return api_fs_read_(req);
+    if (m == "GET" && t == "/api/attachment") return api_attachment_(req);
     if (m == "POST" && t == "/api/pick-folder") return api_pick_folder_(req);
-    if (m == "GET" && t == "/api/mcp/status") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_mcp_status_()));
-        });
-    }
-    if (m == "GET" && t == "/api/context/breakdown") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_context_breakdown_()));
-        });
-    }
-    if (m == "GET" && t == "/api/ui/registry") {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_ui_registry_()));
-        });
-    }
-    if (m == "GET" && t.rfind("/api/shell/sessions", 0) == 0) {
-        return defer_(req, [this](std::uint64_t conn) {
-            server_->respond(conn, json_resp(api_shell_sessions_()));
-        });
-    }
+    if (m == "GET" && t == "/api/mcp/status")
+        return defer_json_(req, [this] { return api_mcp_status_(); });
+    if (m == "GET" && t == "/api/context/breakdown")
+        return defer_json_(req, [this] { return api_context_breakdown_(); });
+    if (m == "GET" && t == "/api/ui/registry")
+        return defer_json_(req, [this] { return api_ui_registry_(); });
+    if (m == "GET" && t == "/api/shell/sessions")
+        return defer_json_(req, [this] { return api_shell_sessions_(); });
     if (m == "POST" && t == "/api/shutdown") {
         // 不落「宿主停止」通告：每次关窗写一条，重启重放必现纯噪音
-        // （踩过：开关 10 次攒 10 条）。宿主线程闭包内退出——与原 select 线程
+        // （踩过: 开关 10 次攒 10 条）。宿主线程闭包内退出——与原 select 线程
         // exit 等价（每条记录/每 turn 已落盘，立即退出安全；响应不送达同旧形态）。
         return defer_(req, [](std::uint64_t) { std::exit(0); });
     }

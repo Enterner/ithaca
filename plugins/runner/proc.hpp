@@ -359,7 +359,7 @@ inline bool sandbox_lowbox_token(PSID sid, HANDLE& out, std::string& err) {
 
 // 沙箱拉起前的可执行文件定位：低盒令牌下 CreateProcessAsUserW 对裸名命令的
 // PATH 搜索不可靠（实测一律 ERROR_FILE_NOT_FOUND(2)——令牌视角与宿主环境差异，
-// 踩过：子代理在 full-auto 下 grep/wc/ls/python 全部起不来）。先在宿主环境里
+// 踩过: 子代理在 full-auto 下 grep/wc/ls/python 全部起不来）。先在宿主环境里
 // SearchPath 定位成全路径再拉起；定位失败给出点名错误（宿主 PATH 无此工具），
 // 不再是笼统的 CreateProcess(2)。返回空 = 定位失败（err 已写）。
 inline std::wstring sandbox_locate_exe(const std::wstring& cmdline, std::string& err) {
