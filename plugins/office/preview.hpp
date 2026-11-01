@@ -71,7 +71,8 @@ public:
         std::string root;      // 工作区根（UTF-8；缓存键盐）
         std::string norm;      // 相对路径（UTF-8；缓存键 + 错误信息）
         std::wstring full;     // 绝对路径（打开用）
-        std::string ext;       // 折叠小写扩展名（.docx/.doc/.pptx/.ppt/.pdf）
+        std::string ext;       // 折叠小写扩展名（.docx/.doc/.pptx/.ppt/.pdf/图片族）
+        std::uint64_t timeout_ms = 30000;   // 看门狗上限（按源文件大小分级，提交方算好）
         PreviewDoneFn done = nullptr;
         void* ud = nullptr;
     };
@@ -137,7 +138,6 @@ private:
 
     static constexpr std::size_t kQueueCap = 4;   // 队列上限（对齐 webui 挂起连接预算）
     static constexpr std::uintmax_t kCacheCapBytes = 200ull * 1024 * 1024;
-    static constexpr auto kConvertTimeout = std::chrono::seconds{30};
 
     // ---- 线程主体 ---------------------------------------------------------------
 
@@ -172,8 +172,9 @@ private:
         for (;;) {
             cv_.wait(lk, [&] { return stopping_ || flight_pid_ != 0; });
             if (stopping_ && flight_pid_ == 0) return;
-            // 在途：等收口（flight_pid_ 归零 = 完成）或超时/停机 ⇒ 杀进程解锁
-            cv_.wait_for(lk, kConvertTimeout,
+            // 在途：等收口（flight_pid_ 归零 = 完成）或超时/停机 ⇒ 杀进程解锁。
+            // 上限按在途 job 的大小分级（job.timeout_ms，见 submit 侧换算）
+            cv_.wait_for(lk, std::chrono::milliseconds{flight_timeout_ms_},
                          [&] { return stopping_ || flight_pid_ == 0; });
             if (flight_pid_ == 0) continue;
             const unsigned long pid = flight_pid_;
@@ -203,8 +204,12 @@ private:
                 complete_(job, {{"ok", true}, {"pdf", cache}});
                 return;   // 命中：无新文件入缓存，LRU 无须重算
             }
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                flight_timeout_ms_ = job.timeout_ms;   // 看门狗上限随 job 大小分级
+            }
             const std::string err = !com ? "预览线程 COM 初始化失败，无法转换"
-                                         : job.ext == ".pdf" ? pdf_passthrough_(job, cache)
+                                         : is_passthrough_(job.ext) ? passthrough_(job, cache)
                                                              : office_convert_(job, cache);
             // 失败即清残骸（杀进程可留半截 PDF——不清会被同键误当缓存命中）
             if (!err.empty()) fs::remove(cache, ec);
@@ -241,17 +246,21 @@ private:
         if (ec) return {{}, "文档不可读（stat 失败）: " + job.norm};
         const auto sz = fs::file_size(job.full, ec);
         if (ec) return {{}, "文档不可读（stat 失败）: " + job.norm};
+        // 产物扩展名：直通族（pdf/图片）保源扩展名（webui 按它定 content_type）；
+        // 转换族（docx/doc/pptx/ppt）产物恒为 PDF
+        const std::string out_ext = is_passthrough_(job.ext) ? job.ext : ".pdf";
         const std::string name = std::to_string(fnv1a64_(job.root + "\n" + job.norm)) + "_" +
-                                 std::to_string(mtime) + "_" + std::to_string(sz) + ".pdf";
+                                 std::to_string(mtime) + "_" + std::to_string(sz) + out_ext;
         return {wide_to_utf8_((dir / name).wstring()), {}};
     }
 
-    // .pdf 直通：源文件即产物（拷进缓存统一服务面——webui 只认缓存路径不回源盘，
-    // jail 内外的字节边界因此单一）
-    std::string pdf_passthrough_(const Job& job, const std::string& cache) {
+    // 直通族（pdf + 图片族）：源文件即产物（拷进缓存统一服务面——webui 只认缓存
+    // 路径不回源盘，jail 内外的字节边界因此单一）。零转换：图片本就是浏览器
+    // 原生可渲染形态，过 office 域只为复用 jail 校验与缓存服务面
+    std::string passthrough_(const Job& job, const std::string& cache) {
         std::error_code ec;
         fs::copy_file(job.full, fs::path(cache), fs::copy_options::overwrite_existing, ec);
-        return ec ? "PDF 复制失败: " + ec.message() : std::string{};
+        return ec ? "预览文件复制失败: " + ec.message() : std::string{};
     }
 
     // ---- COM 转换（late binding，STA 线程上执行）---------------------------------
@@ -389,6 +398,12 @@ private:
     }
 
     // ---- 小件 ---------------------------------------------------------------------
+
+    // 直通族判定：pdf + 浏览器原生可渲染的图片族（零转换，源文件即产物）
+    static bool is_passthrough_(const std::string& ext) {
+        return ext == ".pdf" || ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
+               ext == ".gif" || ext == ".webp" || ext == ".bmp";
+    }
 
     static std::string err_json_(const std::string& msg) {
         return (json{{"ok", false}, {"error", msg}}).dump();
@@ -575,6 +590,8 @@ private:
     std::deque<Job> q_;
     bool stopping_ = false;         // mu_ 守护：停机旗（deactivate 置位）
     unsigned long flight_pid_ = 0;  // mu_ 守护：在途 job 的本方 Office PID（0 = 无在途）
+    std::uint64_t flight_timeout_ms_ = 30000;  // mu_ 守护：在途 job 的看门狗上限
+        // （提交方按源文件大小换算——大文档 COM 导出慢，固定 30s 会误杀）
 };
 
 }  // namespace vcoffice

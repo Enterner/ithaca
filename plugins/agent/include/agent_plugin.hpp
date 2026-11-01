@@ -44,6 +44,7 @@
 
 #include <nostos/abi/plugin.hpp>
 #include "../scratch.hpp"  // Scratch：emit 载荷稳定缓冲（调用期有效）
+#include <vckit/slot_call.hpp>  // 表槽 JSON 调用助手（出参生命周期口径单源）
 #include <vckit/poster.hpp>   // poster_submit：dispatch 推迟一拍的投递原语
 
 #include <atomic>

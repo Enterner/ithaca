@@ -74,7 +74,8 @@ function onWinKey(e) {
 // ---- 代码查看器（文件树点文件切入；只读，编辑归 agent 提案审批链）------------
 // 版式预览白名单（与 webui /api/fs/preview、office 转换域三方同清单）：xlsx 不进
 // ——表格的"打印版式"对预览无增益，维持抽取文本
-const PREVIEW_EXTS = new Set(['docx', 'doc', 'pptx', 'ppt', 'pdf'])
+const PREVIEW_EXTS = new Set(['docx', 'doc', 'pptx', 'ppt', 'pdf',
+                              'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'])
 const extOf = (p) => { const m = /\.([^.]+)$/.exec(p || ''); return m ? m[1].toLowerCase() : '' }
 function openFile(path) {
   if (PREVIEW_EXTS.has(extOf(path))) {

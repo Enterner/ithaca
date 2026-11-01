@@ -1,13 +1,14 @@
 <script setup>
-// 输入栏：textarea + 权限模式/模型自绘下拉 + 上下文环 + 发送/停止。
+// 输入栏：textarea + 权限模式/模型自绘下拉 + 发送/停止。上下文类显示面
+//（环/构成卡/用量）收编 ContextCard 统一组件——数据与失效纪律在那边。
 // hero（无工作区）与 dock 共用本组件（输入内容在 store，切换不丢）。
 // 有待裁决提案 ⇒ 决策坞（ZCode 式）：Enter 批准（所选文件）/ 本轮免批 /
 // Esc 拒绝——输入框里的文字随拒绝作为反馈回灌给 agent。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { S, send, decide, setMode, setModel,
-         ctxSizeOf, fmtCtx, liveStart, fetchCtxBreakdown, fmtK, api,
+import { S, send, decide, setMode, setModel, fmtCtx, liveStart, api,
          isImageAtt, attUrl } from '../store'
 import Cdl from './Cdl.vue'
+import ContextCard from './ContextCard.vue'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
 // 盾勾=编辑放行、叹号=全自动——语义与图3（Codex 式模式选择器）对齐。
@@ -48,74 +49,6 @@ function onPickModel(v) {
     setModel(model, provider)
   } catch { setModel(v) }   // 非编码值（理论不可达）：退回纯模型切换
 }
-const ringPct = computed(() => {
-  const size = ctxSizeOf(S.model)
-  return Math.min(100, S.lastPrompt / size * 100)
-})
-const ringTitle = computed(() => {
-  const size = ctxSizeOf(S.model)
-  return '上下文 ' + S.lastPrompt.toLocaleString() + ' / ' + size.toLocaleString() +
-         '（占比 ' + ringPct.value.toFixed(1) + '%）'
-})
-// ---- 上下文构成卡（悬停小环出现；方案 D 四段：系统/用户/回复/工具）-----------
-// 数据 = /api/context/breakdown：后端读活跃会话 state.json 按角色分桶估算，
-// 实测总量（last_prompt_tokens）存在时按占比等比修正——合计永远准，分段标「估算」。
-const ctxCard = ref(null)
-let ctxSeq = 0   // 悬停竞态守卫：离开后的迟到响应当弃
-async function ctxHover(on) {
-  if (!on) { ctxCard.value = null; return }
-  const seq = ++ctxSeq
-  const r = await fetchCtxBreakdown()
-  if (seq === ctxSeq && r.ok) ctxCard.value = r
-}
-const SEG_META = [
-  { key: 'sys', label: '系统提示' },
-  { key: 'user', label: '用户消息' },
-  { key: 'asst', label: '模型回复' },
-  { key: 'tool', label: '工具调用' },
-]
-// 卡内 token 值统一走 fmtK（≥1000 k 化、≥1e6 M 化；窗口值走 fmtCtx）
-const fmt = fmtK
-const ctxPct = computed(() => {
-  const w = ctxSizeOf(S.model)
-  return ctxCard.value && w ? ctxCard.value.total / w * 100 : 0
-})
-const ctxHot = computed(() => ctxPct.value > 80)   // ≥80% 转红（与环的阈值同源）
-// 分段条按「总窗口」渲染（含未使用段）：各段 = 该部分 token / 窗口。1M 级窗口
-// 低用量时段会很细——这就是真实余量；占比数字在逐行明细里读。
-const ctxWin = computed(() => ctxSizeOf(S.model))
-const segWidths = computed(() => {
-  if (!ctxCard.value || !ctxWin.value) return []
-  return SEG_META.map(s => Math.min(100, ctxCard.value.segs[s.key] / ctxWin.value * 100))
-})
-const freePct = computed(() => Math.max(0, 100 - segWidths.value.reduce((a, b) => a + b, 0)))
-// ---- 会话用量与输出速率（卡内新增块）------------------------------------------
-// 用量源 = transcript 里 assistant 记录自带的 usage（每轮回报；provider 未回报时
-// 形状为空对象 ⇒ 全 0，重放同样可重建）。输入/输出 = 会话累计；缓存率 = 逐轮
-// （命中/输入）的算术均值——累计比是按 token 量加权的均值，大轮会淹没小轮的
-// 表现；cache_tokens 字段缺失的轮 = provider 未计量（非真 0），不计入均值。
-// 速率读 S.rate——records 的会话累计均值（只计输出时段，空闲不计；增量不落盘
-// ⇒ 只统计本次打开以来的流式，''=尚无计量），此处纯展示。
-// hasUsage 区分「没回报」与「真是 0」：缺失显示「—」而非误导性的 0。
-const usage = computed(() => {
-  let prompt = 0, completion = 0, cache = 0, seen = false
-  let crSum = 0, crN = 0   // 逐轮缓存率的和与轮数（均值分子/分母）
-  for (const r of S.records)
-    if (r.type === 'assistant' && r.usage && typeof r.usage.total_tokens === 'number') {
-      seen = true
-      const u = r.usage
-      prompt += u.prompt_tokens || 0
-      completion += u.completion_tokens || 0
-      cache += u.cache_tokens || 0
-      if (typeof u.cache_tokens === 'number' && (u.prompt_tokens || 0) > 0) {
-        crSum += u.cache_tokens / u.prompt_tokens
-        crN++
-      }
-    }
-  return { prompt, completion, cache, seen, crSum, crN }
-})
-const cachePct = computed(() =>
-  usage.value.crN > 0 ? Math.round(usage.value.crSum / usage.value.crN * 100) : 0)
 // ---- hero 态操作反馈（hero 不挂对话流，records 里的通告无处显示）--------------
 // hero 态下显示最后一条 local/notice/error 记录——上传失败、压缩结果等操作
 // 反馈终于可见（会话态有 Stream，不需要这条）
@@ -129,16 +62,6 @@ const heroNote = computed(() => {
   }
   return ''
 })
-function segCount(key) {
-  const c = (ctxCard.value && ctxCard.value.counts) || {}
-  if (key === 'tool') {
-    const parts = []
-    if (c.calls) parts.push(c.calls + ' 次')
-    if (c.tools) parts.push(c.tools + ' 条')
-    return parts.join(' · ')
-  }
-  return c[key] ? c[key] + ' 条' : ''
-}
 const submitting = ref(false)   // 防连点（仅提交窗口；turn 排队由后端管）
 // ---- ＋菜单（会话动作 / 附件上传 / 主动压缩）与拖拽上传 -----------------------
 // 附件 = 文件落盘到工作区 .ithaca/uploads（/api/upload），发送时在消息尾带
@@ -328,62 +251,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
       </div>
       <input ref="fileEl" type="file" multiple style="display:none" @change="onFilesChosen">
       <div class="ctl-r">
-        <!-- 本次回复输出速度（DeepSeek 式）：流式期间常显，每条回复独立起算
-             （首字等待不计），收口即隐。S.live 有正文 = 正在输出文本增量；
-             ''=首增量时长未知，暂隐 -->
-        <span v-if="S.live && S.live.text && S.liveRate" class="liverate"
-              title="本次回复输出速度（首字后起算，回复结束即隐）"><b>{{ S.liveRate }}</b> tok/s</span>
-        <span class="ctxhost" @mouseenter="ctxHover(true)" @mouseleave="ctxHover(false)">
-          <span id="ctxRing" :title="ctxCard ? null : ringTitle">
-            <svg width="14" height="14" viewBox="0 0 36 36">
-              <circle cx="18" cy="18" r="15.9" fill="none" stroke="var(--line)" stroke-width="4"/>
-              <circle cx="18" cy="18" r="15.9" fill="none" stroke="currentColor" stroke-width="4"
-                      pathLength="100" stroke-dasharray="100"
-                      :stroke-dashoffset="100 - ringPct" stroke-linecap="round"
-                      :stroke="ringPct > 80 ? 'var(--red)' : 'var(--dim)'"
-                      transform="rotate(-90 18 18)"/>
-            </svg>
-          </span>
-          <div v-if="ctxCard" class="ctx-card" :class="{ hot: ctxHot }">
-            <div class="tot">
-              <span class="n">{{ fmt(ctxCard.total) }}</span>
-              <span class="w">/ {{ fmtCtx(ctxSizeOf(S.model)) }} tok</span>
-              <span class="p">已用 <b>{{ ctxPct.toFixed(1) }}%</b></span>
-            </div>
-            <div class="segbar">
-              <i v-for="(s, si) in SEG_META" :key="s.key" :class="'seg-' + s.key"
-                 :style="{ width: segWidths[si] + '%' }"></i>
-              <i class="seg-free" :style="{ width: freePct + '%' }"></i>
-            </div>
-            <div class="rows">
-              <div v-for="s in SEG_META" :key="s.key" class="row">
-                <span class="sw" :class="'seg-' + s.key"></span>
-                <span class="lab">{{ s.label }}<small v-if="segCount(s.key)">{{ segCount(s.key) }}</small></span>
-                <span class="tok">{{ fmt(ctxCard.segs[s.key]) }}</span>
-                <span class="pc">{{ (ctxCard.segs[s.key] / Math.max(1, ctxCard.total) * 100).toFixed(1) }}%</span>
-              </div>
-            </div>
-            <!-- 会话用量（输入含缓存命中 / 输出）+ 输出速率：原左下角速率行与
-                 侧栏「累计 tokens」的收编处——计量语境都在上下文卡里。
-                 provider 未回报 usage 时显示「—」（区分「没数据」与「真是 0」） -->
-            <div class="usage">
-              <div class="urow">
-                <span class="ulab">输入</span><b class="un">{{ usage.seen ? fmt(usage.prompt) : '—' }}</b>
-                <small v-if="usage.cache" class="uextra"
-                       title="缓存率 = 会话内逐轮（命中/输入）的平均，未回报轮不计入">缓存命中 {{ fmt(usage.cache) }}（均值 {{ cachePct }}%）</small>
-              </div>
-              <div class="urow">
-                <span class="ulab">输出</span><b class="un">{{ usage.seen ? fmt(usage.completion) : '—' }}</b>
-                <small v-if="S.rate" class="uextra"
-                       title="会话内输出时段的平均（轮间空闲与首字等待不计；只统计本次打开以来的流式）">平均 {{ S.rate }} tok/s</small>
-              </div>
-            </div>
-            <div class="foot">
-              <span><span class="est">分段估算</span><template v-if="!ctxCard.measured">（无实测回报，总量同为估算）</template></span>
-              <span>余量 <b :class="{ red: ctxHot }">{{ fmt(Math.max(0, ctxSizeOf(S.model) - ctxCard.total)) }} tok</b></span>
-            </div>
-          </div>
-        </span>
+        <ContextCard />
         <Cdl :items="modelItems" :model-value="modelKey" :align-right="true" @select="onPickModel" />
         <button class="send-btn" :class="{ stop: S.inFlight }" type="button"
                 :title="S.inFlight ? '停止生成' : '发送'" @click="S.inFlight ? onStop() : onSend()">

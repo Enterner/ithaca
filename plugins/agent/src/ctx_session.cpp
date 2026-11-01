@@ -146,12 +146,12 @@ bool AgentCtx::mission_from_slot_or_builtin_(json& out) {
         out = vcagent::build_mission(messages_);
         return true;
     }
-    const std::string msgs = messages_.dump();
-    const char* o = nullptr;
-    if (ctx_tbl_->mission(ctx_tbl_->self, msgs.c_str(), &o) != NOSTOS_OK || o == nullptr)
-        return false;
-    out = json::parse(o, nullptr, /*allow_exceptions=*/false);
-    return out.is_object();
+    const auto r = vckit::slot_call_json(messages_, [&](const char* s, const char** out) {
+        return ctx_tbl_->mission(ctx_tbl_->self, s, out);
+    });
+    if (!r.ok) return false;
+    out = r.body;
+    return true;
 }
 
 void AgentCtx::ensure_mission_() {

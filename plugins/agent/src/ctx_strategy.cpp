@@ -68,11 +68,11 @@ vcagent::CompressPlan AgentCtx::acquire_plan_(const char* reason, long long esti
                      {"signals", std::move(signals)},
                      {"reason", reason},
                      {"subagent", subagent_}};
-    const std::string s = state.dump();
-    const char* out = nullptr;
-    if (ctx_tbl_->plan(ctx_tbl_->self, s.c_str(), &out) != NOSTOS_OK || out == nullptr)
-        return {};
-    return plan_from_json(json::parse(out, nullptr, /*allow_exceptions=*/false));
+    const auto r = vckit::slot_call_json(state, [&](const char* s, const char** out) {
+        return ctx_tbl_->plan(ctx_tbl_->self, s, out);
+    });
+    if (!r.ok) return {};
+    return plan_from_json(r.body);
 }
 
 std::string AgentCtx::strategy_ingest_(const std::string& full_name,
@@ -82,45 +82,48 @@ std::string AgentCtx::strategy_ingest_(const std::string& full_name,
                   {"body", content},
                   {"turn", turn_no_},
                   {"seq", seq}};
-    const std::string s = in.dump();
-    const char* out = nullptr;
-    if (ctx_tbl_->ingest_tool_result(ctx_tbl_->self, s.c_str(), &out) == NOSTOS_OK &&
-        out != nullptr)
-        return std::string(out);   // 出参缓冲由实现方持有至下次同槽调用——立即拷贝
-    // 槽失败 = 基础设施级异常：原文内联兜底
-    host_.log(3, "ithaca.agent: 策略插件 ingest_tool_result 失败，结果原文内联: " + full_name);
-    return content;
+    const auto r = vckit::slot_call_str(in, [&](const char* s, const char** out) {
+        return ctx_tbl_->ingest_tool_result(ctx_tbl_->self, s, out);
+    });
+    if (!r.ok) {
+        // 槽失败 = 基础设施级异常：原文内联兜底
+        host_.log(3, "ithaca.agent: 策略插件 ingest_tool_result 失败，结果原文内联: " + full_name);
+        return content;
+    }
+    // 槽回包形态 = {"content": <管线结果>} 的单键信封（ingest_impl 的出参形态）
+    // ——解出单层再进历史：双层转义让大结果膨胀 ~15% 且模型要穿透转义读正文；
+    // 解包后与内置管线（无策略直调 ingest_tool_result，无信封）的上下文形态
+    // 逐字节一致（A/B 口径不变式）。守卫 = 单键 + content 为串：工具自身出参
+    // 恒带 ok 等伴生字段，与此形态不相交，不会误解。
+    json env = json::parse(r.body, nullptr, /*allow_exceptions=*/false);
+    if (env.is_object() && env.size() == 1 && env.contains("content") &&
+        env["content"].is_string())
+        return env["content"].get<std::string>();
+    return r.body;
 }
 
 void AgentCtx::strategy_summary_brief_(std::string& system, std::string& instructions) {
-    const json in{{"digest", pending_plan_.digest}};
-    const std::string s = in.dump();
-    const char* out = nullptr;
-    if (ctx_tbl_->summary_prompt(ctx_tbl_->self, s.c_str(), &out) != NOSTOS_OK ||
-        out == nullptr)
-        return;   // 槽失败保持内置 brief 不变（kSummarySystem + 机械 digest 正文）
-    const json j = json::parse(out, nullptr, /*allow_exceptions=*/false);
-    if (!j.is_object()) return;
-    if (const auto it = j.find("system");
-        it != j.end() && it->is_string() && !it->get<std::string>().empty())
+    const auto r = vckit::slot_call_json(
+        json{{"digest", pending_plan_.digest}}, [&](const char* s, const char** out) {
+            return ctx_tbl_->summary_prompt(ctx_tbl_->self, s, out);
+        });
+    if (!r.ok) return;   // 槽失败保持内置 brief 不变（kSummarySystem + 机械 digest 正文）
+    if (const auto it = r.body.find("system");
+        it != r.body.end() && it->is_string() && !it->get<std::string>().empty())
         system = it->get<std::string>();
-    if (const auto it = j.find("instructions");
-        it != j.end() && it->is_string() && !it->get<std::string>().empty())
+    if (const auto it = r.body.find("instructions");
+        it != r.body.end() && it->is_string() && !it->get<std::string>().empty())
         instructions = it->get<std::string>();
 }
 
 bool AgentCtx::strategy_apply_summary_(const std::string& summary, json& out_digest) {
-    const json in{{"digest", pending_plan_.digest},
-                  {"summary", summary},
-                  {"refs", pending_plan_.refs}};
-    const std::string s = in.dump();
-    const char* out = nullptr;
-    if (ctx_tbl_->apply_summary(ctx_tbl_->self, s.c_str(), &out) != NOSTOS_OK ||
-        out == nullptr)
-        return false;
-    const json j = json::parse(out, nullptr, /*allow_exceptions=*/false);
-    if (!j.is_object() || j.value("role", std::string()) != "system") return false;
-    out_digest = j;
+    const auto r = vckit::slot_call_json(
+        json{{"digest", pending_plan_.digest}, {"summary", summary}, {"refs", pending_plan_.refs}},
+        [&](const char* s, const char** out) {
+            return ctx_tbl_->apply_summary(ctx_tbl_->self, s, out);
+        });
+    if (!r.ok || r.body.value("role", std::string()) != "system") return false;
+    out_digest = r.body;
     return true;
 }
 

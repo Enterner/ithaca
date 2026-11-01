@@ -57,8 +57,7 @@ void AgentCtx::subscribe_turn_slot_() {
             const vc_api::LlmDone copy{rid, aj.c_str(), us.c_str(), 0, session_id_.c_str()};
             on_done(copy);
         };
-        if (poster_.post == nullptr) beat();
-        else if (vckit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
+        vckit::poster_defer(poster_, beat);
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_error, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmError*>(p);
@@ -69,8 +68,7 @@ void AgentCtx::subscribe_turn_slot_() {
             const vc_api::LlmError copy{rid, code, msg.c_str(), 0, session_id_.c_str()};
             on_llm_error(copy);
         };
-        if (poster_.post == nullptr) beat();
-        else if (vckit::poster_submit(poster_, beat) != NOSTOS_OK) beat();
+        vckit::poster_defer(poster_, beat);
     }));
     slot_subs_.push_back(host_.on_slot(vc_api::llm_delta, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDelta*>(p);

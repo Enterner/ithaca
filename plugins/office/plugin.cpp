@@ -140,17 +140,18 @@ private:
                 return finish_preview(fail("路径被拒: " + r.err), out);
             const std::string ext_lower =
                 vcws::ascii_lower(fs::path(r.norm).extension().string());
-            // 版式预览白名单：docx/doc/pptx/ppt/pdf（.pdf 直通）。xlsx 不进——表格
-            // 的"打印版式"对预览无增益，维持抽取文本（与前端/agent 的口径一致）
-            static constexpr const char* kPreviewExts[] = {".docx", ".doc", ".pptx", ".ppt",
-                                                           ".pdf"};
+            // 版式预览白名单：docx/doc/pptx/ppt/pdf（.pdf 直通）+ 图片族（jpg/png/
+            // gif/webp/bmp 直通，零转换）。xlsx 不进——表格的"打印版式"对预览无
+            // 增益，维持抽取文本（与前端/agent 的口径一致）
+            static constexpr const char* kPreviewExts[] = {
+                ".docx", ".doc", ".pptx", ".ppt", ".pdf",
+                ".jpg",  ".jpeg", ".png",  ".gif", ".webp", ".bmp"};
             const bool supported = std::any_of(std::begin(kPreviewExts),
                                                std::end(kPreviewExts),
                                                [&](const char* e) { return e == ext_lower; });
             if (!supported)
                 return finish_preview(
-                    fail("该格式不支持版式预览（docx/doc/pptx/ppt/pdf 之外维持抽取文本）: " +
-                         r.norm),
+                    fail("该格式不支持版式预览（文档与图片族之外维持抽取文本）: " + r.norm),
                     out);
             std::error_code ec;
             if (!fs::is_regular_file(r.full, ec))
@@ -164,6 +165,11 @@ private:
                          "MB 上限）: " + r.norm),
                     out);
             vcoffice::Preview::Job job;
+            // 看门狗上限按源文件大小分级：30s 基线 + 每 10MB 加 3s（图形密集文档
+            // 的 COM 导出线性变慢），上限 120s——固定 30s 对大文档会误杀
+            const auto mb = static_cast<long long>(sz / (1024 * 1024));
+            job.timeout_ms = static_cast<std::uint64_t>(
+                std::min<long long>(120000, 30000 + std::max<long long>(0, mb - 10) * 3000));
             job.root = vckit::win::wide_to_utf8(jail_->root().c_str());
             job.norm = r.norm;
             job.full = r.full;

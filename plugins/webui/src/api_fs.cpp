@@ -5,6 +5,7 @@
 
 #include "webui_plugin.hpp"
 
+#include <vckit/slot_call.hpp>  // vckit::slot_call_json：工具表调用的出参消费纪律单源
 #include "vcws/text.hpp"  // vcws::ascii_lower：扩展名折叠（共享件）
 #include "vcws/read_paged.hpp"  // vcws::is_document_ext：/api/fs/read 分流的扩展名清单（共享件）
 
@@ -76,16 +77,14 @@ json WebuiPlugin::call_tool_json_(const vc_api::ToolTable* table, const char* to
                                   const std::string& args_json) {
     if (table == nullptr)
         return {{"ok", false}, {"error", "工具表不在"}};
-    const char* out_json = nullptr;
     // NOSTOS_OK + {ok:false} = 工具级失败，原样透传给前端
-    const nostos_status st = table->execute(table->self, tool, args_json.c_str(), 0, &out_json);
-    json r = st == NOSTOS_OK && out_json != nullptr
-                 ? json::parse(out_json, nullptr, false)
-                 : json{{"ok", false}, {"error", "工具表 execute 失败 (" +
-                                              std::to_string(static_cast<int>(st)) + ")"}};
-    if (r.is_discarded() || !r.is_object())
-        r = json{{"ok", false}, {"error", "工具表返回了无效 JSON"}};
-    return r;
+    const auto r = vckit::slot_call_json<json>(args_json, [&](const char* a, const char** out) {
+        return table->execute(table->self, tool, a, 0, out);
+    });
+    return r.ok ? std::move(r.body)
+                : json{{"ok", false},
+                       {"error", "工具表 execute 失败 (" + std::to_string(static_cast<int>(r.st)) +
+                                     ")"}};
 }
 
 // ---- 版式预览（/api/fs/preview）------------------------------------------------
@@ -112,10 +111,21 @@ struct PreviewWait {
 };
 
 // office 转换线程回调（C ABI trampoline）：result_json 只在回调期有效，同步消费。
-// 成功 → PDF 文件流（no-cache：URL 无版本参数，浏览器缓存会吃掉改版后的新转换）；
+// 成功 → 预览文件流（no-cache：URL 无版本参数，浏览器缓存会吃掉改版后的新转换）；
 // 失败 → JSON {ok:false,error}（前端回落文本抽取）。两路都 200——失败语义是
 // 「预览不可用，请看抽取文本」，不是传输层错误。file_path 流式的内存面 = 内核
-// 按 chunk 分块读盘，零整读上界。
+// 按 chunk 分块读盘，零整读上界。content_type 按缓存产物扩展名定（直通族保源
+// 扩展名、转换族恒 .pdf）。
+const char* preview_mime_(const fs::path& p) {
+    std::string e = vcws::ascii_lower(p.extension().string());
+    if (e == ".png") return "image/png";
+    if (e == ".gif") return "image/gif";
+    if (e == ".webp") return "image/webp";
+    if (e == ".bmp") return "image/bmp";
+    if (e == ".jpg" || e == ".jpeg") return "image/jpeg";
+    return "application/pdf";
+}
+
 void preview_on_done(void* ud, const char* result_json) noexcept {
     std::unique_ptr<PreviewWait> w(static_cast<PreviewWait*>(ud));
     if (!w) return;
@@ -129,14 +139,14 @@ void preview_on_done(void* ud, const char* result_json) noexcept {
         const fs::path pdf = fs::path(r["pdf"].get<std::string>());
         const auto sz = fs::file_size(pdf, ec);
         if (!ec) {
-            resp.content_type = "application/pdf";
+            resp.content_type = preview_mime_(pdf);
             resp.file_path = pdf.string();
             resp.file_length = sz;
             resp.headers.push_back({"cache-control", "no-cache"});
             w->srv->respond(w->conn, resp);
             return;
         }
-        resp.body = json{{"ok", false}, {"error", "PDF 缓存文件不可读"}}.dump();
+        resp.body = json{{"ok", false}, {"error", "预览缓存文件不可读"}}.dump();
     } else {
         resp.body = json{{"ok", false},
                          {"error", r.is_object() ? r.value("error", std::string("预览转换失败"))
@@ -155,7 +165,9 @@ void preview_on_done(void* ud, const char* result_json) noexcept {
 /// 必须一致，此处挡的是"明显不支持的格式别占挂起连接"。线程纪律：解析在 select
 /// 线程、提交在宿主闭包、补发在 office 转换线程（respond 原语任意线程）。
 http::Response WebuiPlugin::api_fs_preview_(const http::Request& req) {
-    static constexpr const char* kPreviewExts[] = {".docx", ".doc", ".pptx", ".ppt", ".pdf"};
+    static constexpr const char* kPreviewExts[] = {
+        ".docx", ".doc", ".pptx", ".ppt", ".pdf",
+        ".jpg",  ".jpeg", ".png",  ".gif", ".webp", ".bmp"};
     const std::string rel = req.query("path");
     const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
     const bool supported =

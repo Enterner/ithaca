@@ -132,8 +132,20 @@ const TURN_TAGGED = new Set(['user', 'assistant', 'assistant_delta', 'assistant_
                              'proposal', 'applied', 'undone', 'subagent', 'subagent_delta',
                              'subagent_detail', 'error', 'turn_state'])
 
+// 无绑定视图（草稿/创建在途）的早到帧停靠：'session' 收口按新会话 id 放行，
+// 缺口由 pollOnce 全量重放兜底（见 tag 守卫处的机理注释）。上限防失控。
+const draftPark = []
+
 /** SSE/重放的统一入口：所有宿主记录（含转态信号）都经此进状态机。 */
 export function render(rec) {
+  // TEMP-DEBUG: 帧级轨迹（CONV10 flaky 查因，收口后拆除）
+  if (window.__evlog && window.__evlog.length < 400) {
+    let tag = ''
+    if (rec.session && rec.session !== S.curSession && TURN_TAGGED.has(rec.type)) {
+      tag = !S.curSession ? ' PARK' : ' DROP'
+    } else if (rec.id !== undefined && rec.id <= S.lastId) tag = ' DUP'
+    window.__evlog.push(`in ${rec.type} id=${rec.id} ses=${(rec.session || '-').slice(-6)}${tag}`)
+  }
   // 撤回转录面（中断卡 ↩）：按位裁剪记录流、对齐游标、清被撤轮次的挂起面。
   // 位裁剪是自愈的——竞态窗口内渲染的迟到记录同样被裁掉
   if (rec.type === 'records_rollback') {
@@ -151,7 +163,6 @@ export function render(rec) {
     X.turnEdits = new Map(); X.turnEditsTurn = 0
     // 被撤轮次的增量已混入速率累计、按位无法剔除——均值整体重统计
     X.rateToks = 0; X.rateMs = 0; X.rateLast = 0; S.rate = ''
-    X.respToks = 0; X.respStart = 0; S.liveRate = ''
     S.fsRev++   // 文件树对齐磁盘真态（被撤轮次的文件改动仍在盘上）
     return
   }
@@ -163,7 +174,17 @@ export function render(rec) {
     if (rec.session === S.curSession) S.inFlight = !!rec.working
     return
   }
-  if (rec.session && rec.session !== S.curSession && TURN_TAGGED.has(rec.type)) return
+  if (rec.session && rec.session !== S.curSession && TURN_TAGGED.has(rec.type)) {
+    // 无绑定视图（草稿/创建请求在途，curSession 仍空）的早到帧停靠而非丢弃：
+    // 会话创建即开 turn（create+start 同请求），首批记录（用户消息/首个工具卡）
+    // 在本页 curSession 置位前到达——丢弃后广播重放的快照与落盘存在竞态
+    //（fetch 早于落盘 ⇒ 永久缺卡，CONV10 flaky 实测：服务端转录完整、UI 永缺
+    // 首个工具卡）。'session' 收口按 id 放行，放行缺口由 pollOnce 全量重放
+    // 兜底（renderNow 按 id 去重）；上限防失控，非无绑定状态维持丢弃语义
+    //（多会话并行时他帧本就该丢，切回由 pollOnce 补）。
+    if (!S.curSession && draftPark.length < 500) draftPark.push(rec)
+    return
+  }
   if (parkSse) { parked.push(rec); return }
   renderNow(rec)
 }
@@ -189,10 +210,22 @@ function renderNow(rec) {
   }
   switch (rec.type) {
     case 'session':   // 会话已切换：清空视图并重放（草稿若有则已随创建提交）
+      // 本页发起的切换已本地收口（openSession 乐观清屏 + 重放）——同 id 广播
+      // 只对齐注册表，不再整场 reset+重放（重复渲染闪屏）。id 缺省（旧形态）
+      // 与他页发起的切换走全量路径。
+      if (rec.id && rec.id === S.curSession) { loadSessions(); return }
       S.draft = null
       S.subView = 0; S.subLive = {}; S.subDone = {}; S.subDetail = {}
       resetView()
       if (rec.workspace) S.curWs = rec.workspace
+      // 放行无绑定期停靠的早到帧（属于本会话的）——随后 pollOnce 全量重放，
+      // renderNow 按 id 去重，停靠与重放重叠不双渲染
+      for (const p of draftPark.splice(0))
+        if (!p.session || p.session === rec.id) {
+          if (window.__evlog && window.__evlog.length < 400)
+            window.__evlog.push(`replay-park ${p.type} id=${p.id}`)
+          renderNow(p)
+        }
       loadSessions(); pollOnce()
       return
     case 'folder_picked':
@@ -230,7 +263,6 @@ function renderNow(rec) {
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
       S.live.text += rec.text
       rateUpdate(rec.text)
-      respUpdate(rec.text)
       return
     case 'assistant_reasoning':
       if (!S.live) S.live = { reasoning: '', text: '', open: false }
@@ -409,18 +441,16 @@ function renderNow(rec) {
   }
 }
 
-// ---- 输出速率（双口径：会话累计均值 + 本次回复均速）---------------------------
+// ---- 输出速率（会话累计均值，只计输出时段）-----------------------------------
 // 会话均值（S.rate，用量块显示）= 会话累计的流式输出粗估 tokens / 累计「有增量
 // 到达」的时长。输出期由本响应首个增量开启、assistant/error 收口关闭
 // （rateClose）——轮间空闲（工具执行/用户思考）与首增量前的等待（TTFT）不计入；
 // 响应内单次增量间隔超过 RATE_GAP_MS 视为链路断续（补洞场景的静默），超出部分
 // 同样不计。思考增量与正文增量同喂（推理输出也是输出，不喂会让速率时钟停摆虚高）。
-// 回复均速（S.liveRate，流式指示器显示，DeepSeek 式）= 本次回复的粗估 tokens /
-// 首正文增量起的 span，每条回复独立起算、收口即隐（respUpdate，思考流不计）。
 // tokens 沿用增量字符粗估（ASCII ≈ 4 字符/token、CJK ≈ 0.7 token/字，与后端
 // breakdown 的 utf8_tokens 同口径）：provider 的 completion_tokens 收口才可得，
 // 且含未流式可见的工具调用 JSON，与观测时长不可比，故不做真值混算。增量不落盘
-// ⇒ 重放不可重建，均值只统计本次打开以来的流式；S.rate/S.liveRate '' = 尚无
+// ⇒ 重放不可重建，均值只统计本次打开以来的流式；S.rate '' = 尚无
 // 计量（显示面隐藏）；切会话/撤回即清零重新统计。累计器放 X 而非模块局部：
 // 重置面在 sessions.js 的 resetView，双向 import 会成环。
 const RATE_GAP_MS = 10000
@@ -440,23 +470,9 @@ function rateUpdate(text) {
   X.rateToks += rateTok(text)
   if (X.rateMs > 0) S.rate = String(Math.round(X.rateToks / (X.rateMs / 1000)))
 }
-/** 本次回复均速（DeepSeek 式）：只对正文增量起算——思考流不计入（思考期本就
-    不显示速度，显示窗口与口径一致；会话均值是另一条腿，思考在那里算输出）。
-    时长 = 首正文增量起的整段 span（响应内停顿即生成时间，不做间隔剔除）；
-    DeepSeek 收口后用 usage 真值修正，此处不做：completion_tokens 含不可见流的
-    工具调用 JSON，与观测时长不可比，混算反失真。 */
-function respUpdate(text) {
-  const now = Date.now()
-  if (!X.respStart) X.respStart = now
-  X.respToks += rateTok(text)
-  const sec = (now - X.respStart) / 1000
-  if (sec > 0) S.liveRate = String(Math.round(X.respToks / sec))
-}
-/** 输出期收口：此后到下一响应首个增量之间的空闲不并入输出时长；回复均速一并
-    复位（下条回复独立起算，旧值不带进新回复）。 */
+/** 输出期收口：此后到下一响应首个增量之间的空闲不并入输出时长。 */
 function rateClose() {
   X.rateLast = 0
-  X.respToks = 0; X.respStart = 0; S.liveRate = ''
 }
 
 // ---- 数据通道 ----------------------------------------------------------------
@@ -470,7 +486,13 @@ export function pollOnce() {
 }
 
 async function pollOnceImpl() {
-  parkSse = true
+    // 草稿/切换在途门禁：视图不属于任何服务端会话或切换尚未获服务端确认，而
+    // /api/transcript 恒回「服务端活跃会话」的转录——此时补洞会把上一会话的
+    // 全文按 after=0 灌进当前视图 = 「新建会话还没发消息就自动跳回旧会话」
+    //（踩过: 补洞恒跑后必现）。启动首拉不受影响：彼时两者尚为 null/false
+    //（enterDraft 在 boot 尾部才进，switchPending 只在 openSession 点击后置位）。
+    if (S.draft || S.switchPending) return
+    parkSse = true
   try {
     const seq0 = rollbackSeq
     const t = await api('/api/transcript?after=' + S.since)

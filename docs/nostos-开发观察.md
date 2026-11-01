@@ -4,7 +4,7 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：三轮全量审核（内核+产品）· 2026-11-01；新增观察 13–16，观察 6/7/9 维持）
+## 当前发现（批次：观察 6/7 落地 · 2026-11-02；观察 9 清退，观察 13–16 维持）
 
 **立项标准（本批起生效）**：内核侧立项一律以内核仓 `external/nostos/docs/内核规范.md`
 的六问准入清单为准（机制非策略 / 非协议引擎框架 / OS 未提供 / 零依赖 / ≥2 消费方
@@ -52,29 +52,9 @@ mark_dependents_of/mark_closure 全边扫描（host_builder.hpp:397-429）。方
 try/catch」三段式骨架（with_bridge 可收编，现状可读性尚可、缓办）；
 drain_posted 每拍对 posters_ 全量加锁（加原子计数，空队列免锁跳过）。
 
-前批仍开放的只剩：
-
-**观察 6：槽订阅「四件套」样板无 SDK 打包**（触发场景：agent 审核——8 条槽订阅
-每条手写 poster 推迟一拍 + turn 守卫 + 载荷字符串深拷贝 + 补 session 标重播
-（ctx_turn.cpp subscribe_turn_slot_），poster_submit_owner/invalidate_owner 还须
-跨文件手工配对，漏一半即悬垂闭包）。切缝判据：推迟一拍 + 载荷保活是 ABI 逼出的
-机制（可收 vckit 原语），补 session 标重播是会话路由的应用语义（留插件）；owner
-配对的收编方向 = 随上下文销毁路径统一承担。未实施——等 agent 之外出现第二形态
-再定打包面，不为单一消费方预建抽象。
-
-**观察 7：svc 表槽的 JSON 调用五步样板与 emit Scratch 保活无便利件**（触发场景：
-agent/ctx 审核——每个表槽调用都是 dump→调槽→parse→拷出参（ctx_strategy 全文件
-与 mission/recall/classify_error 各点），出参生命周期口径两插件各说各话；emit 侧
-局部 Scratch + 逐字段 hold 共 7 处，漏 hold 即悬垂）。方向：槽调用助手（scratch
-保活，C ABI 不动；落点 shared/vcagent 或插件侧）。未实施——Scratch 已是调用点
-表达（随 kit 退役迁 agent 插件内 scratch.hpp），助手的价值
-密度待第二个表服务（非工具表）出现再验证。
-
-**观察 9 残余（teardown 契约本批落地，余两半维持方向）**：LazyGate 重估靠宿主
-在装载后与主循环每拍两处手工 pump_into（漏一处 PENDING 插件静默永不激活）——
-方向：依赖重估挂进 drain/post_wake 接缝；插件集合托管容器（load→submit→pump→
-逆序收口一体）——方向：参数化原语而非宿主框架，装配决策（装载哪些/懒激活条件）
-留宿主。
+前批的观察 6/7 本批落地（见落地状态）；观察 9 按内核标准清退——单宿主产品里
+「等第二形态」结构性不会到点，留账每一天都在违反「不为找而找」，方向随 git
+历史留存（出现第二宿主场景或 PENDING 漏激活实际故障时按纪律重新记档）。
 
 **svc 单槽维持不立项**：跨工作区并行的真墙是 workspace/runner/office 的单 jail
 （webui 门卫按运行池工作区一致性拦截），多工作区并行才需要命名实例。
@@ -93,32 +73,11 @@ office 的 object_with 与 tool_execute 守门样板（tool_table.hpp 章程内�
 tframe 同款断言框架产品自备 62 行（tests/unit/ithaca_test_framework.hpp——刻意
 边界纪律，成本极低，不折腾）。
 
-**挂账：runner shell 路线调研与 MXC 观察项（2026-10-27，仍有效）**
-
-agent 三轮实测后对 shell 层做了系统调研（业界对照 + 双路探针），结论与挂账：
-
-- **业界三流派**：权限确认派（OpenCode/Cursor/Cline——无 OS 沙箱靠人审+规则）、
-  POSIX 搬迁派（Claude Code——Git Bash 优先/PS 兜底，native 无沙箱、WSL 2 才有）、
-  原生沙箱工程派（Codex 独一家——MXC/elevated/unelevated 三层实现，迭代一年余）。
-  **没有任何厂家用 AppContainer，也没有人解决"bash + native Windows 沙箱"**。
-- **探针数据**：非沙箱 Git Bash 全语义可用（退出码/短路/树杀/UTF-8，65ms/次）；
-  沙箱内 msys（0xC0000022，BaseNamedObjects 共享节被 AC 命名空间拒）与 PowerShell
-  （.NET runtime 同死）**全灭**——沙箱内 cmd 是唯一已验证 shell，结构性限制非配置可救。
-- **已落地**：非沙箱 Git Bash 优先（检测链 env→PATH git 推导→常见路径）+ 脚本
-  stdin 传递（bash -s + stdin_pipe，-c 引号转义链在 CreateProcess→bash 间断裂）+
-  ITHACA_RUNNER_SHELL=cmd 强制覆盖（selftest/golden 跨机器一致性要求 shell 确定）；
-  full-auto 保持 cmd。cmd 兜底的 OEM 码页乱码已修（见落地状态 2026-10-29）。
-- **挂账（MXC 观察项）**：Microsoft eXecution Container（github.com/microsoft/mxc，
-  开源多后端沙箱框架）的 BaseContainer 后端（新 OS 沙箱 API，Win11 24H2/25H2
-  .9278+ 构建）是为"容器内跑真实工具链"设计——**msys 在 BaseContainer 下能否
-  存活待实测**；若可行则"bash 语义 + 沙箱"合流（AppContainer 退役）。本机
-  26200.9711 补丁已达标，MXC 铺开稳定后用探针重验。接入形态：打包 wxc-exec.exe
-  （MXC 原生执行器）替代 runner 的 AppContainer 路径。
-
 ## 落地状态
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-02 | 观察 6/7：槽订阅「判空→submit→失败回退同步」三行收口节拍、表槽 JSON 调用「dump→调槽→parse→拷出参」五步样板、出参生命周期口径两插件各说各话（agent 立即拷贝 / webui 持存活缓冲） | 已落地（产品 SDK 层 shared/vckit 收编：slot_call.hpp——slot_call_json/str 出参在槽返回后立即消费、状态码透传、json 类型无感适配仓里两份 vendored 副本，消费方存活缓冲整体退役；poster.hpp 补 poster_defer——判空/作废就地同步执行，「必须执行」节拍三行收一步。消费跟迁：agent 全部表槽调用点（ctx_strategy/session/compress）与 done/error 收口节拍、webui 工具代理 call_tool_json_；ingest 槽回包单键信封解包——双层 JSON 转义让大结果膨胀 ~15% 且模型要穿透转义读正文，解包后与内置管线口径逐字节一致恢复。Owner 配对核验已在 cleanup 路径统一（现状达标）；scratch 维持 agent 私有（单消费，随内核收缩裁决）。无内核改动——便利件归产品 SDK 层，与 poster 原语同层） |
 | 2026-11-01 | 内核职责收缩：对照主流内核纪律审核（OS 内核 × 插件框架内核两参照系，机制/策略分离 + framework 不含 service）⇒ kit 能力层大部分不属内核——应用协议与策略（http/win_http/active_gate/config）、文本引擎（regex）、OS 机制封装（process/piped_process/win 部分件）、零消费死面（log/timer/task/process/config），另 vendored json（全仓 74% 行数）托管在内核属第三方库错放；标准成文于内核仓 `docs/内核规范.md`（六问准入，后续立项以此为据） | 已落地（内核：删 kit/config、log、timer、task、process 五件（产品仓零 include）；win/win_http/path_jail/piped_process/poster/active_gate 六件迁产品 shared/vckit（namespace nostos::kit → vckit）；regex 迁回 workspace、http 迁回 webui、scratch 迁回 agent（均单消费者，插件私有）；vendored json 落产品 shared/nlohmann；CMake 删 nostos::kit/nostos::kit_http 两目标，README/src/README kit 章节退役；kit/subscriptions（ABI 配套）留守。产品：40 处 include + 全部 nostos::kit 符号跟迁（http 件命名空间 vc_webui::http、regex 归 vcws、scratch 归 vc_agent）；webui 自编 src/http.cpp 并链 ws2_32；host/shell 挂 shared include，shell 摘除 NOSTOS_ROOT 接线；AGENTS.md shared/ 纪律行扩为宿主/壳裸名取用 + vckit/nlohmann 落点。内核自有代码 ~8.7k → ~5.5k 行，仓体 33.5k → ~5.7k（-83%）。工作树待提交） |
 | 2026-11-01 | 观察 11：kit::http 投递可靠性疑点（双 SSE 连接下消费连接静默饿死「conn 恒 on、无 error 事件」；偶发挂起连接「defer 体已执行、fetch 永不 resolve」） | 已落地（坐实一半：broadcast 只入队不发送 ⇒ select 循环来不及插轮次的密集广播把健康读者的 out 也顶过 buffer_cap、跳帧闸门误杀活跃连接——抛弃式探针直连内核复现：读者 21020/30000，缺口与一次轮次窗口的溢出量吻合；内核 323f3ea 修为追加后立即 flush，out 只计量客户端真实积压，30000/30000 × 3 稳定。另一半探针未复现：挂起-补发完整送达、断连静默丢弃为契约、挂起连接 16s reap 豁免存活，归因收敛到浏览器/客户端中止侧。产品侧补洞恒跑与 api() 超时为正确层级的防御，按原计划维持） |
 | 2026-11-01 | 观察 12：kit::http 文件流式（Response::file_path）在 out 排空后永久停摆——writable 集只收非空 out + fill_file 续推被 ready>0 门控，out 恰好送空而 remaining>0 时下轮 select 无任何就绪事件（4.4MB 实测卡死 buffer_cap，孤立连接必现；有其他连接产生事件时呈「蹭车」式龟速） | 已落地（内核 323f3ea：fd_set 构造对「有剩余文件」的连接同样挂 writable，续推由循环每轮 flush+fill 自然推进；产品仓 preview_on_done 的 body 整读兜底（≤64MB 上界）退役，回归 file_path 零拷贝流式——660KB 跨 buffer_cap 孤立连接探针完整送达） |

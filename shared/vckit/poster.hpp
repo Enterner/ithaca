@@ -291,4 +291,17 @@ nostos_status poster_submit_await(const nostos_poster& poster, F&& fn) {
     return NOSTOS_OK;
 }
 
+// 推迟一拍投递（「必须执行」语义）：fn 排到宿主线程；poster 不可用（未领取/
+// 会话作废）时**就地同步执行**——状态机收口/终态类的节拍不许因 poster 缺席
+// 而丢拍。消费方原来的三行回退（判空 → submit → 失败回退同步）收编为一步：
+//
+//     vckit::poster_defer(poster, [&] { on_done(copy); });
+//
+// NOTE: 「就地执行」发生在调用线程——调用方须保证 fn 在本线程执行也安全
+//（典型：事件订阅里的收口节拍，fallback 与宿主线程执行等价）。
+template <typename F>
+void poster_defer(const nostos_poster& poster, F&& fn) {
+    if (poster_submit(poster, std::forward<F>(fn)) != NOSTOS_OK) fn();
+}
+
 }  // namespace vckit

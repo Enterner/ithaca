@@ -37,11 +37,11 @@ std::string AgentCtx::spool_raw(const std::string& tool, const std::string& resu
 std::string AgentCtx::exec_recall(const json& args) {
     // 策略缝：表接管时回查执行体在策略内（外置目录/分页/聚合过滤口径随策略）
     if (ctx_tbl_ != nullptr && ctx_tbl_->recall != nullptr) {
-        const std::string a = args.dump();
-        const char* out = nullptr;
-        if (ctx_tbl_->recall(ctx_tbl_->self, a.c_str(), &out) == NOSTOS_OK && out != nullptr)
-            return std::string(out);
-        return err_result("context.recall（策略插件）执行失败");
+        const auto r = vckit::slot_call_str(args, [&](const char* s, const char** out) {
+            return ctx_tbl_->recall(ctx_tbl_->self, s, out);
+        });
+        if (!r.ok) return err_result("context.recall（策略插件）执行失败");
+        return r.body;
     }
     const std::string ref = args.value("ref", "");
     std::string content, err;

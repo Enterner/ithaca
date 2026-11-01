@@ -10,13 +10,14 @@ export const S = reactive({
   inFlight: false,
   lastPrompt: 0,
   rate: '',   // 会话平均输出速率 tok/s（''=尚无计量，显示面隐藏）；records 增量采样维护
-  liveRate: '',   // 本次回复输出速度 tok/s（DeepSeek 式：每条回复独立起算，首字等待
-                  // 不计，收口即隐；流式指示器专用）
   // /api/config（两层供应商）
   providers: [], current: '',
   model: '', pmode: 'auto-edit',
   // 会话
   sessions: [], curSession: '', curWs: '',
+  switchPending: false,   // 会话切换在途（乐观清屏后、服务端确认前）：补洞停拍
+                          // ——/api/transcript 此时还在服务旧活跃会话，灌进来就
+                          // 是上一会话的内容（同草稿门禁的机理）
   draft: null,   // 草稿态{workspace} ——＋新建到首条消息之间纯前端状态，
                  // 不发任何创建请求；首条消息经 /api/session/new 创建即初始化
   fsRev: 0,   // 文件树刷新时钟：applied/undone 时 +1，FileTree watch 它静默重拉已展开目录
@@ -65,8 +66,6 @@ export const X = {
   runCall: new Map(),     // run_id → 归属的 runner.run 调用行（「已启动」通告时配对）
   // 输出速率累计（会话均值口径，records 增量采样维护）：rateToks=粗估输出
   // tokens、rateMs=输出时长、rateLast=最近增量时刻（0=无进行中的输出期）。
-  // respToks/respStart=本次回复的粗估 tokens 与首增量时刻（回复均速，DeepSeek 式）。
   // 放容器不放 records 模块局部——清零面在 sessions.js 的 resetView，双向 import 成环
   rateToks: 0, rateMs: 0, rateLast: 0,
-  respToks: 0, respStart: 0,
 }

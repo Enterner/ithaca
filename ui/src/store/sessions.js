@@ -3,6 +3,8 @@
 // ——它对齐 session 广播的清空面；records.render 消费 session 事件后调本模块。
 import { S, X } from './state'
 import { api, shellMsg } from './api'
+import { pollOnce } from './records'   // 函数级循环引用（records ← sessions）：双方
+                                       // 仅运行期互调、初始化无顶层互调，ESM 安全
 import { confirmDialog } from '../confirm'
 
 // ---- 视图重置与草稿态 --------------------------------------------------------
@@ -19,7 +21,6 @@ export function resetView() {
   X.turnEdits = new Map(); X.turnEditsTurn = 0; X.lastTurnId = null
   X.runs = new Map(); X.runCall = new Map()   // run 归属随会话走，跨会话残留会错配输出
   X.rateToks = 0; X.rateMs = 0; X.rateLast = 0   // 速率累计随会话走（增量不落盘，换会话即重新统计）
-  X.respToks = 0; X.respStart = 0; S.liveRate = ''   // 回复均速同上（新会话无进行中的回复）
 }
 /**
  * 进草稿态：＋新建后的空态引导。零请求——注册表/磁盘在首条消息前不动。
@@ -115,8 +116,19 @@ export async function openSession(id) {
     if (!ok) return
     await cancelInflightTurn_()
   }
-  await api('/api/session/open', { id })
-  loadSessions()   // 硬化：不只依赖 SSE
+  // 乐观即时切换：清屏 + 侧栏高亮先走（点击零延迟反馈，不等 open 响应与 SSE
+  // 回环），服务端切换与重放异步跟进。switchPending 期间补洞停拍——转录端点
+  // 在服务端确认前还在服务旧活跃会话（踩过: 草稿态同款机理）。失败回滚 =
+  // loadSessions 把 curSession 纠回服务端现状 + 补洞重放原会话。
+  S.switchPending = true
+  resetView()
+  S.curSession = id
+  try {
+    await api('/api/session/open', { id })
+  } catch (e) { /* 网络失败：下方回滚对齐服务端现状 */ }
+  S.switchPending = false
+  loadSessions()   // 侧栏高亮/元数据对齐（成功 = 目标，失败 = 回滚服务端现状）
+  pollOnce()       // 重放当前服务端活跃会话（成功 = 目标，失败 = 原会话）
 }
 
 /** ＋新建 = 进草稿态（enterDraft 的公开名——组件侧语义入口）：零请求，注册表/
