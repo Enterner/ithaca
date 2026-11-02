@@ -567,9 +567,10 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
           border: 1px solid color-mix(in srgb, var(--teal) 55%, transparent);
           border-radius: 3px; padding: 0 5px; }
 .cv-wrap { flex: 1; min-height: 0; position: relative; }
-/* HACK: 嵌入式浏览器合成器偶发把 Monaco 的 margin 层粘在旧帧上——行号/文本出
-   现不随 DOM 更新的残影（层隐藏实验实锤：真 gutter visibility:hidden 后数字仍
-   在）。提升为独立合成层让本区域重绘整层失效，降低复发；对正常渲染零副作用 */
+/* 查看器容器提独立合成层（整层失效重绘）：WebView2 合成器对嵌套层有过把旧纹理
+   粘在新帧上的前科（正常渲染零副作用，留着无害）。历史上把查看器"行号双列"
+   归因于此是误诊——真根因是 read 出参内嵌行号（read_paged numbered，webui 已
+   改传 numbered:false 要原文）*/
 .cv-host { position: absolute; inset: 0; transform: translateZ(0); }
 .cv-diff { position: absolute; inset: 0; overflow: auto; }
 .cv-state { position: absolute; inset: 0; display: flex; align-items: center;

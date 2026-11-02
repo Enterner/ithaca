@@ -63,7 +63,9 @@ http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
     const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
     // 扩展名清单是共享件（workspace/read_paged.hpp），与 office/workspace 同源
     const bool doc = vcws::is_document_ext(ext_lower);
-    const json args = json{{"path", rel}};
+    // numbered=false 要原文：read 默认行首带行号（模型引用面），查看器把它当
+    // 正文渲染会与 Monaco 自绘 gutter 叠成双列行号
+    const json args = json{{"path", rel}, {"numbered", false}};
     return defer_(req, [this, args = std::move(args), doc](std::uint64_t conn) {
         const vc_api::ToolTable* table =
             doc && office_tools_ != nullptr ? office_tools_ : tools_;

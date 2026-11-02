@@ -50,15 +50,19 @@ inline bool is_document_ext(const std::string& ext) {
            ext == ".pdf" || ext == ".doc" || ext == ".ppt" || ext == ".xls";
 }
 
-// 分页出参（read 的文本/文档共用管线）：content 按行切窗、行首带真实行号，
-// 结果形状 = {ok, path, content, truncated, total_lines, offset, limit[, doc]}。
+// 分页出参（read 的文本/文档共用管线）：content 按行切窗、行首默认带真实行号
+// （args.numbered=false 关闭，UI 消费方要原文），结果形状 =
+// {ok, path, content, truncated, total_lines, offset, limit[, doc]}。
 inline json read_paged(std::string&& content, const std::string& norm, const json& args,
                        bool doc_truncated, const std::string& doc_kind) {
     // 按行分页（限制作用在「读」的动作上，结果内联一次回灌、无二次回查协议）。
     // 行按 \n 切、行内 \r 原样保留——重组与原文逐字节一致，apply 的精确块
-    // 匹配不受分页展示影响。行首带行号（cat -n 形态，编号 = 文件真实行号，
+    // 匹配不受分页展示影响。行首默认带行号（cat -n 形态，编号 = 文件真实行号，
     // 随 offset 对齐）：模型标注行号直接引用，不再需要逐符号 search 定位
-    // （踩过: 正文无行号 ⇒ 子代理为标行号发起几十次单符号搜索）
+    // （踩过: 正文无行号 ⇒ 子代理为标行号发起几十次单符号搜索）。numbered=false
+    // 供原文消费方（webui 查看器）关闭——行号是展示面不是数据面，混进 content
+    // 会让编辑器把行号当代码渲染（双 gutter）
+    const bool numbered = args.value("numbered", true);
     const bool empty = content.empty();
     const int total_lines =
         empty ? 0
@@ -87,7 +91,7 @@ inline json read_paged(std::string&& content, const std::string& norm, const jso
                 line = cut + (ends_nl ? "\n" : "…（行尾截断）");
                 line_truncated = true;
             }
-            picked += std::to_string(offset + ln) + "\t" + line;
+            picked += numbered ? std::to_string(offset + ln) + "\t" + line : line;
             pos = stop;
         }
     }
