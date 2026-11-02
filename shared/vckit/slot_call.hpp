@@ -2,10 +2,10 @@
 // vckit —— 表槽 JSON 调用助手（产品级共享件，经 shared/ 裸名共用）：
 // 「dump → 调槽 → parse → 拷出参」的单一实现。
 //
-// ABI 纪律：槽出参的 `const char*` 只保证**调用期有效**——历史上消费方各说各话
-// （agent 立即拷贝、webui 持 out_buf_ 存活缓冲）。本助手在槽返回后**立即**
-// 消费出参（拷成 string / parse 成 json），消费方不再需要任何存活缓冲，
-// 出参生命周期口径收口到这一处。
+// ABI 纪律：槽出参的 `const char*` 只保证**调用期有效**。本助手在槽返回后
+// **立即**消费出参（拷成 string / parse 成 json）——消费方无需任何存活缓冲，
+// 出参生命周期口径单源在此（消费方自理会并存「立即拷贝」与「持存活缓冲」
+// 两套口径）。
 //
 // 对 json 类型无感：仓里两份 vendored json 并存（产品 shared/nlohmann 全局域、
 // 内核 nostos/nlohmann 包装域），本头不挑——入参与回包 body 的 json 类型随
@@ -39,7 +39,7 @@ struct SlotReplyT {
 };
 
 // exec 适配器：调用方把「表槽调用」写成 lambda——槽指针/槽名/额外实参各表
-// 不同，本助手不抽象表形状，只收编出参消费纪律。
+// 不同，本助手不抽象表形状，只统一出参消费纪律。
 //     vckit::slot_call_json(state, [&](const char* s, const char** out) {
 //         return table->plan(table->self, s, out);
 //     });

@@ -13,7 +13,7 @@ function transcriptIds(host) {
     return fs.readdirSync(dir).filter((f) => f.endsWith(".transcript.jsonl"));
 }
 
-test("SC1 UI 全点击链：＋新建 → 空态引导 → 选工作区 → 发送 → 归组 → 重启重放", async ({ host, page }) => {
+test("UI 全点击链：＋新建 → 空态引导 → 选工作区 → 发送 → 归组 → 重启重放", async ({ host, page }) => {
     await page.goto(host.base);
 
     // 首装无会话 ⇒ 前端自动进草稿态：hero 引导可见
@@ -53,7 +53,7 @@ test("SC1 UI 全点击链：＋新建 → 空态引导 → 选工作区 → 发�
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first()).toBeVisible({ timeout: 30000 });
 });
 
-test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({ host, page }) => {
+test("UI 草稿丢弃：草稿期零创建请求，切走/关窗即丢弃", async ({ host, page }) => {
     // 前置：经 API 造一个已初始化会话
     const wsPath = path.join(host.ws, "real-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "原会话", workspace: wsPath });
@@ -64,7 +64,7 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
         .poll(async () => (await getJson(host.base, "/api/session")).body.in_flight, { timeout: 20000 })
         .toBe(false);
 
-    // 创建类请求监听（SC2 的正面断言：草稿期一个都不许发）
+    // 创建类请求监听（草稿期一个都不许发——正面断言）
     const creating = [];
     page.on("request", (r) => {
         if (r.method() === "POST" && /\/api\/session\/(new|assign)/.test(new URL(r.url()).pathname))
@@ -75,12 +75,12 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
     const entry = page.locator(".sess .t", { hasText: "原会话" });
     await expect(entry).toBeVisible();
 
-    // SC2a：＋新建 → 不选工作区 → hero 出现，零创建请求
+    // ＋新建 → 不选工作区 → hero 出现，零创建请求
     await page.locator("button.new-chat").click();
     await expect(page.locator(".hero-ws")).toBeVisible();
     expect(creating).toHaveLength(0);
 
-    // SC2b：选了工作区未发言 → 仍零创建请求、目录未建
+    // 选了工作区未发言 → 仍零创建请求、目录未建
     await page.locator(".hero-ws").click();
     await expect(page.locator(".stream")).toBeVisible();
     expect(creating).toHaveLength(0);
@@ -91,7 +91,7 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
     await expect(page.locator(".sess.active")).toHaveCount(1);
     expect(creating).toHaveLength(0);
 
-    // SC2c：再进草稿 → 关窗（reload）→ 无残留
+    // 再进草稿 → 关窗（reload）→ 无残留
     await page.locator("button.new-chat").click();
     await expect(page.locator(".hero-ws")).toBeVisible();
     await page.reload();
@@ -104,7 +104,7 @@ test("SC2a/b/c UI：草稿期零创建请求，切走/关窗即丢弃", async ({
     expect(fs.existsSync(path.join(host.ws, "picked-ws"))).toBe(false);
 });
 
-test("SC2d UI：草稿被丢弃后原会话记录与 active 分毫未动", async ({ host, page }) => {
+test("UI：草稿被丢弃后原会话记录与 active 分毫未动", async ({ host, page }) => {
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     expect(created.body.ok).toBe(true);
     const sid = created.body.id;
@@ -135,10 +135,10 @@ test("SC2d UI：草稿被丢弃后原会话记录与 active 分毫未动", async
 // 多实例会话切换（供应商模式 · 壳聚合视图的最小现场）：双宿主共享 shell
 // manifest，侧栏 = webui 聚合清单；alive 实例点击 = 整页导航到它的端口
 //（真实切换），停止态实例点击 = 发激活意图（浏览器内以 postMessage 桩捕获）。
-test("SW1 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换；停止态 = 激活意图", async ({ page }) => {
+test("壳模式 UI 会话切换：聚合侧栏点击存活实例 = 整页导航切换；停止态 = 激活意图", async ({ page }) => {
     test.setTimeout(90000);
     // 释放固定端口：上次运行的残留宿主会占住 8794/8795（webui 回退随机端口 ⇒
-    // baseA 失配）。测试规范禁 taskkill /IM 全局杀——会误杀并行 worker 的
+    // baseA 失配）。禁止 taskkill /IM 全局杀——会误杀并行 worker 的
     // fixture 宿主（踩过: 并发跑时对端用例的 turn 被腰斩）——按端口找
     // LISTENING 的 PID 再按 PID 树杀。
     const freePort = (port) => {

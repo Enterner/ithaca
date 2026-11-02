@@ -51,7 +51,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     std::error_code ec;
     fs::create_directories(home_ / "sessions", ec);
     // ITHACA_WEBUI_SESSION 仅作注册表命中时的活跃会话优先项
-    // （老启动器/dev 脚本仍在传）；未命中不产生任何会话
+    // （存量启动器/dev 脚本仍传该变量，须继续兼容）；未命中不产生任何会话
     std::string prefer_session;
     if (const char* v = std::getenv("ITHACA_WEBUI_SESSION"); v != nullptr && *v != '\0')
         prefer_session = v;
@@ -124,7 +124,7 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
     subscribe_();
     // 供应商两层配置：providers 数组——
     // 第一层供应商（名称/type/Base URL/API Key/各自的模型列表），第二层模型
-    // （id/上下文窗口/enabled）。缺失 ⇒ 从旧配置一次性迁移
+    // （id/上下文窗口/enabled）。缺失 ⇒ 按旧版扁平字段一次性迁移建档
     // （provider/api_key/base_url/models/context_sizes → Mock 内置 + 云端供应商）。
     if (!config_.contains("providers") || !config_["providers"].is_array() ||
         config_["providers"].empty()) {
@@ -246,9 +246,9 @@ void WebuiPlugin::deactivate() noexcept {
     host_.log(2, "ithaca.webui: 已停用");
 }
 
-// ---- HTTP 路由（select 线程：必须快）----------------------------------------
+// ---- HTTP 路由（select 线程：必须快；先过本地请求边界，再查路由表）-----------
 
-// ---- 本地请求边界（select 线程：只读请求字段，无共享态）----------------------
+// ---- 本地请求边界（select 线程：只读请求字段，无共享态）---------------------
 // 服务绑 127.0.0.1 不防浏览器侧攻击面：任意网页都能发跨站简单 POST——改 config
 // 的 base_url 即可把 API Key 与代码上下文引向攻击者服务器、改 workspace 可把
 // jail 根指向任意目录，DNS rebinding 下连 GET 读 transcript 都成立。两道校验：
@@ -351,7 +351,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         });
     if (m == "POST" && t == "/api/permission-mode") return api_permission_mode_(req);
     // 带参 GET 用整 req 传入——query 解析在 Request::query（单源），端点内部
-    // 自取。踩过: 历史上只传剥完的 t ⇒ 参数解析不到（transcript 的 after= 静默
+    // 自取。踩过: 只传剥完的 t ⇒ 参数解析不到（transcript 的 after= 静默
     // 失效，靠前端按 id 去重掩住）
     if (m == "GET" && t == "/api/fs/list") return api_fs_list_(req);
     if (m == "GET" && t == "/api/fs/read") return api_fs_read_(req);
@@ -368,8 +368,8 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         return defer_json_(req, [this] { return api_shell_sessions_(); });
     if (m == "POST" && t == "/api/shutdown") {
         // 不落「宿主停止」通告：每次关窗写一条，重启重放必现纯噪音
-        // （踩过: 开关 10 次攒 10 条）。宿主线程闭包内退出——与原 select 线程
-        // exit 等价（每条记录/每 turn 已落盘，立即退出安全；响应不送达同旧形态）。
+        // （踩过: 开关 10 次攒 10 条）。宿主线程闭包内退出：每条记录/每 turn
+        // 已落盘，立即退出安全；响应不送达（接受该形态）。
         return defer_(req, [](std::uint64_t) { std::exit(0); });
     }
     host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // 诊断：路由未命中点

@@ -27,7 +27,7 @@ static bool parse_manifest_line(std::string& line, std::string& key, std::string
 }
 
 // ---- 兄弟实例健康探测（多实例聚合 alive 真值）------------------------------
-// 背景：聚合端点原以 port 文件存在判 alive——宿主死亡后文件残留 ⇒ 死会话被标
+// 背景：仅凭 port 文件存在判 alive 不可靠——宿主死亡后文件残留 ⇒ 死会话被标
 // 存活，前端整页导航到死端口（踩过: 切换会话 nav FAIL 循环）。本线程每 2s 对
 // manifest 各 key 的实际端口做 /api/health 探测并缓存真值；聚合端点读缓存。
 // 仅壳模式（ITHACA_SHELL_MANIFEST 已设）运行。

@@ -32,7 +32,7 @@ nostos_status MockPlugin::chat_(int request_id, const char* /*messages 或 body�
                                 std::uint64_t slot) {
     {
         std::lock_guard<std::mutex> lock(requests_mu_);
-        if (requests_.count(request_id) != 0) return NOSTOS_ERR_BAD_STATE;  // 重入拒绝
+        if (requests_.count(request_id) != 0) return NOSTOS_ERR_BAD_STATE;  // 同 rid 重复发起 = 调用方 bug，拒绝而非覆盖
         auto& w = requests_[request_id];
         w.th = std::thread([this, request_id, slot, workerp = &w] {
             replay_(request_id, slot, workerp->stopping);

@@ -2,6 +2,7 @@
 // 各模块（api/records/sessions/actions/boot）——本文件不含任何逻辑。
 import { reactive } from 'vue'
 
+/** 全局响应式状态唯一出处：各组件经 ../store 只读引用；字段行为见行内注释。 */
 export const S = reactive({
   records: [],          // 已定格记录（重放 + SSE 收口）
   live: null,           // 流式块 {reasoning, text, open}（SSE 专属，不落盘；open 默认折叠）
@@ -56,8 +57,8 @@ export const S = reactive({
   provModelsEvt: null,
 })
 
-// 非响应式转态（记录游标/汇总卡聚合/速率累计）：SSE 与重放两路径共用的
-// 可变私有面。放属性容器而非裸导出 let——ESM 导入绑定只读，属性才可写。
+/** 非响应式转态容器（记录游标/汇总卡聚合/速率累计）：SSE 与重放两路径共用的
+ *  可变私有面。放属性容器而非裸导出 let——ESM 导入绑定只读，属性才可写。 */
 export const X = {
   turnEdits: new Map(),   // 当前轮编辑聚合（apply/applied 累计，flushTurnEdits 结算）
   turnEditsTurn: 0,

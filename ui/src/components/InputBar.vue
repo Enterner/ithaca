@@ -12,7 +12,7 @@ import ContextCard from './ContextCard.vue'
 import { confirmDialog } from '../confirm.js'
 
 // 权限模式三态的图标（下拉项左侧 + 触发器随模式切换，同一出处）：手=改前先问、
-// 盾勾=编辑放行、叹号=全自动——语义与图3（Codex 式模式选择器）对齐。
+// 盾勾=编辑放行、叹号=全自动（语义对齐 Codex 式模式选择器）。
 const ico = (paths) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
 const PMODE_ICONS = {
   suggest: ico('<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>'),
@@ -188,7 +188,8 @@ function onKey(e) {
   if (e.key !== 'Enter' || e.shiftKey || S.pending) return
   if (!S.inputText.trim()) return
   // 生成中 Enter = 停止（发送键此时画的是停止方框——Enter 跟随视觉而非反着来；
-  // 输入保留，停止后回车即发。排队语义收口后再用，避免「想停止却排队」）
+  // 输入保留，停止后回车即发）。
+  // TODO: 排队语义收口后，生成中 Enter 可改为入队发送，避免「想停止却排队」的歧义
   if (S.inFlight) { onStop(); e.preventDefault(); return }
   onSend(); e.preventDefault()
 }

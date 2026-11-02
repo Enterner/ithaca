@@ -32,7 +32,7 @@ if (!testOnly) {
     run("cmake", ["--preset", preset]);
     run("cmake", ["--build", "--preset", preset]);
     // 前端 dist：pack/dev/e2e 都直接消费 ui/dist——构建链必须产出它，否则换机
-    // 克隆后 npm run build 全绿而前端缺失/陈旧（dist 不入 git，见 .gitignore）。
+    // 克隆后 npm run build 全绿而前端缺失/陈旧（dist 不入版本库）。
     // vite 经 node 直调（npm 是 .cmd 批处理，无 shell spawn 会被 Node 拒绝）
     const uiDir = path.join(ROOT, "ui");
     if (!fs.existsSync(path.join(uiDir, "node_modules"))) {

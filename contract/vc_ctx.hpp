@@ -11,7 +11,7 @@
 // inject 会让无插件时 LazyGate 永远 PENDING；本表是"可选依赖 + 内置回退"：
 // 轮边界 service<> 解析（null = agent 内置同名逻辑），缺插件零行为变化。
 //
-// 生命周期纪律（NOTE）：agent 不 inject ⇒ 内核不知这条依赖边、revoke_dependents
+// NOTE: 生命周期纪律——agent 不 inject ⇒ 内核不知这条依赖边、revoke_dependents
 // 保护不到它；当前安全仅因宿主运行期只 unpublish、不物理卸载 DLL。策略插件
 // 运行期只许 unpublish（热切休眠），不得假设自身可被安全卸载；agent 轮边界
 // 解析、轮内持有表指针，不跨轮缓存。
@@ -75,7 +75,7 @@ struct CtxTable {
     // digest_message 为一条 role=system 消息（沿用内置标记约定：任务卡/摘要的
     // 原位替换与旧摘要并入靠 agent 的标记识别，产出应保留既有标记形态）；
     // cut 区间 = 待删除的 messages 下标 [cut_begin, cut_end)。判定门槛（阈值/
-    // 硬保护/退避）全部在策略内——agent 不再持有阈值状态，只透传原始信号。
+    // 硬保护/退避）全部在策略内——agent 不持有阈值状态，只透传原始信号。
     // verify 退避等策略状态由实现方自理（不持久化、重启重置——取舍：代价小，
     // 避免策略状态污染会话文件）。
     nostos_status (*plan)(void* self, const char* state_json, const char** out_json);
@@ -87,8 +87,8 @@ struct CtxTable {
 
     // 尾部追加（摘要数据面——摘要请求的发送权留 agent：request_id 出自 agent
     // 的发号器，插件自设第二发号器必然数值重叠，回包会被 agent 收进历史污染
-    // 上下文；agent 保持"全进程唯一 chat 发送方"不变量）。阶段二摘要的提示词
-    // 与截断规则；null = 不做 LLM 精修、机械 digest 直接定稿。
+// 上下文；agent 保持"全进程唯一 chat 发送方"不变量）。LLM 精修摘要的提示词
+// 与截断规则；null = 不做 LLM 精修、机械 digest 直接定稿。
     //   入：{"digest":{…机械 digest 消息…}}；出：{"system":<摘要 system 指令>,
     //        "instructions":<折叠给摘要器的原文>}
     nostos_status (*summary_prompt)(void* self, const char* digest_json,

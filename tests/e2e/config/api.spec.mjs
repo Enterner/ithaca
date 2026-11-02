@@ -32,7 +32,7 @@ async function cloudHostWithKey(host) {
 test.describe("配置契约（cloud 模式）", () => {
     test.use({ hostCfg: { extraEnv: { ITHACA_LLM_ACTIVE: "" } } });
 
-    test("CFG1 配置往返：api_key 回环下发（预填回显口径）——值保真 + has_key 同步 + 明文落盘", async ({ host }) => {
+    test("配置往返：api_key 回环下发（预填回显口径）——值保真 + has_key 同步 + 明文落盘", async ({ host }) => {
         await cloudHostWithKey(host);
         const { body: cfg } = await getJson(host.base, "/api/config");
         const cloud = cfg.providers.find((p) => p.name === CLOUD.name);
@@ -43,7 +43,7 @@ test.describe("配置契约（cloud 模式）", () => {
         expect(cfgFile).toContain("sk-e2e-test-key");
     });
 
-    test("CFG2 api_key 留空 = 按名保留旧值（key 不出前端也能改配置）", async ({ host }) => {
+    test("api_key 留空 = 按名保留旧值（key 不出前端也能改配置）", async ({ host }) => {
         await cloudHostWithKey(host);
         const { body: cfg } = await getJson(host.base, "/api/config");
         await postJson(host.base, "/api/config", {
@@ -53,7 +53,7 @@ test.describe("配置契约（cloud 模式）", () => {
         expect(cfgFile).toContain("sk-e2e-test-key");
     });
 
-    test("CFG3 未知模型自动建档进当前供应商（去重）", async ({ host }) => {
+    test("未知模型自动建档进当前供应商（去重）", async ({ host }) => {
         await cloudHostWithKey(host);
         await postJson(host.base, "/api/model", { model: "cfg-auto-model" });
         const { body: cfg } = await getJson(host.base, "/api/config");
@@ -63,7 +63,7 @@ test.describe("配置契约（cloud 模式）", () => {
 });
 
 test.describe("SSE 存活（mock 缺省模式）", () => {
-    test("CFG4 SSE 长连接存活：静默跨过回收窗口后广播仍可达", async ({ host }) => {
+    test("SSE 长连接存活：静默跨过回收窗口后广播仍可达", async ({ host }) => {
         const created = await postJson(host.base, "/api/session/new", { message: "创建 hello.txt" });
         expect(created.body.ok).toBe(true);
         // 等 turn 收口（等事实不等时间）——in_flight 门卫会拒并发 input

@@ -20,11 +20,11 @@ nostos_status MockPlugin::activate(const nostos::abi::Host& host) {
     table_.chat = &MockPlugin::chat_thunk;
     table_.cancel = &MockPlugin::cancel_thunk;
     table_.info = &MockPlugin::info_thunk;
-    table_.chat_ex = &MockPlugin::chat_ex_thunk;  // M3：agent 经 chat_ex 带 tools 提交
+    table_.chat_ex = &MockPlugin::chat_ex_thunk;  // agent 经 chat_ex 带 tools 提交
     table_.set_model = &MockPlugin::set_model_thunk;  // 热切（mock 仅记录，回放不变）
-    // 发布门槛（产品拍板：mock 仅测试模式）收编 vckit::active_gate：缺省（env 未设）
-    // 休眠，ITHACA_LLM_ACTIVE=mock 才首发。启动器同时按模式互斥装载两 llm 插件，
-    // 本判定只防旧启动路径的双装载竞争（同名服务热切竞态，踩过）
+    // 发布门槛（产品拍板：mock 仅测试模式）= vckit::active_gate：缺省（env 未设）
+    // 休眠，ITHACA_LLM_ACTIVE=mock 才首发。启动器按模式互斥装载两 llm 插件，
+    // 本判定兜底防双装载竞争（同名服务热切竞态，踩过）
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host.log(4, "ithaca.llm.mock: 领取 poster 失败（宿主 ABI 过旧或未实现）");
         return NOSTOS_ERR_FAILED;

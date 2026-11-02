@@ -73,14 +73,14 @@ namespace vc_webui {
 
 using json = nlohmann::json;
 
-// ---- 原生选目录对话框（UI 原语，自内核 vckit::win 下沉到唯一消费方；置顶修复随迁）--
+// ---- 原生选目录对话框（UI 原语；唯一消费方在本插件，置顶修复内置）------------
 
 // 弹出"选择文件夹"对话框（IFileDialog + FOS_PICKFOLDERS：Vista 现代样式，
 // Explorer 同款面包屑/侧栏/搜索；老 SHBrowseForFolderW 是 Win95 树形对话框）。
 // 返回选中绝对路径（UTF-8）；取消/失败返回空串。调用线程需 COM 已初始化。
 //
 // 宿主是无窗口进程，无主对话框会沉底（被浏览器页面盖住 ⇒ "点了没反应"）——
-// 激活瞬间经本线程挂的 CBT 钩子置顶（真实踩过）。
+// 激活瞬间经本线程挂的 CBT 钩子置顶（踩过）。
 // 内置 mock 供应商默认模型目录（定义在 config.cpp；迁移建档/非数组回种共用）
 json default_mock_models();
 
@@ -183,7 +183,7 @@ private:
     void record_(json rec, const char* tag);
     // turn 事件的广播出口（只广播不落盘的流式增量/明细）：同 record_ 打归属标
     void broadcast_turn_(json rec, const char* tag);
-    // 事件 session 标 → 归属会话（空标回落活跃会话——旧生产者组合兜底）
+    // 事件 session 标 → 归属会话（空标回落活跃会话——不产 session 标的生产者走此兜底）
     std::string ev_owner_(const char* tag) const {
         return (tag != nullptr && *tag != '\0') ? std::string(tag) : session_;
     }
@@ -193,7 +193,9 @@ private:
     // SSE 广播；行号 seq 单调续接，前端历史+实时合并不重不漏）。owner = 父会话
     void agent_log_append_(const std::string& owner, int turn_id, const json& rec);
     void close_agent_logs_();
-    json api_agent_log_(int turn);   // 数据源：路由 defer 包装（turn 由路由层 req.query 解出）
+    /// GET /api/agent-log?turn=N → 子代理工作明细存档数组（纯读；turn 由路由层
+    /// req.query 解出，数据源为路由 defer 包装）
+    json api_agent_log_(int turn);
 
     // ---- 配置（src/config.cpp）----------------------------------------------------
 
@@ -203,10 +205,12 @@ private:
     void merge_local_overlay_();
     bool persist_config_();
     json config_public_();
+    /// POST /api/config → 供应商两层配置校验 + 落盘 + 热切（副作用：写 config/覆盖层）
     http::Response api_config_save_(const http::Request& req);
-    // 插件 UI 贡献清单（vc.ui.register 累积；前端设置面板的动态节）
+    /// GET /api/ui/registry → 已注册的插件 UI 贡献清单（vc.ui.register 累积；纯读）
     json api_ui_registry_();
-    // 供应商模型清单拉取（设置面动作，SSE provider_models 回发；网络在 detach 线程）
+    /// POST /api/provider/models → 平台模型清单拉取，SSE provider_models 回发
+    ///（网络在 detach 线程）
     http::Response api_provider_models_(const http::Request& req);
     // 组装并投递 vc.llm.set_active（activate 对齐/配置保存热切/模型热切共用出口）
     void post_llm_set_active_();
@@ -234,47 +238,68 @@ private:
     // 工作区补发（tool_register 兜底）：启动恢复的 WorkspaceSet 可能先于 workspace
     // 订阅被丢（总线无保留语义），按当前活跃会话重发一次（同值热切幂等）
     void backfill_workspace_();
+    /// POST /api/session/new {message 必须, workspace?} → 创建即初始化
+    ///（副作用：写注册表/transcript、SSE 广播、vc.session.load）
     http::Response api_session_new_(const http::Request& req);
+    /// POST /api/session/open {id} → 切换活跃会话（副作用：SSE 广播、
+    /// vc.session.load、工作区随会话热切）
     http::Response api_session_open_(const http::Request& req);
+    /// POST /api/session/rename {id, title} → 改注册表 title 并落盘
     http::Response api_session_rename_(const http::Request& req);
+    /// POST /api/session/delete {id} → 删注册表 + transcript + state
+    ///（删活跃会话自动切最近更新者）
     http::Response api_session_delete_(const http::Request& req);
     json session_meta_();
-    // 上下文构成分解（悬停指示器的数据源；读活跃会话 state.json，mtime 缓存）
+    /// GET /api/context/breakdown → 上下文构成分解（悬停指示器的数据源；mtime 缓存）
     json api_context_breakdown_();
 
     // ---- 输入与裁决（src/api.cpp）-------------------------------------------------
 
     void start_turn_(const std::string& text, const std::string& attachments_json);
+    /// POST /api/input {line} → 发送后续消息（挂起-补响应；副作用：落盘 + 开 turn）
     http::Response api_input_(const http::Request& req);
+    /// POST /api/decision {decision} → 提案裁决转发（0 批准/1 拒绝/2 免批/3 撤销/4 取消）
     http::Response api_decision_(const http::Request& req);
+    /// POST /api/permission-mode {mode} → 权限模式持久化 + 热切
     http::Response api_permission_mode_(const http::Request& req);
+    /// POST /api/model {model} → 模型热切 + 配置持久化 + 未知模型自动建档
     http::Response api_model_(const http::Request& req);
-    http::Response api_session_cmd_(const http::Request& req);   // 会话级命令（vc.session.cmd 转发）
+    /// POST /api/session/cmd {cmd} → 会话级命令（vc.session.cmd；1 压缩上下文，
+    /// 2 撤回中断回合——先回退本侧转录面再发令）
+    http::Response api_session_cmd_(const http::Request& req);
 
     // ---- 附件管线（src/attachments.cpp）-------------------------------------------
 
-    http::Response api_upload_(const http::Request& req);   // 附件上传（base64 → 工作区 .ithaca/uploads）
-    // 附件图片字节（前端缩略图/对话流预览的数据源；uploads 白名单内的图片）
+    /// POST /api/upload {name, data(base64)} → 附件落盘工作区 .ithaca/uploads/
+    ///（副作用：写盘；不经 apply 提案——上传是文件进场不是内容修改）
+    http::Response api_upload_(const http::Request& req);
+    /// GET /api/attachment?path= → 附件图片字节流（纯读；uploads 白名单内的图片）
     http::Response api_attachment_(const http::Request& req);
     // 附件路径 → 多模态载荷（data_url 内联；上传落点 .ithaca/uploads/ 即白名单）
     json attachments_payload_(const json& rel_paths);
 
     // ---- 工作区代理（src/api_fs.cpp）----------------------------------------------
 
+    /// GET /api/fs/list?path=&depth= → 文件树目录列举（代理 workspace list）
     http::Response api_fs_list_(const http::Request& req);
-    http::Response api_fs_read_(const http::Request& req);   // 代码查看器的文件内容
-    // 版式预览（docx/pptx/doc/ppt/pdf → PDF 流）：提交 office 转换（异步回调）
-    // 并挂起连接，回调里补发——见 api_fs.cpp 的实现注释
+    /// GET /api/fs/read?path= → 查看器文件内容（按扩展名分流 workspace/office）
+    http::Response api_fs_read_(const http::Request& req);
+    /// GET /api/fs/preview?path= → 文档版式预览（docx/pptx/doc/ppt/pdf → PDF 流）：
+    /// 提交 office 转换并挂起连接，回调里补发（副作用：转换入队）
     http::Response api_fs_preview_(const http::Request& req);
     // /api/fs/* 代理共用：table 由调用方按分流选定（workspace / office）
     json call_tool_json_(const vc_api::ToolTable* table, const char* tool,
                          const std::string& args_json);
+    /// GET /api/mcp/status → mcp 插件回发的 server 状态（读 home/mcp-status.json；
+    /// 缺失/损坏回空清单）
     json api_mcp_status_();
 
     // ---- 原生选目录（src/picker.cpp）----------------------------------------------
 
+    /// POST /api/pick-folder → 原生选目录，结果经 SSE folder_picked 回发
     http::Response api_pick_folder_(const http::Request& req);
-    json api_shell_sessions_();   // 壳模式聚合（实现在 src/prober.cpp）
+    /// GET /api/shell/sessions → 壳模式聚合会话清单（纯读；数据全来自磁盘 + 探测缓存）
+    json api_shell_sessions_();
 
     // ---- 状态 -------------------------------------------------------------------
 
@@ -286,7 +311,7 @@ private:
 
     const vc_api::LlmTable* llm_ = nullptr;     // activate 时解析（模型热切用）
     const vc_api::ToolTable* tools_ = nullptr;  // workspace 工具表：activate 解析、
-        // tool_register 兜底重解析；读写全在宿主线程（/api/fs/* 已迁闭包）
+        // tool_register 兜底重解析；读写全在宿主线程（/api/fs/* 经 defer 闭包访问）
     const vc_api::ToolTable* office_tools_ = nullptr;  // office 工具表（可选项）：
         // /api/fs/read 的文档分流数据源；解析与重解析同 tools_ 款
     const vcoffice::PreviewTable* preview_ = nullptr;  // office 预览转换表（可选项）：

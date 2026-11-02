@@ -14,7 +14,6 @@ const updateGolden = process.argv.includes("--update-golden");
 const exe = hostExe(preset);
 const plugins = pluginDlls(MOCK_CHAIN, preset);
 
-// 隔离工作区 + 会话文件 + 加速回放
 const ws = freshWs(path.join(ROOT, "tests", "regress", ".ws"));
 const env = {
     ...mockEnv(ws),   // 回归 = 测试模式（mock 缺省休眠后必须显式开启）

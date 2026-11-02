@@ -204,7 +204,7 @@ VC_TEST("edit: 同批同文件两步编辑叠加（后续 op 看到前序 after�
     std::string content;
     REQUIRE(store.read(key_of(jail, "f.txt"), content));
     CHECK(content == "B\n");
-    // edit-diff 方案：同文件多 op 折叠为一条——before=批前原状，after=末次结果
+    // 同文件多 op 折叠为一条编辑记录——before=批前原状，after=末次结果
     REQUIRE(r.edits.size() == 1);
     CHECK(r.edits[0].is_new);              // 批前不存在
     CHECK(r.edits[0].before.empty());

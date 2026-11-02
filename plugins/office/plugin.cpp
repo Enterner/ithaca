@@ -247,7 +247,7 @@ private:
     // 预览表出参（与 finish 同款调用期有效契约；独立缓冲——两表出参生命周期
     // 不相交）。双重载与 finish_result 的 json/string 对齐——NOTE: 只留 string
     // 形参时，fail() 的 json 实参会走 json 的隐式转换运算符（运行时 get<string>
-    // 对对象值抛 type_error——探针实测崩在宿主 abort），重载决议在这里必须分明
+    // 对对象值抛 type_error——踩过: 探针实测崩在宿主 abort），重载决议在这里必须分明
     nostos_status finish_preview(json result, const char** out) {
         return vcplugin::finish_result(preview_out_buf_, std::move(result), out);
     }

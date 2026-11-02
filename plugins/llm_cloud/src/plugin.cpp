@@ -22,7 +22,7 @@ nostos_status CloudPlugin::activate(const nostos::abi::Host& host) {
     table_.info = &CloudPlugin::info_thunk;
     table_.chat_ex = &CloudPlugin::chat_ex_thunk;
     table_.set_model = &CloudPlugin::set_model_thunk;
-    // provider 热切：机制收编 vckit::active_gate（竞争样板单源）——env 门首发 +
+    // provider 热切：机制托管 vckit::active_gate（竞争样板单源）——env 门首发 +
     // vc.llm.set_active 热切，载荷落地（凭据/端点/子档案）在 classify 的 mine 分支
     if (host.acquire_poster(&poster_) != NOSTOS_OK) {
         host.log(4, "ithaca.llm.cloud: 领取 poster 失败（宿主 ABI 过旧或未实现）");
@@ -129,8 +129,8 @@ nostos_status CloudPlugin::info_thunk(void* self, const char** out_json) noexcep
     json info{{"provider", "cloud"}, {"model", p->model_}, {"base", p->base_utf8_}};
     // 模型窗口查表（已知 DeepSeek 模型 = 契约级默认窗口，与 webui 建档同值）。
     // 未知模型不报——消费方回落兜底阈值：虚报窗口（报大）会让压缩阈值越过真实
-    // 窗口回到爆窗，宁缺勿滥。max_output_tokens 暂不报——各家输出上限口径未
-    // 核实，待模型表补全。
+    // 窗口回到爆窗，宁缺勿滥。TODO: max_output_tokens 待各家输出上限口径核实、
+    // 模型表补全后再补报（当前不报，消费方走兜底）。
     static const std::set<std::string> kKnownModels = {
         "deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro", "deepseek-flash",
     };

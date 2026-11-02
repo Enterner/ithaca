@@ -200,7 +200,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWinKey))
         <span class="fs-title">{{ S.subView ? '子代理' : '文件' }}</span>
         <span v-if="!S.subView && !S.viewer" class="fs-count">{{ ftCount }} 项</span>
         <span v-else class="spacer"></span>
-        <!-- 过程视图无自带关闭入口,头部保留其专属关闭;刷新随 fsRev 自动,不再设钮 -->
+        <!-- 过程视图无自带关闭入口,头部保留其专属关闭;刷新随 fsRev 自动,故不设刷新按钮 -->
         <button v-if="S.subView" class="fs-btn" title="关闭过程视图" @click="S.subView = 0">⟩</button>
       </div>
       <!-- 文件态 ⇄ 查看态/子代理态：树用 v-show 保展开态；查看器与子代理过程

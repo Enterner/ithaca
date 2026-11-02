@@ -239,7 +239,7 @@ async function onStreamClick(e) {   // 代码块复制按钮（v-html 内容的�
               <span class="spacer"></span>
               <span v-if="toolStat(rec).run" class="spinner" title="运行中"></span>
             </template>
-            <!-- 结果摘要进折叠体（不再作行尾右缀）：收起行只剩调用摘要+箭头 -->
+            <!-- 结果摘要进折叠体（不作行尾右缀）：收起行只剩调用摘要+箭头 -->
             <div v-if="toolStat(rec).text" class="procres" :class="{ warn: toolStat(rec).warn }">{{ toolStat(rec).text }}</div>
             <div v-if="rec.args && rec.args.trim()" class="targs"><pre>{{ argsPretty(rec) }}</pre></div>
             <div v-if="rec._runs && rec._runs.length" class="runout">

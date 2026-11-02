@@ -39,8 +39,8 @@
 // 的 attribute 是 FULLPROPSPEC，x64 真实 64 字节，按 GUID 的 16 字节镜像只有 40
 // ⇒ 第三方过滤器按真实布局写满 64、缓冲 40，每次 GetChunk 栈越界写 24 字节；
 // 文本仍能抽出来是因为 flags 偏移 8 碰巧对齐，栈帧损坏被产物正确性掩盖）。
-// 旧镜像的 HRESULT 语义值同样是错的（0x8004177B 系；真值 0x80041700/0x00041709，
-// 见 filterr.h）——此前靠 hr<0 兜底碰巧跑通。
+// 手抄镜像的 HRESULT 语义值同样会抄错（踩过: 0x8004177B 系——真值
+// 0x80041700/0x00041709 见 filterr.h——错值靠 hr<0 兜底碰巧跑通）。
 #include <propidl.h>
 #include <filterr.h>
 #include <filter.h>
@@ -62,7 +62,7 @@ struct DocText {
     std::string error;   // ok=false 时的人话原因
 };
 
-// ---- 基础件 -----------------------------------------------------------------
+// ---- XML 扫描基础件（实体解码/UTF-8 编码/属性取值/元素定位）------------------
 
 inline void push_codepoint(std::string& out, unsigned cp) {
     if (cp < 0x80) out.push_back(static_cast<char>(cp));
@@ -436,6 +436,8 @@ inline bool extract_ifilter(const std::wstring& path, const std::string& ext, Do
 }
 
 // ---- 入口 ---------------------------------------------------------------------
+// 唯一入口：OOXML 族（docx/pptx/xlsx）走字节面 p/n，其余注册格式经 IFilter 走
+// 真实文件 path；失败以 DocText.error 点名，ok=false。
 
 inline DocText extract(const unsigned char* p, size_t n, const std::string& ext,
                        const std::wstring& path) {

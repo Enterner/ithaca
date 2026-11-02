@@ -8,9 +8,9 @@
 // 执行口把关（安全边界在执行者，agent 只转发）：
 //   · 权限把关：三档权限模式——suggest/auto-edit 由 agent 确认清单把关
 //     （提案→decision），full-auto 无审批执行（AppContainer 沙箱默认关闭，
-//     ITHACA_RUN_SANDBOX=1 才启用且 ACL 只授工作区——机制详见 proc.hpp 沙箱段）；
-//   · cwd 经 jail 解析（根内相对或任意绝对路径；jail 已墙→闸，只做解析与在根
-//     判定，不做策略拒绝）；dry_run=true 只解析并回显 would_run（批准门素材）；
+//     ITHACA_RUN_SANDBOX=1 才启用且 ACL 只授工作区——读宽写窄 + 断网）；
+//   · cwd 经 jail 解析（根内相对或任意绝对路径；jail 是闸不是墙——只做解析与
+//     在根判定，不做策略拒绝）；dry_run=true 只解析并回显 would_run（批准门素材）；
 //   · 超时（默认 600s，上限 1h）⇒ kill_tree 整树终止 + 截断通告。
 //
 // 线程：每条 run 三个自有线程（两路读取 + 一路等待/回收），事件全部经
@@ -118,7 +118,7 @@ public:
             std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                 ? std::getenv("ITHACA_PERMISSION_MODE") : "");
         // Windows 沙箱取舍（对齐成熟 CLI 的实际形态——Windows 上命令不经沙箱，
-        // 安全边界 = 三档权限审批 + 输出/超时纪律；jail 自墙→闸后退化为解析器，
+        // 安全边界 = 三档权限审批 + 输出/超时纪律；jail 是闸不是墙，仅作解析器，
         // cwd 可落在任意目录，把关在权限模式不在路径）：AppContainer 两层
         // 路径在本机 Insider 26200 实测残缺（v1 SECURITY_CAPABILITIES 拒发 87；
         // v2 低盒令牌下 cmd 的 dir 内建拒绝、MSYS 工具初始化必挂 0xC0000142）
@@ -137,9 +137,9 @@ public:
             std::atomic_store(&jail_, std::make_shared<vckit::PathJail>(e->root));
             host_.log(2, "ithaca.runner: 工作区已热切为 " + std::string(e->root));
         }));
-        // 权限模式：full-auto ⇒ 命令执行（沙箱取舍见 activate 的 force_sandbox_
-        // 注释）；值未变化 ⇒ 静默（启动对齐不刷日志；suggest/auto-edit 的把关
-        // 在 agent 确认清单）
+        // 权限模式：full-auto ⇒ 命令执行（沙箱仅 ITHACA_RUN_SANDBOX=1 才启用，
+        // 默认非沙箱——取舍见 activate 的沙箱注释）；值未变化 ⇒ 静默（启动对齐
+        // 不刷日志；suggest/auto-edit 的把关在 agent 确认清单）
         subs_.push_back(host_.on(vc_api::permission_mode, [this](const void* p) {
             const auto* e = static_cast<const vc_api::PermissionMode*>(p);
             const std::string next = vc_api::normalize_permission_mode(
@@ -255,9 +255,9 @@ private:
         const std::string cmd = args.value("command_line", std::string{});
         if (cmd.empty()) return tool_error("command_line 为空");
 
-        // cwd：jail 解析（根内相对路径 / 任意绝对路径；空 = 根）——墙→闸后根外
-        // 目录可解析为自身，把关在权限模式（suggest/auto-edit 命令逐条批，
-        // full-auto 放行）
+        // cwd：jail 解析（根内相对路径 / 任意绝对路径；空 = 根）——jail 是闸
+        // 不是墙，根外目录可解析为自身，把关在权限模式（suggest/auto-edit 命令
+        // 逐条批，full-auto 放行）
         const std::shared_ptr<vckit::PathJail> jail = std::atomic_load(&jail_);   // 热切换装竞态防护
         std::wstring cwd_wide = jail->root();
         if (const std::string rel = args.value("cwd", std::string{}); !rel.empty()) {
@@ -376,8 +376,8 @@ private:
             entry->rd_out = std::thread(reader, entry->child->stdout_read, 0);
             entry->rd_err = std::thread(reader, entry->child->stderr_read, 1);
         }
-        // stdin 写入在读取线程就绪之后（死锁推导见 spawn 处注释）：输出有人排水，
-        // bash 才能推进到读 stdin，同步写不构成三方互等
+        // stdin 写入在读取线程就绪之后：输出有人排水，bash 才能推进到读 stdin，
+        // 同步写不构成三方互等（完整死锁推导在 spawn 处注释）
         if (bash_stdin != nullptr) {
             DWORD written = 0;
             ::WriteFile(bash_stdin, cmd.data(), static_cast<DWORD>(cmd.size()),
@@ -533,7 +533,8 @@ private:
     // 并发访问 ⇒ shared_ptr 原子换装，取局部副本后解引用
     std::shared_ptr<vckit::PathJail> jail_;
     std::string mode_ = "auto-edit";  // 权限模式
-    bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关，取舍见 activate）
+    bool force_sandbox_ = false;      // ITHACA_RUN_SANDBOX=1 ⇒ full-auto 走沙箱（默认关：
+                                      // AppContainer 两层路径本机实测残缺，诊断/未来可用时再开）
     std::atomic<bool> sandboxed_{false};   // full-auto ⇒ 沙箱 spawn（受 force_sandbox_ 门控；
                                            // 权限热切在宿主线程写、run_tool 在 agent 线程读）
     bool degrade_warned_ = false;     // 沙箱降级通告只发一次（进程级）

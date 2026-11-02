@@ -6,7 +6,7 @@
 
 namespace vc_llm_cloud {
 
-// 产物回流：slot=0 广播（主会话，与迁移前一致）；slot!=0 单播（子会话私有，
+// 产物回流：slot=0 广播（主会话）；slot!=0 单播（子会话私有，
 // 不进广播通道——子代理的流式/收口事件只在归属槽可见）。
 void CloudPlugin::post_delta_(int rid, std::uint64_t slot, std::string text) {
     vckit::poster_submit(poster_, [this, rid, slot, text = std::move(text)] {

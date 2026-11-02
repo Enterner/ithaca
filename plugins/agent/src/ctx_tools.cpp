@@ -307,7 +307,7 @@ std::string AgentCtx::summarize_result(const std::string& tool, const std::strin
             const std::string st =
                 f.contains("delta") && f["delta"].is_string()
                     ? f["delta"].get<std::string>()          // stub 形态：workspace 直给落盘量级
-                    : vcagent::diff_stats_short_str(d);      // 旧形态/ dry_run：从 diff 尾行提取
+                    : vcagent::diff_stats_short_str(d);      // 无 delta 字段的形态（dry_run 等）：从 diff 尾行提取
             return path + note + (st.empty() ? "" : " " + st);
         }
         return std::to_string(r["files"].size()) + " 个文件";

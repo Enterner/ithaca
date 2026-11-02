@@ -1,6 +1,6 @@
 // 上下文压缩与外置存储（plugin/agent 的压缩切片）。
-// 阶段一外置：超内联上限的工具结果落 raw/ 归档（spool_raw），context.recall
-// 分页回查（exec_recall）；阶段二：阈值维护、收口判定（maybe_compress_）、异步
+// 外置：超内联上限的工具结果落 raw/ 归档（spool_raw），context.recall
+// 分页回查（exec_recall）；折叠：阈值维护、收口判定（maybe_compress_）、异步
 // LLM 摘要与机械 digest 兜底、折叠应用（replace_with_digest_/apply_digest_/
 // forced_fold_resend_）。压缩纯函数单源在 shared/vcagent/context.hpp（ctx_basic
 // 策略镜像共用）；本文件是 agent 内置管线的执行体，表接管路径经 ctx_strategy.cpp。
@@ -58,7 +58,7 @@ std::string AgentCtx::exec_recall(const json& args) {
     return vcagent::recall_paged(content, args, ref, total);
 }
 
-// ---- 上下文压缩阶段二 --------------
+// ---- 阈值维护与折叠应用 --------------
 
 void AgentCtx::set_context_window_(long long w) {
     ctx_window_ = w;
@@ -74,13 +74,14 @@ void AgentCtx::recompute_threshold_() {
         vcagent::effective_threshold(ctx_window_, ctx_max_output_, compress_threshold_);
 }
 
-// 压缩判定共用入口：finish_turn 与 cleanup_turn_ 都走这里（失败/取消收口不漏
-// 判定——否则反复取消/失败的长会话上下文只增不减）。计划不可折叠 ⇒ false，
-// 调用方走原收口；若下一请求仍超窗，由 on_llm_error 的超窗自救接手。
+// LLM 精修可用：无策略表（内置管线）或策略表提供了 summary_prompt 槽。
 bool AgentCtx::llm_summary_ready_() const {
     return ctx_tbl_ == nullptr || ctx_tbl_->summary_prompt != nullptr;
 }
 
+// 压缩判定共用入口：finish_turn 与 cleanup_turn_ 都走这里（失败/取消收口不漏
+// 判定——否则反复取消/失败的长会话上下文只增不减）。计划不可折叠 ⇒ false，
+// 调用方走原收口；若下一请求仍超窗，由 on_llm_error 的超窗自救接手。
 bool AgentCtx::maybe_compress_() {
     if (subagent_) return false;  // 子代理总闸：单任务短命上下文，压缩语义（回 Idle/
                                   // 摘要异步收口/退避校验）全部不适用
@@ -167,7 +168,7 @@ void AgentCtx::on_compress_error_(const vc_api::LlmError&) {
 }
 
 // 折叠应用核心：区间替换 + 旧 digest 并入 + 任务卡锚点吸收 + 持久化 + 通告。
-// 先插 digest 再跳过的顺序纪律见阶段一（踩过: 跳过分支先 continue 会漏掉插入，
+// 顺序纪律：先插 digest 再做跳过判断（踩过: 跳过分支先 continue 会漏掉插入，
 // digest 整条丢失）。
 void AgentCtx::replace_with_digest_(const json& digest_msg, const char* via) {
     // 任务卡折叠重建：在切割前的完整历史上合成——被折叠的 user 消息切割后即不在

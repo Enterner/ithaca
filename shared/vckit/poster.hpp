@@ -52,7 +52,7 @@ namespace vckit {
 
 namespace detail {
 
-// 所有 投递块的公共前缀：run = 执行并自毁；dispose = 不执行、只回收。
+// 所有投递块的公共前缀：run = 执行并自毁；dispose = 不执行、只回收。
 // on_drop 的统一回收器经这个前缀做类型擦除（对任意闭包类型生效）。
 struct BlockHead {
     void (*run)(void*) noexcept;
@@ -293,7 +293,7 @@ nostos_status poster_submit_await(const nostos_poster& poster, F&& fn) {
 
 // 推迟一拍投递（「必须执行」语义）：fn 排到宿主线程；poster 不可用（未领取/
 // 会话作废）时**就地同步执行**——状态机收口/终态类的节拍不许因 poster 缺席
-// 而丢拍。消费方原来的三行回退（判空 → submit → 失败回退同步）收编为一步：
+// 而丢拍。判空 → submit → 失败回退同步的三行回退样板由此并为一步：
 //
 //     vckit::poster_defer(poster, [&] { on_done(copy); });
 //

@@ -70,14 +70,14 @@ struct PipedSpawnOptions {
                                        // 投喂，收尾关写端送 EOF）；缺省继承父 stdin
     // 环境块覆盖：键值均 UTF-8。非空时与父环境块按名合并（同名覆盖）后整块传入；
     // 空 = 原样继承父环境（不构造环境块）。构建机制（合并/按名排序/双 NUL 收尾，
-    // 排序是 CreateProcessW 的硬要求）收编在 win::build_env_block_w 单一出处。
+    // 排序是 CreateProcessW 的硬要求）单源在 win::build_env_block_w。
     std::map<std::string, std::string> env_overrides_utf8;
 };
 
 // start 产物的一组句柄（release_handles 的返回形态）：供把生命周期移交调用方
 // 自管容器。句柄语义见各字段。
-// NOTE: 消费纪律——五句柄三面：读面 stdout_read/stderr_read、树杀面 job、写面
-// stdin_write（仅 stdin_pipe=true 时非空）。整体 adopt 五收五；「写完即关送
+// NOTE: 消费纪律——五句柄四面：读面 stdout_read/stderr_read、控制面 process、
+// 树杀面 job、写面 stdin_write（仅 stdin_pipe=true 时非空）。整体 adopt 五收五；「写完即关送
 // EOF」是读端收尾的前提——写端留在原地被丢弃 = 匿名管道无 EOF（读端读取
 // 线程永挂）+ 句柄泄漏。
 struct PipedHandles {
@@ -124,7 +124,7 @@ public:
             return false;
         }
         std::wstring cwd_wide = win::utf8_to_wide(options.cwd_utf8);
-        // 环境块构建收编 win::build_env_block_w（单一出处）；本 API 面向 UTF-8，
+        // 环境块构建走 win::build_env_block_w（单一出处）；本 API 面向 UTF-8，
         // 键值的宽字符转换是本边界自己的事——失败点名报错
         std::wstring env_block;
         if (!options.env_overrides_utf8.empty()) {

@@ -1,4 +1,4 @@
-﻿// 快照栈的单测：turn 分组与合并、LIFO 与上限、陈旧检测两段式（check 只读 / write 落地）。
+// 快照栈的单测：turn 分组与合并、LIFO 与上限、陈旧检测两段式（check 只读 / write 落地）。
 #include "ithaca_test_framework.hpp"
 
 #include "snapshots.hpp"

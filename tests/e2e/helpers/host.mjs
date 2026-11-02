@@ -12,6 +12,8 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 构造宿主句柄：name 决定隔离目录 tests/.tmp/<name>_home/_ws，port 为监听端口；
+ *  返回 fresh/setEnv/writeScenario/start/stop/waitReady（方法面见各函数注释）。 */
 export function makeHost({ name, port, preset = "debug" }) {
     const bin = path.join(root, "build", preset, "bin");
     const hostExe = path.join(bin, "ithaca_host.exe");
@@ -68,7 +70,7 @@ export function makeHost({ name, port, preset = "debug" }) {
     };
 }
 
-/** health 轮询到就绪（fixture waitReady 与 SW1 双实例用例共用同一份口径）。 */
+/** health 轮询到就绪（fixture waitReady 与壳模式双实例用例共用同一份口径）。 */
 export async function pollHealth(base, timeoutMs = 15_000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -81,8 +83,8 @@ export async function pollHealth(base, timeoutMs = 15_000) {
     throw new Error("宿主未就绪（health 超时）: " + base);
 }
 
-/** 等 turn 收口（等事实不等时间）：transcript 出现 assistant 记录即收口（规范 §3）。
- *  match = 可选的文本筛选（点名特定回复的用例传正则）。 */
+/** 等 turn 收口（等事实不等时间）：以 transcript 出现 assistant 记录这一事实为准
+ *  判收口，不做固定时长等待。match = 可选的文本筛选（点名特定回复的用例传正则）。 */
 export async function waitTurnDone(host, match = null, timeoutMs = 15_000) {
     await expect.poll(async () => {
         const t = (await getJson(host.base, "/api/transcript?after=0")).body;
@@ -100,7 +102,8 @@ const defaultScenario = [
 ];
 
 export const test = base.extend({
-    // hostCfg: { scenario?, seed?(host), extraEnv? } —— 在宿主启动前定制环境
+    // hostCfg: { scenario?, seed?(host), extraEnv?, mcpServers?, pickStub? } —— 在宿主
+    // 启动前定制环境（mcpServers 写入 config 种子；pickStub 注入 pick-folder 测试钩子）
     hostCfg: [{}, { option: true }],
     host: async ({ hostCfg }, use, testInfo) => {
         const h = makeHost({
@@ -139,10 +142,12 @@ export const test = base.extend({
 export const expect = base.expect;
 
 // 常用小助手
+/** GET `${base}${p}`（8s 超时）→ {status, body:JSON}。 */
 export async function getJson(base, p) {
     const r = await fetch(`${base}${p}`, { signal: AbortSignal.timeout(8000) });
     return { status: r.status, body: await r.json() };
 }
+/** POST JSON 到 `${base}${p}`（p 拼在 base 后，8s 超时）→ {status, body:JSON}。 */
 export async function postJson(base, p, body) {
     const r = await fetch(`${base}${p}`, {
         method: "POST",

@@ -40,7 +40,7 @@ struct LlmTable {
     // 宿主与插件同步重编；无外部冻结消费者）。
     nostos_status (*chat_ex)(void* self, int request_id, const char* body_json);
 
-    // 尾部追加：热切模型（Trae 式右下角选择器）。model 为 API 模型 id（调用期
+    // 尾部追加：热切模型（webui 右下角选择器）。model 为 API 模型 id（调用期
     // 有效，provider 必须拷贝）。对"下一个"请求生效，不影响在途请求。
     // 旧 provider 未实现时该槽为 nullptr——调用方以 null 探测并回退"重启生效"。
     nostos_status (*set_model)(void* self, const char* model);
@@ -54,7 +54,7 @@ inline constexpr std::uint64_t llm = nostos::svc_id<"vc.llm.v1">;
 // ---- 产品默认值（跨插件共用出处；尾部追加）----------------------------------
 
 // 默认上下文窗口（tokens）：webui 建档/未知模型兜底、llm_cloud 窗口查表、
-// llm_mock 合成自述共用一份——字面量多处分写必漂移（踩过：前端 PRESETS 与
+// llm_mock 合成自述共用一份——字面量多处分写必漂移（踩过: 前端 PRESETS 与
 // 后端默认目录曾对同一模型写出两个不同窗口值，配置显示与 agent 实际拿到的
 // 窗口不一致）。
 inline constexpr long long kDefaultContextWindow = 128000;

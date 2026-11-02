@@ -1,5 +1,5 @@
 <script setup>
-// 会话栏：品牌 + 新会话 + 工作区分组列表（当前组排最前、可折叠/重命名/删除/组内新建）
+// 会话栏：品牌 + 新会话 + 工作区分组列表（分组按注册表稳定顺序、可折叠/重命名/删除/组内新建）
 import { ref, computed, watch } from 'vue'
 import { S, openSession, newSession, delSession, renameSession, loadSessions } from '../store'
 import { confirmDialog, promptDialog } from '../confirm'

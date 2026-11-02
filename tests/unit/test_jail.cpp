@@ -14,7 +14,7 @@ using Jail = vckit::PathJail;
 namespace {
 
 fs::path make_temp_root() {
-    const fs::path root = test_root("ithaca_m1_jail_test");   // 清空+建目录走框架共用件
+    const fs::path root = test_root("ithaca_jail_test");
     std::error_code ec;
     fs::create_directories(root / "sub" / "nested", ec);
     { std::ofstream(root / "a.txt").put('x'); }
@@ -36,7 +36,7 @@ VC_TEST("jail: 合法相对路径被接受并折叠") {
     REQUIRE(jail.resolve("./sub//nested/", full, norm, err));  // 点段/空段/尾分隔符折叠
     CHECK(norm == "sub/nested");
 
-    // ".." 不再一刀切拒：词法折叠回根内的按普通相对路径放行（墙→闸）
+    // ".." 可放行：词法折叠后落回根内的按普通相对路径处理（墙→闸）
     REQUIRE(jail.resolve("sub/../a.txt", full, norm, err));
     CHECK(norm == "a.txt");
 

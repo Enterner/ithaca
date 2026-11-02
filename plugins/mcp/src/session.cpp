@@ -80,7 +80,7 @@ bool McpSession::request(const std::string& method, const json& params, int time
 void McpSession::feed(const std::string& line) {   // 读线程：分发响应
     json msg = json::parse(line, nullptr, /*allow_exceptions=*/false);
     if (msg.is_discarded() || !msg.is_object()) return;   // server 日志/噪音行跳过
-    if (!msg.contains("id") || msg.contains("method")) return;   // 通知：MVP 不处理
+    if (!msg.contains("id") || msg.contains("method")) return;   // 通知：当前范围不处理
     if (!msg["id"].is_number_integer()) return;
     std::lock_guard lk(mu);
     const auto it = pending.find(msg["id"].get<long long>());

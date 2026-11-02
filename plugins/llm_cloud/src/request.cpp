@@ -44,8 +44,8 @@ nostos_status CloudPlugin::chat_ex_(int request_id, const char* body_json) {
     json messages = doc.value("messages", json::array());
     json tools = doc.contains("tools") ? doc["tools"] : json();
     // slot 路由键：请求体携带 slot=turn_no ⇒ 事件按槽单播（多会话并行后主会话
-    // 请求同样带槽）；0 = 广播回发（旧生产者组合）。子档案判定走独立的
-    // subagent 标（主/子区分不再与槽耦合——多会话下主请求也带槽）。
+    // 请求同样带槽）；0 = 广播回发（不带槽的生产者）。子档案判定走独立的
+    // subagent 标（与槽位解耦——多会话下主请求也带槽）。
     const std::uint64_t slot = doc.value("slot", static_cast<std::uint64_t>(0));
     const bool sub = doc.value("subagent", false);
     return start_(request_id, std::move(messages), std::move(tools), slot, sub);

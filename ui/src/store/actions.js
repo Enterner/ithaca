@@ -9,6 +9,8 @@ import { loadSessions } from './sessions'
 /**
  * 发送输入：草稿态 = 调 /api/session/new 创建即初始化（唯一出口）；已初始化会话 =
  * /api/input。/help 本地应答；/undo /cancel 映射为裁决。
+ * 失败行为：网络/创建失败时回滚草稿与输入框、复位 inFlight 并 pushLocal 提示，
+ * 附件保留待重试。
  */
 export async function send(text) {
   const line = (text || '').trim()
@@ -84,7 +86,8 @@ export async function send(text) {
   }
 }
 
-/** 裁决提案：0 批准所选 / 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；成功即收起决策坞。 */
+/** 裁决提案：0 批准所选 / 1 拒绝 / 2 免批 / 3 撤销 / 4 取消；成功即收起决策坞。
+ *  失败行为：r.ok=false 时决策坞与提案原状不动，错误由调用方提示。 */
 export async function decide(d, paths, msg) {
   const body = { decision: d }
   if (paths) body.paths = paths
@@ -119,11 +122,13 @@ async function reloadConfig() {
   cfgFromServer(await api('/api/config'))
 }
 
-/** 权限模式切换（通告由 agent 在值真正变化时发，这里不重复发）。 */
+/** 权限模式切换（通告由 agent 在值真正变化时发，这里不重复发）。
+ *  失败行为：请求失败返回 {ok:false,error}，本地模式值不动（下次拉配置对齐）。 */
 export async function setMode(mode) {
   await api('/api/permission-mode', { mode })
 }
-/** 保存供应商两层配置；成功即回拉对齐 + loadSessions（面板关闭即反馈）。 */
+/** 保存供应商两层配置；成功即回拉对齐 + loadSessions（面板关闭即反馈）。
+ *  失败行为：返回 {ok:false,error}，面板不关、本地编辑态不动。 */
 export async function saveConfig(providers, current) {
   const body = {
     providers: providers.map(p => ({
@@ -140,7 +145,8 @@ export async function saveConfig(providers, current) {
   return { ok: true }
 }
 
-/** 弹原生目录选择；结果经 SSE folder_picked 事件回页面。 */
+/** 弹原生目录选择；结果经 SSE folder_picked 事件回页面。
+ *  失败行为：请求本身失败仅得 {ok:false}，无 SSE 回执；不弹本地错误（用户重试即可）。 */
 export async function pickFolder() {
   // NOTE: 必须 POST——api() 无 body 会发 GET（踩过: hero 选目录按钮 404 静默无效）
   await api('/api/pick-folder', {})
@@ -148,18 +154,21 @@ export async function pickFolder() {
 
 // ---- 插件 UI 贡献----------------------------------------------------
 
-/** 保存 MCP server 配置（mcp 节整节回传；后端透传并热重载 mcp 插件）。 */
+/** 保存 MCP server 配置（mcp 节整节回传；后端透传并热重载 mcp 插件）。
+ *  失败行为：透传 api() 结果 {ok,error}，配置不落盘不重载。 */
 export async function saveMcpVals(servers) {
   return api('/api/config', { mcp: { servers } })
 }
 
-/** 拉各插件的 UI 贡献清单（schema，"界面长什么样"）；设置面板打开时调用。 */
+/** 拉各插件的 UI 贡献清单（schema，"界面长什么样"）；设置面板打开时调用。
+ *  失败行为：仅 r.ok 时更新 S.pluginUi，失败静默保留旧清单。 */
 export async function loadPluginUi() {
   const r = await api('/api/ui/registry')
   if (r.ok) S.pluginUi = r.plugins || []
 }
 
-/** 保存各插件设置值（plugins 节整节回传；后端透传并触发对应插件 reload）。 */
+/** 保存各插件设置值（plugins 节整节回传；后端透传并触发对应插件 reload）。
+ *  失败行为：返回 r；仅成功时回拉 /api/config 对齐（防并发漂移）。 */
 export async function savePluginVals() {
   const r = await api('/api/config', { plugins: S.pluginVals })
   if (r.ok) await reloadConfig()   // 与磁盘对齐（防并发漂移）

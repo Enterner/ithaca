@@ -180,7 +180,7 @@ void WebuiPlugin::close_agent_logs_() {
 }
 
 /// GET /api/agent-log?turn=N → 子代理工作明细存档（JSONL 解析数组）。右栏过程
-/// 视图点开时按需拉取；无会话/无存档返回空数组（老会话的明细仍在主 transcript）。
+/// 视图点开时按需拉取；无会话/无存档返回空数组（无独立存档的会话，明细仍在主 transcript）。
 json WebuiPlugin::api_agent_log_(int turn) {
     json records = json::array();
     if (!session_.empty() && turn > 0) {
@@ -225,7 +225,7 @@ void WebuiPlugin::save_index_() {
     const fs::path tmp = home_ / "index.json.tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) return;   // 打不开多半是目录不可写：与旧直写同口径静默（读侧容错）
+        if (!out) return;   // 打不开多半是目录不可写：静默返回（读侧对注册表缺失已容错）
         out << index_.dump();
         out.flush();
     }
@@ -249,7 +249,8 @@ std::string WebuiPlugin::session_ws_(const std::string& id) const {
     return {};
 }
 
-// 运行池工作区一致性（语义见 webui_plugin.hpp 声明处）
+// 运行池工作区一致性：任一在跑 turn 的会话工作区与 ws 不同 ⇒ true
+//（空 ws 恒 false——不构成 jail 冲突；完整语义见 webui_plugin.hpp 声明处）
 bool WebuiPlugin::ws_conflicts_running_(const std::string& ws) const {
     if (ws.empty()) return false;
     for (const auto& [rid, n] : running_)
@@ -357,7 +358,7 @@ void WebuiPlugin::sweep_uninitialized_() {
 }
 
 // 会话切换：换 transcript + 通知 agent 加载上下文（vc.session.load）。
-// 切走不杀 turn：运行中链继续跑在原会话（事件经 turn_owner_ 归属路由落盘广播），
+// 切走不杀 turn：运行中链继续跑在原会话（事件经 ev_owner_ 归属路由落盘广播），
 // 本函数只换视图面；agent 忙时 session_load 在 agent 侧挂起、链收口自动应用。
 void WebuiPlugin::switch_to_(const std::string& id) {
     const fs::path sp = home_ / "sessions" / (id + ".state.json");

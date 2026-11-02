@@ -1,5 +1,5 @@
 // 管道化子进程的单测（真实子进程：cmd /c 形态，均在秒内完成）。
-// runner 的非沙箱 spawn 已委托内核 vckit::PipedProcess——本组用例同时是该原语的
+// runner 的非沙箱 spawn 委托内核 vckit::PipedProcess——本组用例同时是该原语的
 // 行为回归（echo/退出码/stderr 路由/终止语义）。
 #include "ithaca_test_framework.hpp"
 
@@ -9,7 +9,7 @@
 #include <vector>
 
 using namespace vcrun;
-using vckit::LineSplitter;   // 行分割原语已上收内核 kit（读取走 kit 的静态 read_chunk）
+using vckit::LineSplitter;   // 行分割原语在内核 kit（读取走 kit 的静态 read_chunk）
 
 VC_TEST("proc: echo 走 stdout 管道，退出码 0") {
     ChildPipes child;

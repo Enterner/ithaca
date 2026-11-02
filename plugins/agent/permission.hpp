@@ -1,9 +1,9 @@
 #pragma once
 // 权限模式三档的纯逻辑：归一与确认清单映射。
 // 沙箱（AppContainer）在 runner/proc.hpp；模式事件在 contract/vc_events.hpp；
-// jail（shared/vckit/path_jail.hpp）自「墙→闸」后退化为解析器 + 在根判定器——
+// jail（shared/vckit/path_jail.hpp）只做解析器 + 在根判定器（是闸不是墙）——
 // 根外路径可解析（outside 标记），可达性把关收拢在本文件的确认清单 + dispatch
-// 的 outside_root 判定，jail 不再是策略边界。
+// 的 outside_root 判定，策略边界不在 jail。
 //
 //   suggest    —— 逐条问：编辑与命令都走提案→批准（工作区外改动同规，提案卡
 //                 展示绝对路径）

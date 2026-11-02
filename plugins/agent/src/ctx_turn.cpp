@@ -44,8 +44,8 @@ void AgentCtx::subscribe_turn_slot_() {
     // 迭代（类型化/广播/slot 三路同律——栈内退订/重订本就内存安全），推迟一拍的
     // 依据是两条 ABI 纪律：载荷字符串调用期有效，过 poster 的状态机推进必须持
     // 拷贝；嵌套 emit 的跨订阅者因果序内核不内建（EventHub 头注释）——收口移出
-    // 派发栈，兄弟订阅者先见完整事件再见证态后果。真实踩过: 0xc0000005（探针
-    // 复现，本纪律修复；当时的"raw 通道非快照迭代"归因经内核复核不成立）。
+    // 派发栈，兄弟订阅者先见完整事件再见证态后果。踩过: 0xc0000005（探针复现
+    // ——偏离本纪律即崩；当时的"raw 通道非快照迭代"归因经内核复核不成立）。
     // 重播（UI 侧）保持同步——它不碰订阅面。turn_no_ 守卫丢弃重订后旧槽的迟到事件
     slot_subs_.push_back(host_.on_slot(vc_api::llm_done, slot, [this](const void* p) {
         const auto* e = static_cast<const vc_api::LlmDone*>(p);
@@ -130,7 +130,7 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
     if (depth_ == 0) load_agent_types_();
     if (!discover_tools())
         return fail_turn("没有可用的工具表（检查 ITHACA_AGENT_TOOLS）");
-    // M6 session：恢复的会话保留历史（含 system），只在空会话时注入 system；
+    // 会话持久化：恢复的会话保留历史（含 system），只在空会话时注入 system；
     // 子代理 = 类型 prompt 覆盖
     if (messages_.empty())
         messages_.push_back(json{{"role", "system"},
@@ -168,7 +168,7 @@ void AgentCtx::begin_turn(const std::string& text, const std::string& attachment
         user_content = std::move(image_parts);
     }
     messages_.push_back(json{{"role", "user"}, {"content", user_content}});
-    // mission 任务目标卡（上下文压缩阶段一）：首轮建档后跨轮冻结——卡坐在
+    // mission 任务目标卡：首轮建档后跨轮冻结——卡坐在
     // system 之后，逐轮重写会让其后整段历史前缀失效（缓存前缀纪律）；锚点在
     // 压缩折叠时吸收。子代理是单任务短命上下文，任务卡与 user 消息逐字重复，
     // 纯耗 token
@@ -365,7 +365,7 @@ bool AgentCtx::dispatch_one_(ToolCallCtx& ctx) {
     }
     if (propose) {
         // 泛化试算 + 提案（先置状态再 emit——嵌套派发会在本帧内回到
-        // on_decision，状态没就位会被自己的守卫丢弃——M3 踩过）。
+        // on_decision，状态没就位会被自己的守卫丢弃——踩过）。
         if (!dry_done) {
             json dry_args = ctx.args;
             dry_args["dry_run"] = true;
@@ -442,7 +442,7 @@ void AgentCtx::append_results_and_continue() {
 }
 
 // 全部工具调用完成 ⇒ 结果按序回灌 ⇒ 下一轮 LLM。
-// 上下文压缩阶段一：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
+// 上下文压缩：超内联上限（4KB）的成功/失败结果外置到 raw/，消息里只留
 // 确定性模板摘要 + ref（锚点逐字节保留；失败 2KB 内保留详细错误，ref 兜底全量）
 void AgentCtx::append_results_and_continue_impl() {
     for (std::size_t ci = 0; ci < calls_.size(); ++ci) {
@@ -545,7 +545,7 @@ void AgentCtx::finish_turn() {
     host_.log(2, "ithaca.agent: turn #" + std::to_string(turn_no_) + " 完成（tokens total " +
                      std::to_string(usage_total_) + "）");
     persist_session_();
-    // 上下文压缩（阶段二两态）：判定实时——硬保护 0.95×W 独立前置，
+    // 上下文压缩（两态）：判定实时——硬保护 0.95×W 独立前置，
     // 或会话阈值（迟滞）；执行只在 turn 边界。折叠两态：LLM 自总结（异步摘要请求）
     // → 机械 digest 兜底；硬保护强制机械折叠（摘要输出量不可控，也不等它）。
     if (maybe_compress_()) return;  // 已收口（机械）或摘要在途（收口在回包/失败分流）
@@ -639,7 +639,7 @@ void AgentCtx::cleanup_turn_(bool keep_partial) {
             vckit::poster_invalidate_owner(poster_, c.get());
         children_.clear();
         child_pends_.clear();
-        // 逐子代理的取消卡已承载终态，聚合通告不再发（纯刷屏）
+        // 逐子代理的取消卡已承载终态，不发聚合通告（纯刷屏）
         host_.log(2, "ithaca.agent: 已取消 " + std::to_string(killed) + " 个在途子代理");
     }
     persist_session_();

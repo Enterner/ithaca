@@ -1,4 +1,4 @@
-/* 全局主题（Nebula 风格：深海军蓝底 + 蓝→紫渐变主色；布局/结构规则与旧版一致，只换 token） */
+/* 全局主题（Nebula 风格：深海军蓝底 + 蓝→紫渐变主色） */
 :root {
   color-scheme: dark;
   --ink: #0B0E15; --panel: #12171F; --line: #222B3B;
@@ -80,7 +80,7 @@ input, textarea, select { font: inherit; }
 .maincard.with-files { margin-right: 0; }
 @media (prefers-reduced-motion: reduce) { .maincard { transition: none; } }
 /* 顶栏与文件树头固定等高——两浮卡的分隔线横向对齐（内容高度随子件漂移必错位，
-   踩过：mini-btn 30px 对 12px 标题行高差 13px） */
+   踩过: mini-btn 30px 对 12px 标题行高差 13px） */
 .topbar { display: flex; align-items: center; gap: 14px; padding: 0 18px; height: 44px;
           border-bottom: 1px solid var(--line); flex: none; }
 .topbar .kv { color: var(--dim); } .topbar .kv b { color: var(--text); font-weight: 600; }
@@ -139,7 +139,7 @@ input, textarea, select { font: inherit; }
 .fb-head .spacer { flex: 1 1 auto; }   /* 撑开右缀;标签不生长,收合箭头贴在标签后 */
 .fb-head .tico { flex: none; }
 .fb-head .tico.dim { opacity: .75; }
-.fblock .procres { margin: 2px 0 6px 0; }   /* 结果摘要:折叠体内首行（不再作行尾右缀） */
+.fblock .procres { margin: 2px 0 6px 0; }   /* 结果摘要:折叠体内首行（不作行尾右缀） */
 .fblock .procres.warn { color: var(--red); }
 /* ---- 折叠展开动画（全流统一）：grid-template-rows 0fr⇄1fr 的高度过渡，内容
    任意高度都成立、无需 JS 量高；内容常驻 DOM（不做 v-if）是动画与「展开位置
@@ -295,7 +295,7 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 .dd-lead { display: inline-flex; align-items: center; }
 #ctxRing { color: var(--dim); cursor: default; border-radius: 6px; width: 26px; height: 26px;
            display: inline-flex; align-items: center; justify-content: center; flex: none; }
-/* 实时输出速率（流式期间常显于上下文环旁）+ 上传拦截提示 */
+/* 上传拦截提示（.liverate 速率行已并入上下文卡用量块，规则暂留） */
 .liverate { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .liverate b { color: var(--text); font-weight: 600; }
 .uploadhint { color: var(--teal); font-size: 12px; padding: 2px 4px 0; }
@@ -461,7 +461,7 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 .ddock-ops button.n:hover { border-color: var(--red); color: var(--red); }
 .ddock-ops button.a:hover { border-color: var(--acc); color: var(--acc); }
 
-/* 子代理过程视图（右栏 SubagentPane）：取消按钮复用琥珀警示色系 */
+/* 子代理过程视图（右栏 SubagentPane）：取消按钮常态弱化、悬停转警示红 */
 .wcancel { background: none; border: 1px solid var(--line); color: var(--text);
            border-radius: var(--radius-ctl); padding: 3px 12px; font-size: 12px; }
 .wcancel:hover { border-color: var(--red); color: var(--red); }
@@ -480,7 +480,6 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 .subpane-desc { color: var(--dim); font-size: 11.5px; padding: 0 2px 8px;
                 border-bottom: 1px solid var(--line); }
 .subpane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 2px; }
-/* 齿轮 */
 /* 齿轮：side-foot 行内项（勿改回绝对定位——bottom 定值会随底栏高度漂移压到 border-top，踩过） */
 .gear-btn { flex: none; width: 26px; height: 26px;
             display: inline-flex; align-items: center; justify-content: center;

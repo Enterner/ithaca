@@ -6,7 +6,8 @@ cmake_minimum_required(VERSION 3.24)
 # + 空闲 250ms 兜底拍）、干净退出。除 Ctrl+C 取消语义（vc.agent 特判）与 --selftest
 # 冒烟外不含业务——应用知识只有契约头（contract/）与 profile 装配层。
 #
-# 独立构建：cmake -S app -B app/build-debug && cmake --build --preset debug（在本目录）
+# 独立构建（在本目录）：cmake -S . -B build-debug && cmake --build build-debug
+# （本目录无 presets；顶层构建走仓根 CMakePresets，产物落 build/<preset>/bin/）
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     project(ithaca_host LANGUAGES CXX)
@@ -33,7 +34,7 @@ target_include_directories(ithaca_host PRIVATE
 
 if(MSVC)
     # /permissive- /EHsc /utf-8 经 nostos::core INTERFACE 传递（loader PUBLIC 链
-    # core），此处不再重复——utf-8 旗标源于内核 7e0246c 起。
+    # core），本工程无需重复添加。
 else()
     target_compile_options(ithaca_host PRIVATE -Wall -Wextra)
 endif()

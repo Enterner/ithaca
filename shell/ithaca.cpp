@@ -1,6 +1,6 @@
 // ithaca —— 桌面壳（Win32 + WebView2）：多宿主实例管理器（导航中继形态）。
 //
-// 职责（界面形态按用户拍板修订：无壳自绘 UI——真实界面 =
+// 职责（界面形态：无壳自绘 UI——真实界面 =
 // webui 前端，壳只做窗口与生命周期）：
 //   1. 会话 = 实例：每个会话一个 ithaca_host.exe（独立 ITHACA_WEBUI_HOME 数据
 //      目录、独立端口、经 cmd.exe 受信父进程链拉起、归入 Job Object——壳退出
@@ -345,8 +345,8 @@ void SpawnInstance(size_t idx) {
     CreateDirectoryW(it.home.c_str(), nullptr);
     CreateDirectoryW((it.home + L"\\sessions").c_str(), nullptr);
 
-    // 供应商模式决定插件装载（产品拍板：mock 仅测试模式，两插件互斥存在——
-    // 竞争性同名服务的热切竞态随双装载一起消失）：--mock 只装 mock，默认只装 cloud。
+    // 供应商模式决定插件装载（mock 仅测试模式，两插件互斥装载——双装载会让
+    // 同名服务热切竞态）：--mock 只装 mock，默认只装 cloud。
     // 清单唯一出处 scripts/plugins.mjs（本文件无法 import——改清单时同步此处）
     const wchar_t* plugin_names[] = {
         g_mock_mode ? L"llm_mock_plugin.dll" : L"llm_cloud_plugin.dll",

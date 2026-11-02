@@ -11,7 +11,7 @@
 // 线程纪律：无自有线程、无 poster 需求；表调用来自两个线程——agent 的宿主线程
 // （事件回调链）与 webui 的 HTTP select 线程（文件树 /api/fs/list 直调），
 // tool_execute 以全工具串行锁（tool_mu_）串行化两路调用。
-// 状态边界：快照是纯内存态——插件卸载即弃，撤销能力随激活会话一起撤销（文档明示）。
+// 状态边界：快照是纯内存态——插件卸载即弃，撤销能力随激活会话一起撤销。
 #include "vcws/iface.hpp"
 
 #include "vc_events.hpp"
@@ -48,9 +48,9 @@ namespace {
 using nlohmann::json;
 
 constexpr std::size_t kListEntriesCap = 5000;   // list 条目护栏：浏览走默认聚合，flat 的
-inline constexpr std::uintmax_t kSearchFileCap = 1024 * 1024;   // search 单文件整读上限
                                                 // 定位是精确计数/全量过滤——上限只做遍历
                                                 // 终止与体量护栏，不是浏览上限
+inline constexpr std::uintmax_t kSearchFileCap = 1024 * 1024;   // search 单文件整读上限
 constexpr int kListDepthCap = 6;               // list 递归深度上限
 constexpr std::size_t kSearchFilesCap = 2000;  // search 扫描文件数上限
 constexpr int kSearchDepthCap = 8;
@@ -85,7 +85,7 @@ std::string entry_rel(const fs::directory_entry& it, const std::string& rel_pref
     // symlink 与 junction 都要拦：MSVC STL 把 IO_REPARSE_TAG_MOUNT_POINT 映射为
     // file_type::junction，is_symlink() 对它返回 false（踩过: pnpm 的 node_modules
     // junction 被照常递归，遍历越过 jail 边界）；状态查询出错同样跳过——出错条目
-    // 按"不可知"处理，与重解析点同侧（状态查询出错照跳——漏跳会越过 jail 边界）
+    // 按"不可知"处理，与重解析点同侧（漏跳会越过 jail 边界）
     const fs::file_type ft = it.status(se).type();
     if (se || ft == fs::file_type::symlink || ft == fs::file_type::junction) return {};
     const std::string name =
@@ -339,7 +339,7 @@ private:
             if (child_rel.empty()) continue;   // 重解析点不入遍历（防环、防出 jail）
             const bool is_dir = it->is_directory(se) && !se;
             // pattern 只过滤文件（目录始终保留——结构信息不因过滤丢失）；不匹配
-            // 的文件不占 500 配额
+            // 的文件不占 kListEntriesCap（5000）配额
             if (!is_dir && !pattern_.empty() &&
                 !glob_match_ci(pattern_, child_rel.substr(child_rel.rfind('/') + 1))) continue;
             if (is_dir) {
@@ -579,7 +579,7 @@ private:
             has_turn ? snaps_.find(args.value("turn_id", 0)) : snaps_.peek_latest();
         if (group == nullptr)
             return fail("没有可撤销的 turn（栈深 " + std::to_string(snaps_.depth()) + "）");
-        const int turn_id = group->turn_id;  // 先拷贝：pop 之后 group 指针失效（ASan 捕获过）
+        const int turn_id = group->turn_id;  // 先拷贝：pop 之后 group 指针失效（踩过: ASan 捕获）
 
         // 两段式：先全组只读裁决——任一冲突（外部改过 / 被删）⇒ 整组零改动并点名。
         // 已恢复文件（上次写回中途失败）跳过裁决：其 current == before，对 after
@@ -630,7 +630,7 @@ private:
                     {"snapshot_depth", snaps_.depth()}};
     }
 
-    // ---- 小件 -------------------------------------------------------------------
+    // ---- 路径解析与失败回执 ------------------------------------------------------
 
     bool resolve_arg(const std::string& rel, std::wstring& full, std::string& norm,
                      std::string& err) {

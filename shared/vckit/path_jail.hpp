@@ -1,15 +1,15 @@
 #pragma once
 // vckit —— 路径 jail：不可信来源给定路径的统一解析器 + 「在根判定器」。
 //
-// 语义（墙→闸）：jail 不再是硬边界——根内路径走完整安全闸放行；根外的绝对
-// 形态（盘符/根斜杠/UNC）与 .. 上溢折叠结果解析为自身并标 outside = true，交
-// 调用方处置（把关责任上移到权限模式层：suggest/auto-edit 走审批提案，
-// full-auto 放行）。安全闸只对「在根」路径全量生效，三道闸缺一不可：
+// 语义（墙→闸）：jail 是解析器与「在根判定器」，不是硬边界——根内路径走完整
+// 安全闸放行；根外的绝对形态（盘符/根斜杠/UNC）与 .. 上溢折叠结果解析为自身
+// 并标 outside = true，交调用方处置（把关责任在权限模式层：suggest/auto-edit
+// 走审批提案，full-auto 放行）。安全闸只对「在根」路径全量生效，三道闸缺一不可：
 //   1) 文本卫生（规范化前对原始输入段）：拒绝控制字符、Windows 保留设备名、
 //      段尾的点与空格（canonical 会静默剥离——请求 "a." 实际落盘 "a"，名实
 //      不符，检查必须前置否则被吞段放空）、盘符相对形态（"C:foo"）；空段折叠，
-//      "." 段丢弃；".." 段交规范化折叠后做在根判定（上溢逃出根 ⇒ 标 outside，
-//      不再词法期一刀切拒——可达性是策略问题，归权限模式；卫生是 Windows
+//      "." 段丢弃；".." 段交规范化折叠后做在根判定（上溢逃出根 ⇒ 标 outside；
+//      可达性是策略问题归权限模式，故不在词法期一刀切拒；卫生是 Windows
 //      正确性问题，归本原语）。
 //   2) 规范化分类：GetFullPathNameW 折叠后按根前缀唯一分类——在根内剥前缀转
 //      相对；根外解析为自身（full = 规范化绝对路径，norm = '/' 分隔的绝对形态，
@@ -159,7 +159,7 @@ public:
 private:
     static std::wstring canonical(const std::wstring& path) {
         // 第一次调用（长度 0）返回"需要的容量，含结尾 null"——缓冲必须按它分配，
-        // 否则末字符被吞（踩过：fs::exists 对解析结果全挂）。
+        // 否则末字符被吞（踩过: fs::exists 对解析结果全挂）。
         const DWORD need = ::GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
         if (need == 0) return path;
         std::wstring out(need, L'\0');

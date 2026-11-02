@@ -11,7 +11,7 @@
 
 namespace vc_webui {
 
-// ---- 事件订阅（宿主线程序列化；各 handler 只做：拼 JSON → 落盘 → 广播）-----
+// ---- 事件订阅（宿主线程串行化；各 handler 只做：拼 JSON → 落盘 → 广播）-----
 
 void WebuiPlugin::subscribe_() {
     // 事件面与 tui 同构；raw 订阅形态（agent/tui 同款）：on(event_id, fn(const void*))
@@ -25,7 +25,7 @@ void WebuiPlugin::subscribe_() {
         const std::string_view svc(e->svc_name);
         if (svc == vcws::kToolSvcName && tools_ == nullptr) {
             const vc_api::ToolTable* t = host_.service<vc_api::ToolTable>(vcws::kToolSvc);
-            tools_ = t;   // 读写全在宿主线程（/api/fs/* 已迁闭包）
+            tools_ = t;   // 读写全在宿主线程（/api/fs/* 经 defer 闭包访问）
             if (t != nullptr) {
                 host_.log(2, "ithaca.webui: workspace 工具表已接入（后到）");
                 backfill_workspace_();   // 工具表就绪 ⇒ 一次性补发当前会话工作区
@@ -79,7 +79,7 @@ void WebuiPlugin::subscribe_() {
                     {"text", content},
                     {"usage", usage},
                     {"turn_done", turn_done}};
-        // 本轮思考并入收口记录（有才带字段——旧记录/无推理模型形状不变）
+        // 本轮思考并入收口记录（仅在有内容时带字段——无推理的记录/模型不含该字段，形状不变）
         if (auto it = reasoning_buf_.find(owner);
             it != reasoning_buf_.end() && !it->second.empty()) {
             rec["reasoning"] = std::move(it->second);
@@ -111,7 +111,7 @@ void WebuiPlugin::subscribe_() {
         record_({{"type", "tool_call"},
                  {"tool", e->tool != nullptr ? std::string(e->tool) : ""},
                  {"brief", e->args_brief != nullptr ? std::string(e->args_brief) : ""},
-                 // 调用参数原始形态（尾部追加字段；旧生产者组合为 null ⇒ 空串，
+                 // 调用参数原始形态（尾部追加字段；不产该字段的生产者为 null ⇒ 空串，
                  // 前端以非空探测决定是否出「展开看参数」）
                  {"args", e->args_json != nullptr ? std::string(e->args_json) : ""}},
                 e->session);
@@ -122,7 +122,7 @@ void WebuiPlugin::subscribe_() {
                  {"tool", e->tool != nullptr ? std::string(e->tool) : ""},
                  {"ok", e->ok},
                  {"brief", e->result_brief != nullptr ? std::string(e->result_brief) : ""},
-                 // 后台 ack 归属信号（尾部追加字段；旧生产者组合恒 0）
+                 // 后台 ack 归属信号（尾部追加字段；不产该字段的生产者恒 0）
                  {"run_id", e->run_id}},
                 e->session);
     }));
@@ -146,8 +146,8 @@ void WebuiPlugin::subscribe_() {
             if (pa.is_array()) paths = pa;
         }
         // 每文件结构化统计（path/add/rem/is_new）：数字以它为准——diff_text 是展示
-        // 文本且可能被 8KB 护栏截断（截断砍掉文本尾行统计，消费方不得反解）；旧
-        // 生产者组合无此字段 ⇒ 空数组，前端回退展示文本反解
+        // 文本且可能被 8KB 护栏截断（截断砍掉文本尾行统计，消费方不得反解）；
+        // 不产该字段的生产者 ⇒ 空数组，前端回退展示文本反解
         json files = json::array();
         if (e->files_json != nullptr && *e->files_json != '\0') {
             files = json::parse(e->files_json, nullptr, false);
@@ -185,7 +185,7 @@ void WebuiPlugin::subscribe_() {
                  {"level", e->level},
                  {"text", e->text != nullptr ? std::string(e->text) : ""},
                  {"sys", e->sys},
-                 // 机器路由元数据（尾部追加字段；旧生产者组合 kind 为空串）
+                 // 机器路由元数据（尾部追加字段；不产该字段的生产者 kind 为空串）
                  {"kind", e->kind != nullptr ? std::string(e->kind) : ""},
                  {"run_id", e->run_id},
                  {"count", e->count}},

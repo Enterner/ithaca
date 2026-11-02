@@ -1,5 +1,5 @@
 <script setup>
-// 右侧栏 · 文件树：当前会话工作区的只读目录视图（浮卡内，方案「图标语义」）。
+// 右侧栏 · 文件树：当前会话工作区的只读目录视图（浮卡内）。
 // 数据源 = /api/fs/list（webui 代理 workspace 的 list 工具，端点钉 flat 逐文件列名；
 // 黑名单已在后端过滤，越界路径由 jail 拒绝）。懒加载：目录展开才拉一层；刷新 =
 // S.fsRev 时钟（store 在 applied/undone 时 +1，agent 改完盘文件树自动跟上）。

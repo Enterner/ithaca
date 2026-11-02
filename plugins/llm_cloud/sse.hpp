@@ -18,12 +18,12 @@ namespace vcllm {
 
 using nlohmann::json;
 
-// 行解析直接用vckit 的分割器（曾有逐字符相同的私有拷贝 SseParser，退役）；
-// 别名保留 SSE 语境的可读性。
+// 行解析直接用 vckit::LineSplitter（单源，无本地实现）；
+// SseParser 别名保留 SSE 语境的可读性。
 using SseParser = vckit::LineSplitter;
 
 // chat.completion.chunk → 增量文本。role 块 / usage 块 / finish 块都返回空串——
-// 调用方跳过空增量即可。（DeepSeek reasoner 的 reasoning_content 增量见 delta_reasoning_of。）
+// 调用方跳过空增量即可。（思维链增量由 delta_reasoning_of 提取。）
 inline std::string delta_content_of(const json& chunk) {
     if (!chunk.is_object()) return {};
     const auto choices = chunk.find("choices");

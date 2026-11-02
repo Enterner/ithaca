@@ -97,7 +97,7 @@ VC_TEST("diff: Myers 散布公共行——统计与 hunk 收敛正确") {
     CHECK(d.find("s50") != std::string::npos);      // 公共行保留为上下文
     CHECK(d.find("old1") != std::string::npos);
     CHECK(d.find("new599") != std::string::npos);
-    CHECK(count_hunks(d) == 1);   // hunk 头计数走框架共用件
+    CHECK(count_hunks(d) == 1);
 }
 
 VC_TEST("diff: Myers 纯插入/纯删除大段（单侧 >256 行）") {

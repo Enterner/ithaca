@@ -1,4 +1,4 @@
-// 会话持久化与 mission 卡（plugin/agent 的 M6 session 切片）。
+// 会话持久化与 mission 卡（plugin/agent 的会话切片）。
 // state.json：历史 messages + turn 计数 + token 用量（activate 恢复与 webui
 // 会话切换共用加载路径；每 turn 收口/压缩后落盘，失败仅告警）；
 // mission 任务目标卡：turn 边界原位重写，turn 内 append-only（缓存前缀纪律）。
@@ -42,7 +42,7 @@ void AgentCtx::load_session_state_(const std::string& path) {
         usage_total_ = usage.value("total_tokens", 0LL);
         usage_cache_ = usage.value("cache_tokens", 0LL);   // 缓存命中计量随会话恢复
         }
-        // 判定信号随会话恢复：恢复后首轮压缩判定不再失明
+        // 判定信号随会话恢复——否则恢复后首轮压缩判定失明（信号为 0，阈值永不命中）
         if (const auto it = doc.find("last_prompt_tokens");
             it != doc.end() && it->is_number_integer())
             last_prompt_tokens_ = it->get<long long>();

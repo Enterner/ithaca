@@ -47,7 +47,7 @@ void WebuiPlugin::start_turn_(const std::string& text, const std::string& attach
 
 /// POST /api/input {line} → 发送后续消息（挂起-补响应）：select 线程只解析并
 /// 投递，读会话态/落盘/广播/开 turn 全在宿主线程闭包内——数据面触碰离开
-/// select 线程，闭包与事件回调同线程串行化（机制详见 defer_）。
+/// select 线程，闭包与事件回调同线程串行化（挂起-补响应样板由 defer_ 单源承担）。
 http::Response WebuiPlugin::api_input_(const http::Request& req) {
     try {
         json in = parse_body_(req.body);
@@ -175,7 +175,7 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
         }
     persist_config_();
     // 模型热切成功 ⇒ 补发 set_active：窗口随新模型更新（agent 0.9×W 动态压缩
-    // 阈值的窗口源，阶段二）。缺槽/失败不补发——模型没真切，窗口不能跟。
+    // 阈值的窗口源）。缺槽/失败不补发——模型没真切，窗口不能跟。
     if (live) post_llm_set_active_();
     // 热切成功完全静默（下拉已反映，通告只会刷屏——用户要求"其他操作一律不显示"）；
     // 非实时生效（缺槽/失败）才落盘通告——这是必须可见的状态偏差
@@ -189,8 +189,9 @@ http::Response WebuiPlugin::api_model_(const http::Request& req) {
     });
 }
 
-/// POST /api/session/cmd {cmd} → 会话级命令转发（契约尾部追加事件 vc.session.cmd；
-/// 当前 cmd=1 压缩上下文）。agent 侧按 Idle/主会话门卫受理，结果以 notice 回流。
+/// POST /api/session/cmd {cmd} → 会话级命令（契约事件 vc.session.cmd）。
+/// 已知 cmd：1 压缩上下文，2 撤回中断回合（先回退本侧转录面再发令，agent 随令
+/// 回退模型上下文）。agent 侧按 Idle/主会话门卫受理，结果以 notice 回流。
 http::Response WebuiPlugin::api_session_cmd_(const http::Request& req) {
     json in = parse_body_(req.body);
     const int cmd = in.value("cmd", 0);

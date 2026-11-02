@@ -1,7 +1,9 @@
 // ithaca_host 的 --selftest 脚手架（main 的唯一 selftest 知识面）。
 // 观测端订阅（宿主临时"认识"契约事件——这不是业务编排，编排永远在 agent，
 // 这里只校验管道通不通）+ mock 剧本落盘 + M1 workspace 冒烟 / M2 直驱 /
-// M3·M4·M5 场景点火 + 三阶段等待推进 + 最终裁决。printf 序列与回归 golden
+// M3 闭环（write→read→replace 编辑链）/ M4 取消（长流水中途取消）/ M5 回灌
+// （run 失败→修复→重跑成功）场景点火 + 三阶段（Run1 闭环→Run2 回灌→Cancel
+// 取消）等待推进 + 最终裁决。printf 序列与回归 golden
 // 逐字对应——改动输出顺序 = 改 golden（--update-golden 重录）。
 #include "selftest.hpp"
 
@@ -15,7 +17,7 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
     host_ = &host;
     ws_dir_ = ws_dir;
 
-    // M0 自检的观测端：宿主临时"认识" vc.llm.* 等事件。
+    // 冒烟自检的观测端：宿主临时"认识" vc.llm.* 等事件。
     // 【仅 selftest 注册】交互模式下一律不订阅——渲染归界面插件；自动批准/注入类
     // 钩子若在交互模式生效 = 提案被宿主抢答 + delta 刷屏（踩过）。
     subs_.push_back(host.events().on<vc_api::LlmDelta>(
@@ -37,7 +39,7 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
     subs_.push_back(host.events().on<vc_api::LlmError>(
         [this](const vc_api::LlmError& e) {
             const std::string msg = e.message != nullptr ? e.message : "";
-            // M0 语义：用户取消经 llm_error 收口（哨兵文案「当前会话中断」）——
+            // 用户取消经 llm_error 收口（哨兵文案「当前会话中断」）——
             // 这是预期操作而非错误，单独记 cancel_seen_，不计入 error_count_
             if (msg.find("当前会话中断") != std::string_view::npos) {
                 cancel_seen_ = true;
@@ -82,7 +84,7 @@ void SelftestHarness::install(nostos::Host<>& host, const std::filesystem::path&
     std::error_code ec;
     std::filesystem::create_directories(ws_dir_ / "ithaca_smoke", ec);
     std::ofstream f(ws_dir_ / "ithaca_m3_scenario.json", std::ios::binary | std::ios::trunc);
-    // 定界符用 )json"：内容里的 )" 不会提前终止原始字符串（本仓踩过）。
+    // 定界符用 )json"：内容里的 )" 不会提前终止原始字符串（踩过）。
     // 剧本 8 轮：M3 闭环（write/read/replace/收尾）+ M5（run 失败 → 修复 → run 成功）。
     f << R"json([
  {"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"workspace.apply","arguments":"{\"ops\":[{\"op\":\"write\",\"path\":\"ithaca_smoke/m3.txt\",\"content\":\"状态:.alpha\"}]}"}}]},

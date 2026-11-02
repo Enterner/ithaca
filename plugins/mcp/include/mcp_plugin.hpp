@@ -14,7 +14,7 @@
 // 转发 tools/call（120s 超时）。MCP 协议细节不进内核；审批/沙箱/快照等基础设施
 // 对 MCP 工具与内置工具一视同仁（内核边界：MCP 属应用层）。
 //
-// 范围（MVP）：仅 stdio 传输 + tools；resources/prompts、HTTP 传输、
+// 范围（最小可用面）：仅 stdio 传输 + tools；resources/prompts、HTTP 传输、
 // tools/list_changed 热刷新、server→client 请求（sampling/roots）不做。
 //
 // 线程纪律：activate/reload 在宿主线程序列化拉起各 server（握手阻塞 ≤30s/server，
@@ -56,7 +56,7 @@ namespace vc_mcp {
 using json = nlohmann::json;
 
 inline constexpr int kInitTimeoutMs = 30000;   // initialize/tools-list 握手超时（Windows npx/cmd 启动链可达 10s+）
-inline constexpr int kCallTimeoutMs = 120000;  // tools/call 超时（MVP 固定）
+inline constexpr int kCallTimeoutMs = 120000;  // tools/call 超时（可由 config plugins.mcp.call_timeout_ms 覆盖）
 
 // ---------- 一个 MCP server 会话（进程 + 读线程 + 在途请求）-------------------
 
@@ -141,7 +141,7 @@ private:
     std::vector<std::shared_ptr<McpSession>> sessions_;
     std::vector<nostos::abi::Host::Subscription> subs_;
 
-    // 超时可配置（webui 设置面板 plugins.mcp 节；默认 = 契约级 MVP 固定值）
+    // 超时可配置（webui 设置面板 plugins.mcp 节；默认 = kInitTimeoutMs/kCallTimeoutMs 契约值）
     int init_timeout_ms_ = kInitTimeoutMs;
     int call_timeout_ms_ = kCallTimeoutMs;
 };

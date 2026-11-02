@@ -71,7 +71,6 @@ inline json read_paged(std::string&& content, const std::string& norm, const jso
     bool line_truncated = false;
     if (!empty && offset <= total_lines) {
         std::size_t pos = 0;
-        // 跳过前 offset-1 行
         for (int ln = 1; ln < offset && pos != std::string::npos; ++ln)
             pos = content.find('\n', pos) + 1;
         for (int ln = 0; ln < limit && pos < content.size(); ++ln) {
@@ -79,7 +78,7 @@ inline json read_paged(std::string&& content, const std::string& norm, const jso
             const std::size_t stop = end == std::string::npos ? content.size() : end + 1;
             std::string line = content.substr(pos, stop - pos);
             // 超长行按字符数截断（码点边界）；换行归属保真——原行带 \n 才补回，
-            // 末行无 \n 不凭空造行（旧写法按字节截且无条件补 \n）
+            // 末行无 \n 不凭空造行（按字节截会劈码点；无条件补 \n 会给末行凭空造行）
             const bool ends_nl = !line.empty() && line.back() == '\n';
             const auto [cut, clipped] = trim_utf8_chars(
                 ends_nl ? line.substr(0, line.size() - 1) : line,

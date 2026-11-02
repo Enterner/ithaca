@@ -41,7 +41,9 @@ function connect() {
   }
 }
 
-/** 启动：轮询 health → 拉配置 → 连 SSE → 重放 → loadSessions；无会话则进草稿态。 */
+/** 启动：轮询 health → 拉配置 → 连 SSE → 重放 → loadSessions；无会话则进草稿态。
+ *  失败行为：health 60 次×500ms 耗尽仍继续；其后任一 api 失败令 boot 整体
+ *  reject（App.vue onMounted 未捕获，页面停在 hero/空态）。 */
 export async function boot() {
   for (let i = 0; i < 60; i++) {   // 页面先于宿主就绪：轮询 health
     try { const h = await api('/api/health'); if (h.ok) break } catch (e) {}

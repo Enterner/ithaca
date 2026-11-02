@@ -265,8 +265,8 @@ inline void apply_envs_(const json& doc, const fs::path& base, const std::string
     apply_path(doc, {"ui", "web"}, "ITHACA_WEBUI_WEB", base);
     apply_scalar(doc, {"ui", "port"}, "ITHACA_WEBUI_PORT");
     apply_path(doc, {"ui", "config"}, "ITHACA_WEBUI_CONFIG", base);
-    // env{} 逃生口：未建模旋钮先走这里（最后应用 = 最高优先级）；新增旋钮须在
-    // 方案文档登记后再字段化
+    // env{} 逃生口：未建模旋钮先走这里（最后应用 = 最高优先级）。
+    // TODO: 新增旋钮在上方映射表登记字段化，env{} 仅作过渡
     if (const json* env = find_key(doc, {"env"}); env != nullptr && env->is_object())
         for (auto it = env->begin(); it != env->end(); ++it) {
             const std::string v = scalar_text(it.value());

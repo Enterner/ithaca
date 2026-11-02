@@ -119,7 +119,7 @@ export function flushTurnEdits() {
 // 记录先停靠，快照渲染完再放行——直接渲染会被 max-id 去重吞掉（SSE 先推 id=8、
 // 快照里的 6/7 随后被 `<= lastId` 丢弃且 since 已推进 ⇒ 对话流永久缺行，只有切
 // 会话重放才能恢复）。补洞自身串行化：boot 重放与 onopen 补洞并发时按序执行，
-// 两个快照不再互相顶掉。
+// 两个快照互不顶掉。
 let parkSse = false
 const parked = []
 let pollChain = Promise.resolve()
@@ -138,7 +138,7 @@ const draftPark = []
 
 /** SSE/重放的统一入口：所有宿主记录（含转态信号）都经此进状态机。 */
 export function render(rec) {
-  // TEMP-DEBUG: 帧级轨迹（CONV10 flaky 查因，收口后拆除）
+  // TODO: 帧级轨迹调试口（排查流式帧丢失 flaky，收口后拆除）
   if (window.__evlog && window.__evlog.length < 400) {
     let tag = ''
     if (rec.session && rec.session !== S.curSession && TURN_TAGGED.has(rec.type)) {
@@ -178,7 +178,7 @@ export function render(rec) {
     // 无绑定视图（草稿/创建请求在途，curSession 仍空）的早到帧停靠而非丢弃：
     // 会话创建即开 turn（create+start 同请求），首批记录（用户消息/首个工具卡）
     // 在本页 curSession 置位前到达——丢弃后广播重放的快照与落盘存在竞态
-    //（fetch 早于落盘 ⇒ 永久缺卡，CONV10 flaky 实测：服务端转录完整、UI 永缺
+    //（fetch 早于落盘 ⇒ 永久缺卡，实测复现过 flaky：服务端转录完整、UI 永缺
     // 首个工具卡）。'session' 收口按 id 放行，放行缺口由 pollOnce 全量重放
     // 兜底（renderNow 按 id 去重）；上限防失控，非无绑定状态维持丢弃语义
     //（多会话并行时他帧本就该丢，切回由 pollOnce 补）。
@@ -211,8 +211,8 @@ function renderNow(rec) {
   switch (rec.type) {
     case 'session':   // 会话已切换：清空视图并重放（草稿若有则已随创建提交）
       // 本页发起的切换已本地收口（openSession 乐观清屏 + 重放）——同 id 广播
-      // 只对齐注册表，不再整场 reset+重放（重复渲染闪屏）。id 缺省（旧形态）
-      // 与他页发起的切换走全量路径。
+      // 只对齐注册表、不整场 reset+重放（整场重放会重复渲染闪屏）。id 缺省
+      //（旧形态）与他页发起的切换走全量路径。
       if (rec.id && rec.id === S.curSession) { loadSessions(); return }
       S.draft = null
       S.subView = 0; S.subLive = {}; S.subDone = {}; S.subDetail = {}
@@ -287,7 +287,7 @@ function renderNow(rec) {
       return
     case 'subagent':
       // 收口记账（phase>=4：4=完成 5=取消/失败）核销挂起条——task 的 tool
-      // 结果卡已去重，不再有 tool 记录承担核销
+      // 结果卡被去重，核销无 tool 记录承担，须在此完成
       if (rec.phase >= 4) {
         S.subDone[rec.turn_id] = rec.phase
         if (S.waitingLeft > 0) {
@@ -364,7 +364,7 @@ function renderNow(rec) {
       if (S.booted) S.pending = rec
       return
     case 'applied':
-      // 不再自成一行：与本轮修改汇总卡同信息（同文件同增删），卡还能展开看
+      // 不自成一行：与本轮修改汇总卡同信息（同文件同增删），卡还能展开看
       // diff——行是纯重复。聚合与文件树刷新仍要照常
       if (rec.diff) accumulateApplied(rec)
       S.fsRev++
@@ -379,9 +379,9 @@ function renderNow(rec) {
       return
     }
     case 'run_line':
-      // stdout/stderr 都进输出块（契约 0=stdout 1=stderr；旧守卫只收 1——775 行
-      // stdout 曾因此整段从 UI 消失，只在结果行留首行预览）；失败面由 exit code
-      // 与调用行红显承担
+      // stdout/stderr 都进输出块（契约 0=stdout 1=stderr）；失败面由 exit code
+      // 与调用行红显承担。踩过: 只收 stderr 时 775 行 stdout 整段从 UI 消失，
+      // 仅在结果行留首行预览
       runBlock(rec.run_id).lines.push(rec.text)
       return
     case 'fs_changed':
@@ -478,7 +478,9 @@ function rateClose() {
 // ---- 数据通道 ----------------------------------------------------------------
 
 /** 重放/补洞：HTTP 拉取 after 起的记录并逐条渲染。串行化（并发调用排队），
- *  执行期间停靠 SSE 记录、结束后放行（竞态推导见文件头 parkSse 注释）。 */
+ *  执行期间停靠 SSE 记录、结束后放行（竞态推导见文件头 parkSse 注释）。
+ *  失败行为：网络失败时本次调用 reject、游标不推进，待下次补洞续；reject 经
+ *  返回值透给调用方（boot/onopen 处已吞）。 */
 export function pollOnce() {
   const run = pollChain.then(pollOnceImpl)
   pollChain = run.then(() => {}, () => {})
@@ -515,7 +517,7 @@ async function pollOnceImpl() {
 }
 
 /** 发送前的兜底收口（上一响应若未经 assistant/error 收口，也不把空闲带进下一
-    响应）。会话均值跨轮累计，发送不再清零。 */
+ *  响应）。会话均值跨轮累计，发送不清零。 */
 export function liveStart() {
   rateClose()
 }

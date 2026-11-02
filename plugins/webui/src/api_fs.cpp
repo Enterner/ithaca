@@ -56,7 +56,8 @@ http::Response WebuiPlugin::api_fs_list_(const http::Request& req) {
 ///（抽取面所在域，doc 徽标随出参 doc 字段继续工作）；office 未装载回退
 /// workspace——文档被其守卫点名指向 office.read。其余代理 workspace 的 read
 /// 并原样透传：jail 越界防护、NUL 拒二进制、UTF-8 校验、256KB 封顶（truncated
-/// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（见上）。
+/// 标记）全在提供方。副作用：无（纯读）。线程纪律同 api_fs_list_（解析在
+/// select 线程、工具直调在宿主线程闭包）。
 http::Response WebuiPlugin::api_fs_read_(const http::Request& req) {
     const std::string rel = req.query("path");
     const std::string ext_lower = vcws::ascii_lower(fs::path(rel).extension().string());
@@ -110,12 +111,7 @@ struct PreviewWait {
     std::atomic<int>* inflight = nullptr;
 };
 
-// office 转换线程回调（C ABI trampoline）：result_json 只在回调期有效，同步消费。
-// 成功 → 预览文件流（no-cache：URL 无版本参数，浏览器缓存会吃掉改版后的新转换）；
-// 失败 → JSON {ok:false,error}（前端回落文本抽取）。两路都 200——失败语义是
-// 「预览不可用，请看抽取文本」，不是传输层错误。file_path 流式的内存面 = 内核
-// 按 chunk 分块读盘，零整读上界。content_type 按缓存产物扩展名定（直通族保源
-// 扩展名、转换族恒 .pdf）。
+// 预览流文件的 content_type：按缓存产物扩展名定（直通族保源扩展名、转换族恒 .pdf）。
 const char* preview_mime_(const fs::path& p) {
     std::string e = vcws::ascii_lower(p.extension().string());
     if (e == ".png") return "image/png";
@@ -126,6 +122,11 @@ const char* preview_mime_(const fs::path& p) {
     return "application/pdf";
 }
 
+// office 转换线程回调（C ABI trampoline）：result_json 只在回调期有效，同步消费。
+// 成功 → 预览文件流（no-cache：URL 无版本参数，浏览器缓存会吃掉改版后的新转换）；
+// 失败 → JSON {ok:false,error}（前端回落文本抽取）。两路都 200——失败语义是
+// 「预览不可用，请看抽取文本」，不是传输层错误。file_path 流式的内存面 = 内核
+// 按 chunk 分块读盘，零整读上界。
 void preview_on_done(void* ud, const char* result_json) noexcept {
     std::unique_ptr<PreviewWait> w(static_cast<PreviewWait*>(ud));
     if (!w) return;
@@ -207,8 +208,8 @@ http::Response WebuiPlugin::api_fs_preview_(const http::Request& req) {
 }
 
 /// GET /api/mcp/status → mcp 插件回发的 server 状态（home/mcp-status.json，
-// 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。
-// 数据源：路由 defer 包装（宿主线程闭包内调用）。
+/// 由 mcp 插件在 activate/reload/server 变化时改写）。文件缺失/损坏 ⇒ 空清单。
+/// 数据源：路由 defer 包装（宿主线程闭包内调用）。
 json WebuiPlugin::api_mcp_status_() {
     json fallback = {{"ok", true}, {"servers", json::array()}};
     std::error_code ec;

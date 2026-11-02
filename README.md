@@ -84,7 +84,7 @@ build\debug\bin\ithaca_host.exe build\debug\bin\*_plugin.dll
 ## 测试
 
 ```powershell
-npm test                    # 单元测试（57 例）
+npm test                    # 单元测试（纯逻辑层，秒级）
 npm run selftest            # mock 全链路冒烟
 npm run regress             # 回归（selftest 两遍一致 + golden）
 npm run e2e:all             # Playwright e2e（API 契约 + UI 行为，tests/e2e/）

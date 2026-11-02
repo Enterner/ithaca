@@ -3,7 +3,7 @@
 // 择一首发 + set_active 事件运行期热切」的机制托管件。
 //
 // 竞争样板（读 env 定首发 + 订阅热切事件 + 匹配发布/不匹配撤发布 + 状态跟踪）
-// 在多实现插件间逐字重复；本件收编机制，插件只留两个真正的差异点——表组装
+// 在多实现插件间逐字重复；机制托管在本件，插件只留两个真正的差异点——表组装
 //（on_publish / on_unpublish）与事件载荷解读（classify）。
 //
 // 语义：
@@ -60,8 +60,6 @@ public:
     armed arm(const nostos::abi::Host& host, std::uint64_t set_active_evt,
               classify_fn classify, publish_fn on_publish, unpublish_fn on_unpublish) {
         armed out;
-        // 首发：env 门三态。已设但不等于本实现名、或未设且缺省极性为休眠 ⇒ 休眠；
-        // 其余（未设且缺省发布 / 已设且等于本实现名）⇒ 发布。
         const char* v = std::getenv(env_var_.c_str());
         const bool env_set = v != nullptr && *v != '\0';
         if (env_set && std::string_view(v) != impl_name_) {

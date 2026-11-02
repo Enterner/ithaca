@@ -78,7 +78,7 @@ private:
     struct StreamState {  // 每请求一份的流式拼装态，随 worker 走——插件成员不持有
                           // 任何"当前请求"态（并发请求各写各的，无共享可变面）
         std::string content;
-        std::string reasoning;  // 思维链累积（默认只进显示流；回传开关见 post_done_）
+        std::string reasoning;  // 思维链累积（默认只进显示流不回传；回传由 ITHACA_LLM_REASONING_REPLAY 门控）
         std::map<int, TcAcc> tc;
         std::map<std::string, std::string> name_back;  // 净化名 → 原始点分名（请求期有效）
         json usage;  // 末块的结构化用量（done 时回传给 agent 统计）
@@ -167,8 +167,8 @@ private:
 
     std::vector<nostos::abi::Host::Subscription> subs_;  // provider 热切订阅（vc.llm.set_active）
     std::mutex model_mu_;
-    // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=发布，单 provider 启动
-    // 如 vc.ps1 保持原行为）+ vc.llm.set_active 热切的机制托管（vckit 单源）
+    // 竞争发布门：env ITHACA_LLM_ACTIVE 择一首发（缺省=发布——单 provider 启动
+    // 如 vc.ps1 未设 env 时照常活跃）+ vc.llm.set_active 热切的机制托管（vckit 单源）
     vckit::active_gate gate_{"ithaca.llm.cloud", "ITHACA_LLM_ACTIVE", "cloud",
                                    /*publish_when_unset=*/true};
 };

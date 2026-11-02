@@ -32,7 +32,7 @@
 
 #include "../tools_bridge.hpp"  // vcagent：工具清单 CSV 拆分 / 自述 JSON 构造 / 工具集名映射
 
-#include "vcagent/context.hpp"  // 上下文压缩阶段一（mission 卡/最小充分记录/raw 外置/迟滞压缩）
+#include "vcagent/context.hpp"  // 上下文压缩纯逻辑单源（mission 卡/最小充分记录/raw 外置/迟滞压缩）
 #include "../permission.hpp"  // 权限模式三档（归一/确认清单映射）
 
 #include "vc_ctx.hpp"
@@ -237,7 +237,8 @@ struct AgentCtx {
     // 异步或机械），不可折叠 ⇒ 返回 false，调用方走原收口路径。
     bool maybe_compress_();
     // 折叠应用核心（LLM 摘要 / 机械 digest / 超窗强制三路共用）：区间替换 + 旧
-    // digest 并入 + 持久化 + 通告。先插 digest 再跳过的顺序纪律见阶段一。
+    // digest 并入 + 持久化 + 通告。顺序纪律：先插 digest 再做跳过判断——跳过分支
+    // 先 continue 会漏掉插入，digest 整条丢失。
     void replace_with_digest_(const json& digest_msg, const char* via);
     // 超窗就地自救：应用冻结的机械折叠后重发当前请求（turn 保持在途，见实现）
     void forced_fold_resend_();
@@ -291,9 +292,9 @@ struct AgentCtx {
     // ---- 会话持久化与 mission 卡（src/ctx_session.cpp）--------------------------
 
     // state 文件加载（activate 与会话切换共用；缺文件 = 全新会话）。
-    // 撤销快照栈是内存态，恢复后从零开始（文档明示）
+    // 撤销快照栈是内存态，恢复后从零开始（对外口径：用户文档同此明示）
     void load_session_state_(const std::string& path);
-    // M6 session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
+    // session 持久化：历史 + turn 计数 + 用量落盘（失败仅告警，不影响任务）
     void persist_session_();
     // mission 任务目标卡建档（仅缺卡时插到 system 之后；跨轮冻结——缓存前缀
     // 纪律，锚点在压缩折叠时吸收，折叠重建走 replace_with_digest_）
@@ -359,7 +360,7 @@ struct AgentCtx {
     int inflight_ = -1;
     bool auto_all_ = false;
 
-    // M6：token 用量累计 + session 持久化
+    // token 用量累计 + session 持久化
     long long usage_prompt_ = 0;
     long long usage_completion_ = 0;
     long long usage_total_ = 0;
@@ -370,7 +371,7 @@ struct AgentCtx {
     long long last_prompt_tokens_ = 0;  // provider 回报的最近 prompt_tokens（判定信号）
     bool last_usage_real_ = false;      // 上次信号是真实 usage 回报（false = 粗估兜底
                                         // ——策略缝的退避判定只认真实回报，透传用）
-    long long compress_threshold_ = 32000;  // W 未知时的兜底阈值（阶段一语义）
+    long long compress_threshold_ = 32000;  // W 未知时的兜底阈值
     long long ctx_window_ = 0;          // 当前模型上下文窗口（0 = 未知；env > set_active）
     bool ctx_window_env_ = false;       // env ITHACA_CONTEXT_WINDOW 已设 ⇒ set_active 事件不覆写
     long long session_threshold_ = 32000;  // 生效阈值（set_context_window_ 重算 / 退避抬升）
@@ -402,7 +403,7 @@ struct AgentCtx {
 
     std::vector<std::string> tool_svcs_;
     std::vector<std::string> confirm_;
-    std::string mode_ = "auto-edit";  // 权限模式
+    std::string mode_ = "auto-edit";  // 权限模式（三档取值与归一在 permission.hpp）
     std::vector<Bound> bound_;
     struct InputItem {                  // 排队输入：文本 + 多模态附件载荷（JSON 数组串）
         std::string text;
@@ -458,7 +459,7 @@ public:
     static constexpr std::uint32_t version = NOSTOS_PLUGIN_VERSION(0, 1, 0);
 
     // manifest：inject vc.llm.v1 —— provider 未就绪时宿主不激活本插件（LazyGate
-    // PENDING，依赖出现后自动拉起——内核 M2 宿主策略的真实用例）。
+    // PENDING，依赖出现后自动拉起——内核延迟激活策略的真实用例）。
     static const nostos_manifest* manifest;
 
     nostos_status activate(const nostos::abi::Host& host);
@@ -466,7 +467,7 @@ public:
 
 private:
     // 会话槽创建：env 派生的初始态（工具清单/权限模式/窗口阈值/类型目录/系统
-    // 提示词）在此统一灌入——原 activate 的单槽初始化体
+    // 提示词）在此统一灌入（每个槽创建时的唯一初始化点）
     AgentCtx& ensure_ctx_(const std::string& id);
     // 事件 session 标 → 槽：null/空回落 active_（单驱动兼容）；未知会话返回空
     AgentCtx* route_(const char* session);
@@ -486,7 +487,7 @@ private:
     nostos::abi::Host::Subscription sub_cmd_{};    // 会话级命令（vc.session.cmd）
     nostos::abi::Host::Subscription sub_session_{};
     nostos::abi::Host::Subscription sub_mode_{};
-    nostos::abi::Host::Subscription sub_llm_set_{};     // 模型窗口事件（阶段二动态阈值）
+    nostos::abi::Host::Subscription sub_llm_set_{};     // 模型窗口事件（动态阈值的数据源）
     nostos::abi::Host::Subscription sub_workspace_{};   // 工作区热切（子代理类型目录跟随）
 };
 

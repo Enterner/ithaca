@@ -14,7 +14,7 @@ namespace vcoffice::zip {
 
 inline constexpr std::size_t kEntryCap = 32ull * 1024 * 1024;   // 单条目解压上限
 
-// RFC 1951 原始 DEFLATE 解码。返回 false = 数据损坏 / 超 max_out。
+// 位游标：DEFLATE 位流的逐位读取原语（take 按位取、align 跳到字节边界）。
 struct Bits {
     const unsigned char* p;
     size_t n;
@@ -67,6 +67,7 @@ struct Huff {
     }
 };
 
+// RFC 1951 原始 DEFLATE 解码。返回 false = 数据损坏 / 超 max_out。
 inline bool inflate(const unsigned char* src, size_t n, std::string& out, size_t max_out) {
     static const unsigned short len_base[29] = {3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,
         35,43,51,59,67,83,99,115,131,163,195,227,258};

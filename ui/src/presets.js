@@ -1,7 +1,7 @@
 // 主流平台快速接入模板（设置面「模型接入」的数据源）：选平台 → 粘贴 API Key →
 // 保存即用（Base URL 与模型表预置，模型清单可再增删改）。纯数据模块——视图只做
 // 选择与展示，平台目录的维护点在此。
-// 注意：火山 Coding Plan 必须用 coding 专用 base_url 才走套餐额度（实测）；
+// NOTE: 火山 Coding Plan 必须用 coding 专用 base_url 才走套餐额度（实测）；
 // 其余平台的旗舰模型 ID 随平台迭代可能过期，以官方模型列表为准。
 export const PRESETS = [
   { key: 'ark-coding', name: '火山方舟 Coding Plan',

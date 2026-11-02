@@ -1,5 +1,9 @@
 // 文件树 watcher（plugin/webui 的 VSCode 式真监听切片）。
-// 递归监听当前工作区根，变更经 SSE 广播 fs_changed，前端据此自动重拉文件树。
+// ReadDirectoryChangesW 递归监听当前工作区根，变更经 SSE 广播 fs_changed——
+// 前端 fsRev++ 触发文件树自动重拉。黑名单目录不过滤（递归监听无法排除子树），
+// 靠 350ms 去抖合并事件风暴，刷新本身有界（几次 HTTP list）。
+// NOTE: broadcast_ 自本线程直发是安全的（handle 内禁的是 select 线程自锁——
+// pick-folder 线程同款先例）；server_ 未起/已停时空操作。
 
 #include "webui_plugin.hpp"
 
@@ -7,12 +11,7 @@
 
 namespace vc_webui {
 
-// ---- 文件树 watcher（VSCode 式真监听）--------------------------------------
-// ReadDirectoryChangesW 递归监听当前工作区根，变更经 SSE 广播 fs_changed——
-// 前端 fsRev++ 触发文件树自动重拉。黑名单目录不过滤（递归监听无法排除子树），
-// 靠 350ms 去抖合并事件风暴，刷新本身有界（几次 HTTP list）。
-// NOTE: broadcast_ 自本线程直发是安全的（handle 内禁的是 select 线程自锁——
-// pick-folder 线程同款先例）；server_ 未起/已停时空操作。
+// ---- 文件树 watcher ---------------------------------------------------------
 
 void WebuiPlugin::start_fs_watcher_(const std::string& root) {
     stop_fs_watcher_();

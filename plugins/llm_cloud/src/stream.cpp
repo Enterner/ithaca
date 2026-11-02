@@ -14,7 +14,7 @@
 namespace vc_llm_cloud {
 namespace {
 
-// ---- WinHTTP 句柄的小件 ------------------------------------------------------
+// ---- WinHTTP 句柄 RAII ------------------------------------------------------
 
 struct HandleRAII {
     HINTERNET h = nullptr;

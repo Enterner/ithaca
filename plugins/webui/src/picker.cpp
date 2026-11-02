@@ -16,7 +16,8 @@
 
 namespace vc_webui {
 
-// 机制与踩坑说明见头文件声明处注释（宿主无主对话框的四个系统默认行为纠正）。
+// 宿主是无窗口进程：对话框默认沉底不可见等系统行为在此纠正（激活瞬间经 CBT
+// 钩子置顶等，背景与四个纠正点见 webui_plugin.hpp 声明处注释）。
 std::string pick_folder_dialog(const std::string& title,
                                const std::string& initial_dir = {}) {
     IFileDialog* fd = nullptr;

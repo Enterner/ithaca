@@ -1,5 +1,5 @@
 #pragma once
-// 上下文压缩阶段一（agent 侧落地，纯逻辑层）：
+// 上下文压缩纯逻辑层（agent 侧落地，内置管线与策略插件共用）：
 //
 //   · mission 任务目标卡——harness 写定（锚点白名单：请求文本永不压缩）；卡跨轮
 //     逐字节冻结（缓存前缀纪律），锚点只在压缩折叠时吸收
@@ -13,8 +13,8 @@
 //   · 单段段内兜底——单 turn 内几十轮工具往返膨胀超窗时，折叠段内除最末几轮
 //     往返外的历史（多段语义的段内版，锚点/ref 纪律不变）
 //
-// 纯 json 进出，单测直接驱动。阶段二~五（评测闭环/规则化覆盖/结构树/KV 指令层）
-// 后续扩展按测量数据决定，不在本层预建。
+// 纯 json 进出，单测直接驱动。更多能力（评测闭环/规则化覆盖/结构树/KV 指令层）
+// 是否纳入按测量数据决定，不在本层预建。
 #include "nlohmann/json.hpp"
 
 #include "vcws/text.hpp"  // vcws::trim_utf8：码点安全截断的收敛实现，勿再按字节切
@@ -366,7 +366,7 @@ inline std::string ingest_tool_result(const std::string& last, const std::string
 
 // ---- recall：provenance 包装 + 分页元数据--------------------
 // content 为归档的 [offset, offset+size) 字节窗口（页边界已对齐码点）；has_more /
-// next_offset 供续读——大归档分段读，不再"永远只看头 2KB"。
+// next_offset 供续读——大归档分段读（否则只能看到头 2KB）。
 inline std::string recall_result(const std::string& ref, const std::string& content,
                                  long long total, long long offset, bool has_more,
                                  long long next_offset) {
@@ -440,7 +440,7 @@ inline std::string recall_entries_summary(const std::string& content, const std:
 }
 
 // 字节窗口分页兜底：offset/limit 收敛 + 双边界窗口（utf8_window，劈码点尾部自洽）
-// + recall_result 包装——大归档分段读，不再"永远只看头 2KB"。
+// + recall_result 包装——大归档分段读（否则只能看到头 2KB）。
 inline std::string recall_paged(const std::string& content, const json& args,
                                 const std::string& ref, long long total) {
     long long offset = args.value("offset", 0LL);
@@ -493,8 +493,8 @@ inline long long backoff_threshold(long long threshold, long long window) {
 
 // ---- provider 超窗错误识别 ------------------
 // 各家文案不一（OpenAI/DeepSeek "maximum context length"、Anthropic "prompt is
-// too long"、Ollama "input length exceeds context length"…）。llm 插件层的文案
-// 归一落地前，agent 侧先做保守子串匹配：误判代价可控
+// too long"、Ollama "input length exceeds context length"…）。子串匹配是保守解
+//（llm 层尚无归一文案契约可用）：误判代价可控
 // ——多走一次「折叠+重发」，重发次数有上界；漏判则照旧走报废路径。
 inline bool is_context_overflow_error(const std::string& message) {
     const std::string lower = vcws::ascii_lower(message);
@@ -803,7 +803,7 @@ inline CompressPlan plan_compress(const json& messages, bool raw_enabled) {
     return plan;
 }
 
-// ---- 阶段二：LLM 自总结折叠 --------
+// ---- LLM 自总结折叠 --------
 // 摘要请求的 system 指令：锚点逐字 / ref 全量保留 / 结构固定——机械 digest 仍是
 // 兜底产物，摘要只是换掉折叠的实现，头注列的纪律（锚点逐字 / raw 外置 /
 // ref 索引）不放松。

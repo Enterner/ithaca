@@ -14,7 +14,6 @@ const bin = path.join(ROOT, "build", preset, "bin");
 
 let version = flag("--version") ?? "";
 if (!version) {
-    // 从顶层 CMakeLists 读 project(ithaca VERSION x.y.z ...)
     const m = fs.readFileSync(path.join(ROOT, "CMakeLists.txt"), "utf8")
         .match(/project\(ithaca VERSION ([0-9.]+)/);
     if (!m) { console.error("读不到版本号（顶层 CMakeLists project VERSION）"); process.exit(1); }
@@ -74,7 +73,7 @@ const sha = createHash("sha256").update(fs.readFileSync(zip)).digest("hex").toUp
 console.log(`✓ ${zip}`);
 console.log(`  SHA256 ${sha}`);
 
-// ---- 安装包（二期）：Inno Setup 编译 ----
+// ---- 安装包：Inno Setup 编译（可选产物，ISCC 缺失时仅出 zip）----
 if (process.argv.includes("--no-installer")) {
     console.log("（跳过安装包）");
 } else if (await buildInstaller()) {

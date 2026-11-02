@@ -66,7 +66,7 @@ bool AgentCtx::spawn_child_(std::size_t index, ToolCallCtx& call) {
     child->tool_svcs_ = std::move(svcs);
     child->auto_all_ = true;       // 子代理免批：授权由主会话批准链路负责（task 卡用户可见）
     child->confirm_.clear();
-    child->raw_dir_ = raw_dir_;      // 共享外置目录（R3：归档名带会话 stem 前缀）
+    child->raw_dir_ = raw_dir_;      // 共享外置目录（归档名带会话 stem 前缀，防跨会话撞名）
     child->raw_prefix_ = raw_prefix_; // 前缀随目录走——子代理归档与父会话同命名空间
     AgentCtx* raw = child.get();
     child->on_finished_ = [this, index, raw](bool ok, const std::string& report, int turns) {

@@ -28,6 +28,7 @@ struct Registrar {
     Registrar(const char* name, void (*fn)()) { cases().push_back({name, fn}); }
 };
 
+/** 跑全部自注册用例，逐例打印 [ OK /FAIL]，返回失败数（0 = 全绿，作进程退出码）。 */
 inline int run_all() {
     int failed = 0;
     for (const auto& c : cases()) {
@@ -65,7 +66,7 @@ inline std::size_t count_hunks(const std::string& d) {
     return n;
 }
 
-// 名字传**带引号的字符串**（内核 tframe 同款）；用例标识符经 __LINE__ 双层拼接生成
+// 名字传**带引号的字符串**（宏按字符串字面量登记用例名）；用例标识符经 __LINE__ 双层拼接生成
 // （直接 ##__LINE__ 不会展开行号——经典坑，必须两级宏）。
 #define VC_CONCAT_(a, b) a##b
 #define VC_CONCAT(a, b) VC_CONCAT_(a, b)

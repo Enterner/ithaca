@@ -8,7 +8,7 @@
 // 分类 / kSummarySystem 摘要指令。与 agent 内置回退的口径逐字节一致——本插件
 // 活跃与缺席（内置接管）必须产出相同的上下文形态（A/B golden 逐字验收的根基）。
 //
-// 边界（契约 vc_ctx.hpp 头注）：信号与策略在本插件，时机与历史所有权在 agent
+// 边界：信号与策略在本插件，时机与历史所有权在 agent
 // ——plan 只回答"折不折、怎么折"，摘要请求的发送、消息历史替换、持久化都在
 // agent。策略状态（阈值/退避）插件自理：不持久化、重启重置（代价小，避免策略
 // 状态污染会话文件）。
@@ -51,7 +51,7 @@ public:
 
     nostos_status activate(const nostos::abi::Host& host) {
         host_ = host;
-        // 选择开关收编 vckit::active_gate（竞争样板单源）：生效口径 env 缺省/="basic"
+        // 选择开关 = vckit::active_gate（竞争样板单源）：生效口径 env 缺省/="basic"
         // 活跃；显式选了别的策略 ⇒ 休眠不发布
         auto armed = gate_.arm(
             host, vc_api::ctx_set_active,

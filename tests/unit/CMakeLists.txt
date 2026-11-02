@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-# ── tests/unit/ —— ithaca 单元测试（纯逻辑层：jail / edit / snapshots）────────
+# ── tests/unit/ —— ithaca 单元测试（产品/插件纯逻辑层）───────────────────────
 # 内核边界纪律：产品与插件的测试不进内核仓，所以自备一份。
 # 构建：cmake --preset debug && cmake --build --preset debug（build.mjs 会顺带运行）。
 
@@ -42,7 +42,7 @@ target_include_directories(ithaca_unit_tests PRIVATE
 target_link_libraries(ithaca_unit_tests PRIVATE nostos::core)
 
 if(MSVC)
-    # /utf-8 /EHsc /permissive- 经 nostos::core INTERFACE 传递（内核 7e0246c 起）
+    # /utf-8 /EHsc /permissive- 经 nostos::core INTERFACE 传递，本目标勿重复添加
     target_compile_options(ithaca_unit_tests PRIVATE /W4)
 else()
     target_compile_options(ithaca_unit_tests PRIVATE -Wall -Wextra)

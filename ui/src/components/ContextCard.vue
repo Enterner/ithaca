@@ -25,7 +25,7 @@ const ringTitle = computed(() => {
          '（占比 ' + ringPct.value.toFixed(1) + '%）'
 })
 
-// ---- 构成分解卡（悬停现拉；方案 D 四段：系统/用户/回复/工具）-----------------
+// ---- 构成分解卡（悬停现拉；四段：系统/用户/回复/工具）-----------------
 // 数据 = /api/context/breakdown：后端读活跃会话 state.json 按角色分桶估算，
 // 实测总量（last_prompt_tokens）存在时按占比等比修正——合计永远准，分段标「估算」。
 const ctxCard = ref(null)
@@ -53,7 +53,7 @@ const ctxPct = computed(() => {
   const w = ctxSizeOf(S.model)
   return ctxCard.value && w ? ctxCard.value.total / w * 100 : 0
 })
-const ctxHot = computed(() => ctxPct.value > 80)   // ≥80% 转红（与环的阈值同源）
+const ctxHot = computed(() => ctxPct.value > 80)   // >80% 转红（与环的阈值同源）
 // 分段条按「总窗口」渲染（含未使用段）：各段 = 该部分 token / 窗口。1M 级窗口
 // 低用量时段会很细——这就是真实余量；占比数字在逐行明细里读。
 const ctxWin = computed(() => ctxSizeOf(S.model))
@@ -134,9 +134,8 @@ const cachePct = computed(() =>
           <span class="pc">{{ (ctxCard.segs[s.key] / Math.max(1, ctxCard.total) * 100).toFixed(1) }}%</span>
         </div>
       </div>
-      <!-- 会话用量（输入含缓存命中 / 输出）：原左下角速率行与侧栏「累计
-           tokens」的收编处——计量语境都在上下文卡里。provider 未回报 usage
-           时显示「—」（区分「没数据」与「真是 0」） -->
+      <!-- 会话用量（输入含缓存命中 / 输出）：输入/输出/速率的计量语境统一
+           收在本卡。provider 未回报 usage 时显示「—」（区分「没数据」与「真是 0」） -->
       <div class="usage">
         <div class="urow">
           <span class="ulab">输入</span><b class="un">{{ usage.seen ? fmt(usage.prompt) : '—' }}</b>

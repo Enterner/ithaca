@@ -18,14 +18,14 @@ async function getAttachment(host, rel) {
 test.describe("无工作区（草稿态）", () => {
     test.use({ hostCfg: { extraEnv: { ITHACA_WORKSPACE_DIR: "" } } });
 
-    test("ATT1 无工作区上传被拒（草稿态零落点——附件路径必须属于真实工作区）", async ({ host }) => {
+    test("无工作区上传被拒（草稿态零落点——附件路径必须属于真实工作区）", async ({ host }) => {
         const r = await postJson(host.base, "/api/upload", { name: "a.png", data: b64(PNG_BYTES) });
         expect(r.body.ok).toBe(false);
         expect(r.body.error).toContain("没有工作区");
     });
 });
 
-test("ATT2 上传落盘：撞名避让 + 图片字节出口（content-type 与字节逐一致）", async ({ host }) => {
+test("上传落盘：撞名避让 + 图片字节出口（content-type 与字节逐一致）", async ({ host }) => {
     const wsPath = path.join(host.ws, "att-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "附件会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);
@@ -44,7 +44,7 @@ test("ATT2 上传落盘：撞名避让 + 图片字节出口（content-type 与�
     expect(img2.status).toBe(200);   // 带空格与括号的落盘名同样可取回
 });
 
-test("ATT3 字节出口归界：穿越/非图片/不存在一律 404，不开二进制口子", async ({ host }) => {
+test("字节出口归界：穿越/非图片/不存在一律 404，不开二进制口子", async ({ host }) => {
     const wsPath = path.join(host.ws, "att-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "附件会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);
@@ -57,7 +57,7 @@ test("ATT3 字节出口归界：穿越/非图片/不存在一律 404，不开二
     expect((await getAttachment(host, ".ithaca/uploads/笔记.txt")).status).toBe(404);
 });
 
-test("ATT4 发送携带附件：transcript 用户记录带展示元数据（name/path/mime）", async ({ host }) => {
+test("发送携带附件：transcript 用户记录带展示元数据（name/path/mime）", async ({ host }) => {
     const wsPath = path.join(host.ws, "att-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "附件会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);
@@ -76,7 +76,7 @@ test("ATT4 发送携带附件：transcript 用户记录带展示元数据（name
     })]);
 });
 
-test("ATT5 上传数据面拒绝：坏 base64 点名，超 20MB 上限拒绝", async ({ host }) => {
+test("上传数据面拒绝：坏 base64 点名，超 20MB 上限拒绝", async ({ host }) => {
     const wsPath = path.join(host.ws, "att-ws");
     const created = await postJson(host.base, "/api/session/new", { message: "附件会话", workspace: wsPath });
     expect(created.body.ok).toBe(true);

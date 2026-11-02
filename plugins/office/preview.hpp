@@ -126,7 +126,7 @@ public:
         }
         // NOTE: 必须 notify_all——worker（队列谓词）与看门狗（在途谓词）同眠于
         // 这一把 cv，notify_one 抽中看门狗时其谓词为假、原样回睡，唤醒被白吃，
-        // worker 永不醒（探针实测：入队+notify 后 job 在队列里躺到天荒地老）
+        // worker 永不醒（踩过: 入队+notify 后 job 在队列里躺到天荒地老）
         cv_.notify_all();
         out = (json{{"ok", true}, {"pending", true}}).dump();
         return true;
@@ -397,7 +397,7 @@ private:
                                      : fs::path("ithaca-preview");
     }
 
-    // ---- 小件 ---------------------------------------------------------------------
+    // ---- 直通判定、进程快照与 VARIANT 构造 -----------------------------------------
 
     // 直通族判定：pdf + 浏览器原生可渲染的图片族（零转换，源文件即产物）
     static bool is_passthrough_(const std::string& ext) {

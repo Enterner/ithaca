@@ -2,16 +2,16 @@
 // ithaca 契约 —— 事件（宿主与插件都编译这一份；唯一共享面的一部分）。
 //
 // 规矩与内核 app/contract.hpp 相同：C 布局、名字的 fnv1a-64、
-// **指针/字符串只在本次回调期间有效，要留存必须拷贝**（ABI 纪律第五条）。
+// **指针/字符串只在本次回调期间有效，要留存必须拷贝**。
 // 事件载荷经 raw 通道跨界：发方 emit(id, const void*)，收方按本头布局读取。
 // 字段只在尾部追加。
 //
-// slot 路由约定（nostos on_slot/emit_slot，内核 58dc137 起）：ithaca 的 slot =
+// slot 路由约定（nostos on_slot/emit_slot）：ithaca 的 slot =
 // 会话槽 turn_no（agent 插件全局发号器，跨主/子会话不撞）。多实例私有事件
 // （LLM 事件族、run.line/exit——多会话并行后主会话请求同样按槽单播）按槽单播；
 // agent 槽订阅后补 **session 标**重播进广播通道（多会话并行：UI 按标路由到归属
 // 会话的数据面，消费方见 vc_events 各结构体的 session 尾部字段）——子代理不可
-// 见性由"订阅才可达"保证，不再靠载荷标志。
+// 见性由"订阅才可达"保证（不经载荷标志）。
 #include <nostos/event.hpp>
 
 #include <cstdint>
@@ -36,13 +36,13 @@ struct TurnInput {
 
 // 用户对提案的裁决（tui → agent）。
 // decision：0=approved（本提案通过） 1=denied 2=all（本会话后续免批） 3=undo（撤销上一 turn）
-//           4=cancel_turn（取消当前 turn；turn_id 被忽略——M4 Ctrl+C / 取消语义）
-// paths_json（尾部追加，M-W6 逐文件批准）：JSON 数组字符串，列出**接受**的文件路径；
+//           4=cancel_turn（取消当前 turn；turn_id 被忽略——Ctrl+C / 取消语义）
+// paths_json（尾部追加，逐文件批准）：JSON 数组字符串，列出**接受**的文件路径；
 //           null/空 = 全部文件（向后兼容：旧 tui 不设此字段）。
-// msg（尾部追加，M-W10 拒绝反馈）：decision=1 时随拒绝带给 agent 的用户留言
-//           （"拒绝并反馈"——ZCode 式：输入框文字即反馈）；null = 无留言。
+// msg（尾部追加，拒绝反馈）：decision=1 时随拒绝带给 agent 的用户留言
+//           （"拒绝并反馈"——输入框文字即反馈）；null = 无留言。
 // session（尾部追加，多会话并行）：裁决目标会话——undo/cancel 也按它路由
-//           （多会话下「当前 turn」不再全局唯一）；null/空回落最近加载槽。
+//           （多会话下「当前 turn」按会话各自成立）；null/空回落最近加载槽。
 struct TurnDecision {
     static constexpr std::string_view name = "vc.turn.decision";
     int turn_id = 0;
@@ -52,7 +52,7 @@ struct TurnDecision {
     const char* session = nullptr;     // 调用期有效，要留存必须拷贝
 };
 
-// 工具插件后到接入的提示。MVP 的发现走 config 显式清单，
+// 工具插件后到接入的提示。发现走 config 显式清单，
 // 这只是"有新工具上线"的通知，载荷是 svc 名。
 struct ToolRegister {
     static constexpr std::string_view name = "vc.tool.register";
@@ -64,8 +64,8 @@ struct LlmDelta {
     static constexpr std::string_view name = "vc.llm.delta";
     int request_id = 0;
     const char* text = nullptr;  // UTF-8，调用期有效
-    // 已废弃（slot 路由替代，布局保留）：子代理请求的事件现按 slot=turn_no 单播，
-    // 不进广播通道——本字段恒为 0，生产者不再回填，消费方不得读取。
+    // 作废字段（布局槽位保留，不得移除）：子代理请求的事件按 slot=turn_no 单播，
+    // 不进广播通道——本字段恒为 0，生产者不回填，消费方不得读取。
     int subagent = 0;
     // 尾部追加（多会话并行）：归属会话 id——agent 槽订阅后补标重播进广播通道，
     // 消费方（UI）按它路由到归属会话的数据面。null/空 = 未标注（回落活跃会话）。
@@ -78,7 +78,7 @@ struct LlmReasoning {
     static constexpr std::string_view name = "vc.llm.reasoning";
     int request_id = 0;
     const char* text = nullptr;  // UTF-8，调用期有效
-    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    // 作废字段（布局槽位保留，不得移除）：语义同 LlmDelta.subagent。
     int subagent = 0;
     // 尾部追加（多会话并行）：语义同 LlmDelta.session。
     const char* session = nullptr;
@@ -89,16 +89,16 @@ struct LlmReasoning {
 //     "function":{"name":"workspace.read","arguments":"{...}"}}]}
 // provider 负责把流式片段拼装成完整消息（content 与 tool_calls 的 arguments 碎片）。
 // usage = 本轮 token 用量（JSON 文本，provider 尽力提供，可为 null）：
-    //   {"prompt_tokens":N,"completion_tokens":N,"total_tokens":N
-    //    [,"cache_tokens":N]}——缓存命中为可选归一口径（DeepSeek
-    //    prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens）
+//   {"prompt_tokens":N,"completion_tokens":N,"total_tokens":N
+//    [,"cache_tokens":N]}——缓存命中为可选归一口径（DeepSeek
+//    prompt_cache_hit_tokens / OpenAI prompt_tokens_details.cached_tokens）
 // 均为调用期有效，要留存必须拷贝。
 struct LlmDone {
     static constexpr std::string_view name = "vc.llm.done";
     int request_id = 0;
     const char* assistant_json = nullptr;
     const char* usage = nullptr;
-    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    // 作废字段（布局槽位保留，不得移除）：语义同 LlmDelta.subagent。
     int subagent = 0;
     // 尾部追加（多会话并行）：语义同 LlmDelta.session。
     const char* session = nullptr;
@@ -110,7 +110,7 @@ struct LlmError {
     int request_id = 0;
     int code = 0;
     const char* message = nullptr;
-    // 已废弃（slot 路由替代，布局保留）：语义同 LlmDelta.subagent。
+    // 作废字段（布局槽位保留，不得移除）：语义同 LlmDelta.subagent。
     int subagent = 0;
     // 尾部追加（多会话并行）：语义同 LlmDelta.session。
     const char* session = nullptr;
@@ -151,7 +151,7 @@ struct EditProposed {
     static constexpr std::string_view name = "vc.edit.proposed";
     int turn_id = 0;
     const char* diff_text = nullptr;  // 行级 diff 展示文本，调用期有效
-    // 尾部追加（M-W7）：提案工具名（"runner.run" 等）——按工具区分批准卡形态用。
+    // 尾部追加：提案工具名（"runner.run" 等）——按工具区分批准卡形态用。
     // 当前消费方（webui/host）都不读它（批准卡形态靠 diff_text 首行解析）——
     // 契约面保留待用，生产者照常填充。
     const char* tool = nullptr;
@@ -168,7 +168,7 @@ struct EditApplied {
     // 尾部追加：每文件结构化统计 [{"path","add","rem","is_new"}]（调用期有效，旧
     // 生产者组合下为 null，消费方以非空探测）。diff_text 是给人看的展示文本且可能
     // 被截断，统计以本字段为准——消费方不得从展示文本反解（截断砍掉的是文本尾行
-    // 的统计，踩过：大 diff 的「本轮修改」卡恒 +0−0）。
+    // 的统计，踩过: 大 diff 的「本轮修改」卡恒 +0−0）。
     const char* files_json = nullptr;
     // 尾部追加（多会话并行）：归属会话 id，语义同 LlmDelta.session。
     const char* session = nullptr;
@@ -182,8 +182,8 @@ struct EditUndone {
 };
 
 // 子进程执行（agent → runner；runner → agent/tui）。run_id 全链路关联。
-// 【已废弃】本事件无生产者也无消费者——实际路径是工具表 execute 同步发起，
-// 输出/退出经 vc.run.line/exit 事件回。契约冻结只标注不删声明。
+// 作废事件（无生产者也无消费者）：实际路径是工具表 execute 同步发起，
+// 输出/退出经 vc.run.line/exit 事件回。契约冻结，只标注不删声明。
 struct RunRequest {
     static constexpr std::string_view name = "vc.run.request";
     int run_id = 0;
@@ -199,7 +199,7 @@ struct RunLine {
     const char* text = nullptr;
     // 路由（slot 路由约定）：本事件按 slot = 发起 run 的会话槽 turn_id 单播——
     // 只有归属 ctx 收得到；主会话槽的行由 agent 重播到广播通道供 UI 消费。
-    // 子代理槽的行不再出现在父会话 UI（slot 路由前本字段无隔离能力，踩过）。
+    // 子代理槽的行不进父会话 UI——广播通道自身无隔离能力，隔离靠槽单播（踩过）。
     // 尾部追加（多会话并行）：重播副本上的归属会话 id（slot 槽原始载荷不带，
     // 由 agent 重播时补），语义同 LlmDelta.session。
     const char* session = nullptr;
@@ -213,8 +213,8 @@ struct RunExit {
     const char* session = nullptr;
 };
 
-// 状态栏级提示（任意 → tui）。level：0=trace 1=debug 2=info 3=warn 4=error。
-// sys（尾部追加，M-W10）：系统状态通告（如权限模式切换）——webui 渲染为居中
+// 状态栏级提示（任意 → tui/webui）。level：0=trace 1=debug 2=info 3=warn 4=error。
+// sys（尾部追加）：系统状态通告（如权限模式切换）——webui 渲染为居中
 // 分隔样式、与对话内容区分；0/缺省 = 普通对话行。
 // kind（尾部追加）：机器路由用的通告类别——"bg_run_started"=后台任务已启动、
 // "waiting"=等待后台/子代理收口；null = 普通通告。text 恒供人读，消费方的
@@ -234,7 +234,7 @@ struct Notice {
     const char* session = nullptr;
 };
 
-// 会话切换（webui → agent）：加载指定 state 文件（M6 格式：messages/turns/usage），
+// 会话切换（webui → agent）：加载指定 state 文件（格式：messages/turns/usage），
 // 并把后续落盘重定向到该路径。仅在 Idle 时有效；turn 进行中 agent 拒绝并日志。
 // path 调用期有效，要留存必须拷贝。
 struct SessionLoad {
@@ -249,7 +249,7 @@ struct WorkspaceSet {
     const char* root = nullptr;
 };
 
-// 权限模式三档（M-W7，Codex 式；webui 设置面板/顶栏切换，宿主启动 env 可设默认）：
+// 权限模式三档（Codex 式；webui 设置面板/顶栏切换，宿主启动 env 可设默认）：
 //   suggest    —— 逐条问：编辑与命令都走提案→批准（runner.run/apply 的 dry_run
 //                试算；工作区外改动同规，提案卡展示绝对路径）
 //   auto-edit  —— 工作区内编辑免批（applied 携带 diff 事后展示），命令逐条问，
@@ -264,17 +264,16 @@ struct PermissionMode {
     const char* mode = nullptr;
 };
 
-// provider 热切（M2 起；M-W8 尾部追加 base_url——多供应商下按「当前使用」供应商
+// provider 热切（尾部追加 base_url——多供应商下按「当前使用」供应商
 // 热切 Key 与请求目标；base_url 为空 = 保持现值（兼容旧生产者）。
 struct LlmSetActive {
     static constexpr std::string_view name = "vc.llm.set_active";
     const char* provider = nullptr;
     const char* key = nullptr;
-    // 尾部追加（M-W8）：Base URL（UTF-8）；空 = 保持现值。调用期有效，要留存必须拷贝。
+    // 尾部追加：Base URL（UTF-8）；空 = 保持现值。调用期有效，要留存必须拷贝。
     const char* base_url = nullptr;
-    // 尾部追加（上下文压缩阶段二）：
-    // 当前模型上下文窗口（tokens；0 = 未知）——agent 据此做 0.9×W 动态压缩阈值。
-    // 旧生产者组合下为 0（消费方回退兜底阈值）。
+    // 尾部追加：当前模型上下文窗口（tokens；0 = 未知）——agent 据此做 0.9×W 动态
+    // 压缩阈值。旧生产者组合下为 0（消费方回退兜底阈值）。
     int context_window = 0;
     // 尾部追加（子 agent）：子 agent 模型档案三元组——webui 从当前主模型的
     // sub_model 配置解析出目标供应商的模型/Key/Base URL 随本事件下发；provider
@@ -328,8 +327,8 @@ struct McpStatus {
 // 子代理活动（agent → webui，广播）：主会话的工作记录视图——落 transcript 供
 // UI 展示与重放，但**不进任何 LLM 上下文**（父上下文只收 task 工具的最终结果，
 // 子会话的 messages 隔离在子 AgentCtx）。消费方按 turn_id（= 子会话槽 turn_no）
-// 聚合为单个子代理的卡片与过程视图；delta 只广播不落盘（与 assistant_delta
-// 同款——实时性归流式，重放不需要逐字过程）。
+// 聚合为单个子代理的卡片与过程视图；delta 只广播不落盘——实时性归流式，
+// 重放不需要逐字过程。
 // phase：0=spawn 1=delta 2=tool_call 3=tool_result 4=done 5=fail。
 // tool：spawn=类型名 / tool_call|tool_result=工具全名；其余为 null。
 // text：spawn=任务描述 / delta=流式增量 / tool_*=参数与结果人话摘要 /
@@ -363,7 +362,7 @@ struct SessionCmd {
 
 inline constexpr std::uint64_t session_cmd = nostos::event_id<SessionCmd>;
 
-// ---- 插件 UI 贡献（声明式设置 schema，方案 A）--------------------------------
+// ---- 插件 UI 贡献（声明式设置 schema）----------------------------------------
 // 带设置 UI 的插件在 activate 时 emit register（webui 动态生成设置 tab）；webui
 // 在自己 activate 末尾 emit query——已激活插件收到后**重发** register。两个方向
 // 合起来消解装载时序：webui 先启动 ⇒ 插件 register 直接命中；webui 后启动 ⇒

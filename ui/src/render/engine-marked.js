@@ -19,9 +19,9 @@ function safeHref(href) {
 
 marked.use({
   gfm: true,      // 表格/删除线/任务列表/自动链接
-  breaks: true,   // 单换行断行（聊天习惯——旧 pre-wrap 渲染的等价形态）
+  breaks: true,   // 单换行断行（聊天习惯：软换行即断行，观感与纯文本 pre-wrap 一致）
   renderer: {
-    // 原始 HTML：转义显示（禁 raw HTML 入流，但内容可见——与旧渲染器一致）
+    // 原始 HTML：转义显示（禁 raw HTML 入流，但内容可见）
     html({ text }) { return esc(text) },
     text({ text, tokens }) { return tokens ? this.parser.parseInline(tokens) : esc(text) },
     codespan({ text }) { return `<code class="ic">${esc(text)}</code>` },

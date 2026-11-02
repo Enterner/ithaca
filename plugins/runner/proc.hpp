@@ -1,11 +1,11 @@
 #pragma once
 // 沙箱化子进程 spawn（plugin/runner 的安全策略切片）。
-// 职责分工：非沙箱的"输出捕获"原语（管道 + Job 树杀 + 行分割）已上收内核
+// 职责分工：非沙箱的"输出捕获"原语（管道 + Job 树杀 + 行分割）在内核
 // vckit（PipedProcess / LineSplitter）——本头只剩 vckit 表达不了的部分：
 // AppContainer 沙箱（低盒令牌 / SECURITY_CAPABILITIES 两层路径 + ACL 授权 +
 // 环境重定向）。沙箱是宿主的安全策略（读宽写窄），不进共享层。
 //
-// 沙箱路径的管道坑与 vckit 同源（父写端即关 / 读端去继承位），已按同款纪律处理。
+// 沙箱路径的管道坑与 vckit 同源（父写端即关 / 读端去继承位），按同款纪律处理。
 // 输出按字节流读取、经 vckit::LineSplitter 分行（分块边界不保证对齐）。
 #include <vckit/piped_process.hpp>
 #include <vckit/win.hpp>
@@ -49,7 +49,7 @@ inline bool make_pipe(PipePair& out, std::string& err) {
         err = "CreatePipe 失败 (" + std::to_string(GetLastError()) + ")";
         return false;
     }
-    SetHandleInformation(out.read_end, HANDLE_FLAG_INHERIT, 0);  // 读端不继承
+    SetHandleInformation(out.read_end, HANDLE_FLAG_INHERIT, 0);
     return true;
 }
 
@@ -104,7 +104,8 @@ struct ChildPipes {
 // ---- 沙箱（full-auto 模式：AppContainer 进程）--------------------------------
 //   · 断网：容器默认无 INTERNET_CLIENT 能力 ⇒ 出站网络（含回环）内核级拒绝
 
-//   · 注册表/用户配置：仅容器自己的 profile 可写（个别工具可能受限——文档明示）
+//   · 注册表/用户配置：仅容器自己的 profile 可写（个别工具可能因此受限——沙箱
+//     预期取舍，非缺陷）
 //   · profile 进程级缓存一份（CreateAppContainerProfile 幂等开销大）
 
 struct SandboxProfile {
@@ -235,7 +236,7 @@ inline bool sandbox_grant_dir(const std::wstring& dir, PSID sid, std::string& er
 // 授权面锚定宿主环境事实——PATH 按定义就是"装工具的地方"，agent 无从操纵
 // （请求驱动的授权会被注入面利用：诱导授权任意目录）。个别条目失败（目录已
 // 卸载/所有者非本用户改不了 DACL）静默跳过：无害且症状可观测——真要跑那里
-// 的命令时 CreateProcess 失败 → 逃生舱（plugin.cpp 访问拒绝结构化回灌）。
+// 的命令时 CreateProcess 失败，由调用方的逃生舱转成结构化拒绝回灌给 agent。
 inline void sandbox_grant_path_dirs(PSID sid) {
     static bool done = false;   // ACE 落盘持久存在（幂等检查在 grant_dir 内），进程内只做一轮
     if (done || sid == nullptr) return;
@@ -309,7 +310,7 @@ inline std::wstring sandbox_env_block(const std::wstring& temp_dir) {
 
 // 沙箱 v2：令牌先行——NtCreateLowBoxToken 直造低盒令牌（AppContainer 令牌本体），
 // 后续 CreateProcessAsUserW 用它拉起，完全绕开 CreateProcessW 内部的
-// SECURITY_CAPABILITIES 属性装配（该路径在本机 Insider 26200 上回归，见探针记录）。
+// SECURITY_CAPABILITIES 属性装配（该路径在本机 Insider 26200 上实测回归，恒拒 87）。
 // 零能力（capability 数 0）= 读宽写窄策略的断网 + 默认拒绝由令牌天然保证；工作区/
 // PATH 的 ACE 授权仍按容器 SID 落盘，与此令牌同一 SID，全部照用。
 // NtCreateLowBoxToken 是 ntdll 非 SDK 符号（Win8 起稳定存在，Chrome 系沙箱同款
@@ -361,7 +362,7 @@ inline bool sandbox_lowbox_token(PSID sid, HANDLE& out, std::string& err) {
 // PATH 搜索不可靠（实测一律 ERROR_FILE_NOT_FOUND(2)——令牌视角与宿主环境差异，
 // 踩过: 子代理在 full-auto 下 grep/wc/ls/python 全部起不来）。先在宿主环境里
 // SearchPath 定位成全路径再拉起；定位失败给出点名错误（宿主 PATH 无此工具），
-// 不再是笼统的 CreateProcess(2)。返回空 = 定位失败（err 已写）。
+// 而非笼统的 CreateProcess(2)。返回空 = 定位失败（err 已写）。
 inline std::wstring sandbox_locate_exe(const std::wstring& cmdline, std::string& err) {
     // 提取首个 token：引号形态取到闭引号，否则取到首个空白
     std::wstring exe;
@@ -453,7 +454,7 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
         have_lowbox = true;
         flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT;   // 无属性列表
     } else {
-        // v2 缺口静默——v1 属性路径接棒（探针记录两层的可用面不同）
+        // v2 缺口静默——v1 属性路径接棒（两层路径的可用面实测不同）
         // ---- v1 属性路径：SECURITY_CAPABILITIES（本机 Insider 26200 上为 87）----
         ::InitializeProcThreadAttributeList(nullptr, 2, 0, &attr_size);
         attr_list = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
@@ -492,7 +493,7 @@ inline bool spawn(const std::wstring& cmdline, const std::wstring& cwd, ChildPip
 
     PROCESS_INFORMATION pi{};
     std::wstring cmd = cmdline;  // CreateProcess* 可能改写缓冲 ⇒ 传可写副本
-    // 沙箱下先定位可执行文件（理由见 sandbox_locate_exe）：lpApplicationName 用
+    // 沙箱下先定位可执行文件：lpApplicationName 用
     // 全路径，命令行原样传递（子进程 argv[0] 仍是用户原始形态）。降级路径走普通
     // CreateProcessW 的宿主 PATH 搜索，无需定位
     std::wstring exe_full;

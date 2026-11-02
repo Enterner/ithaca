@@ -9,7 +9,7 @@
 //
 // 两种剧本形态：
 //   1) 内置文本剧本（冒烟）：4 行 delta + done（assistant_json = 纯 content）。
-//   2) turn 剧本（M3 起）：env ITHACA_MOCK_TURNS 指向 JSON 数组文件，每个元素是
+//   2) turn 剧本：env ITHACA_MOCK_TURNS 指向 JSON 数组文件，每个元素是
 //      一条完整的 assistant 消息（可含 tool_calls）；chat() 依序弹出，content 按
 //      行流式成 delta，done 携带完整 assistant_json；剧本耗尽 ⇒ "剧本已尽"。
 //      agent 的离线确定性回归就靠它。
@@ -75,7 +75,7 @@ private:
     // ---- 请求登记面（src/request.cpp）-------------------------------------------
 
     // slot：body 携带的路由键（agent 子任务 = 子会话槽 turn_no，非 0）——回放
-    // 事件按槽单播回发（与 llm_cloud 对齐）；0 = 广播（主会话，迁移前行为）。
+    // 事件按槽单播回发（与 llm_cloud 对齐）；0 = 广播（主会话）。
     nostos_status chat_(int request_id, const char* messages_or_body, std::uint64_t slot);
     // worker 收尾回收：经 poster 回宿主线程 join + 擦表（自 erase 会析构
     // joinable thread => terminate；与 llm_cloud 同款纪律）

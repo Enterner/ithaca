@@ -21,12 +21,12 @@ async function openFlow(page, host, message) {
 }
 
 
-test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 再对话", async ({ host, page }) => {
+test("对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 再对话", async ({ host, page }) => {
     await openFlow(page, host, "创建 hello.txt");
 
     // 用户消息渲染
     await expect(page.locator(".msg.u", { hasText: "创建 hello.txt" })).toBeVisible();
-    // 落盘 = 「本轮修改」汇总卡（applied 不再自成一行）+ 文件行 + 新文件徽章
+    // 落盘 = 「本轮修改」汇总卡（applied 并入卡内、不单独成行）+ 文件行 + 新文件徽章
     const edits = page.locator(".card.edits");
     await expect(edits).toBeVisible({ timeout: 15000 });
     await expect(edits.locator(".erow .p", { hasText: "hello.txt" })).toBeVisible();
@@ -45,7 +45,7 @@ test("CONV1 对话闭环：发送 → 落盘 → 本轮修改卡 → 收口 → 
     expect(fs.existsSync(hello(host))).toBe(true);
 });
 
-test("CONV2 决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起", async ({ host, page }) => {
+test("决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起", async ({ host, page }) => {
     await postJson(host.base, "/api/permission-mode", { mode: "suggest" });   // 前置：切逐条批准
     await openFlow(page, host, "创建 hello.txt");
 
@@ -54,8 +54,8 @@ test("CONV2 决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起
     await expect(dock).toBeVisible({ timeout: 15000 });
     await expect(dock.locator("b", { hasText: "workspace.apply" })).toBeVisible();
 
-    // 批准（决策坞 Enter 键同款按钮）→ 落盘（本轮修改汇总卡收口，applied 不再
-    // 自成一行）+ 坞收起 + 磁盘产物
+    // 批准（决策坞 Enter 键同款按钮）→ 落盘（本轮修改汇总卡收口，applied 并
+    // 入卡内、不单独成行）+ 坞收起 + 磁盘产物
     await dock.locator("button.y").click();
     await expect(page.locator(".card.edits", { hasText: "本轮修改" })).toBeVisible({ timeout: 15000 });
     await expect(page.locator(".ddock")).toHaveCount(0);
@@ -64,7 +64,7 @@ test("CONV2 决策坞：suggest 模式提案 → 批准 → 落盘 → 坞收起
     expect(fs.existsSync(hello(host))).toBe(true);
 });
 
-test.describe("CONV5 停止生成", () => {
+test.describe("停止生成", () => {
     // 长内容 + 放慢流式节流，留出点停止的时间窗
     test.use({
         hostCfg: {
@@ -89,7 +89,7 @@ test.describe("CONV5 停止生成", () => {
     });
 });
 
-test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, page }) => {
+test("命令：/help 本地应答、/cancel 空转无害", async ({ host, page }) => {
     await openFlow(page, host, "创建 hello.txt");
     await expect(page.locator(".msg.a", { hasText: "任务完成" }).first())
         .toBeVisible({ timeout: 15000 });
@@ -105,8 +105,8 @@ test("CONV6 命令：/help 本地应答、/cancel 空转无害", async ({ host, 
     await expect(page.locator(".errcard")).toHaveCount(0);
 });
 
-test("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件回退删除", async ({ host, page }) => {
-    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题，挂账），修复后转正。
+test("/undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件回退删除", async ({ host, page }) => {
+    // 挂起：带工作区会话的 undo 不回退文件（独立产品问题），修复后本用例转正。
     // fixme 一层即够——fixme+skip 叠用会让两处跳过原因各自为政（改一处漏一处）
     test.fixme(true, "undo 带工作区会话不回退文件（挂账产品问题）");
     await openFlow(page, host, "创建 hello.txt");
@@ -121,7 +121,7 @@ test("CONV6b /undo 撤销上一轮：undone 行 + 汇总卡标已撤销 + 文件
     }).toPass({ timeout: 10000 });
 });
 
-test.describe("CONV10 工具行人性化", () => {
+test.describe("工具行人性化", () => {
     // 场景驱动真实工具调用（list/search/read），断言 ● 行渲染人话摘要而非裸 JSON
     test.use({
         hostCfg: {

@@ -1,4 +1,4 @@
-// selftest 冒烟：mock 全链路单次运行（回归见 npm run regress）。
+// selftest 冒烟：mock 全链路单次运行、只验退出码（输出一致性/golden 比对由 scripts/regress.mjs 负责）。
 // 用法：node scripts/selftest.mjs [--preset debug]
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";

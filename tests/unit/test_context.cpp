@@ -1,4 +1,4 @@
-// 上下文压缩阶段一的单测：mission 卡/最小充分记录模板/
+// 上下文压缩的单测：mission 卡/最小充分记录模板/
 // provenance 回查/压缩判定与折叠计划——纯逻辑层直接驱动。
 #include "ithaca_test_framework.hpp"
 
@@ -139,7 +139,7 @@ VC_TEST("context: plan_compress——除最末段外折叠，请求锚点逐字�
     const std::string body = nm[1]["content"].get<std::string>();
     CHECK(body.find("任务一：修 a.cpp") != std::string::npos);   // 请求锚点逐字
     CHECK(body.find("a.cpp") != std::string::npos);              // 调用锚点保留
-    CHECK(body.find("workspace.apply:ok(files=a.cpp)") != std::string::npos);  // 紧凑调用链（批次三-10 人话渲染）
+    CHECK(body.find("workspace.apply:ok(files=a.cpp)") != std::string::npos);  // 紧凑调用链渲染成人话摘要（工具名+结果要点），不暴露裸 JSON
     CHECK(nm[2]["content"] == "任务二：跑测试");                  // 末段逐字保留
     CHECK(nm[3]["content"] == "全过");
 }

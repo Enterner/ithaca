@@ -1,7 +1,9 @@
 #pragma once
 // --selftest 的宿主侧脚手架（main 的唯一 selftest 知识面）：观测订阅、mock 剧本
-// 落盘与 env 指路、M1 workspace 冒烟 / M2 直驱 / M3·M4·M5 场景点火、三阶段等待
-// 推进与最终裁决。交互模式零参与——渲染归界面插件，宿主只校验管道通不通。
+// 落盘与 env 指路、M1 workspace 冒烟 / M2 直驱 / M3 闭环（write→read→replace
+// 编辑链）/ M4 取消（长流水中途取消）/ M5 回灌（run 失败→修复→重跑成功）场景
+// 点火、三阶段（Run1 闭环→Run2 回灌→Cancel 取消）等待推进与最终裁决。交互模式
+// 零参与——渲染归界面插件，宿主只校验管道通不通。
 #include "vc_events.hpp"
 #include "vc_llm.hpp"
 #include "vc_tool.hpp"

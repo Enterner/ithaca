@@ -16,7 +16,7 @@ async function openFlow(page, host) {
     await page.locator(".send-btn").click();
 }
 
-test.describe("SUB1 完整周期：派发→执行→报告→收口", () => {
+test.describe("完整周期：派发→执行→报告→收口", () => {
     test.use({
         hostCfg: {
             pickStub: true,
@@ -62,7 +62,7 @@ test.describe("SUB1 完整周期：派发→执行→报告→收口", () => {
     });
 });
 
-test.describe("SUB2 取消：级联终态卡 + 状态翻转为已取消", () => {
+test.describe("取消：级联终态卡 + 状态翻转为已取消", () => {
     test.use({
         hostCfg: {
             pickStub: true,

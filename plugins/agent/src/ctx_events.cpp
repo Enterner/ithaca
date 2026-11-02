@@ -39,7 +39,7 @@ void AgentCtx::on_done(const vc_api::LlmDone& e) {
 }
 
 void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
-    // 摘要请求回包分流（阶段二）：与 turn 请求共用 chat_ex 通道，按 request_id
+    // 摘要请求回包分流：与 turn 请求共用 chat_ex 通道，按 request_id
     // 区分——摘要在途时 turn 请求不可能在途（摘要只在 turn 收口后发起）。
     if (compress_inflight_ && e.request_id == compress_seq_)
         return on_compress_done_(e);
@@ -66,7 +66,7 @@ void AgentCtx::on_done_impl(const vc_api::LlmDone& e) {
     }
     if (!usage_real) last_prompt_tokens_ = estimate_prompt_tokens(body_buf_);
     last_usage_real_ = usage_real;   // 信号来源随值走（策略缝的退避只认真实回报）
-    // 压缩后首 turn 的退避校验（阶段二）：摘要没压下来 ⇒ 阈值 ×1.25 抬升；封顶
+    // 压缩后首 turn 的退避校验：摘要没压下来 ⇒ 阈值 ×1.25 抬升；封顶
     // 0.95×W——越过即由硬保护接管（阈值越过 W 后 should_compress 永不命中，压缩
     // 停摆回爆窗）。仅真实 usage 参与比较——拿粗估信号退避 = 用垃圾调阈值。
     // 策略缝：表接管时退避判定在策略内，本块整体跳过。
@@ -114,7 +114,7 @@ void AgentCtx::on_llm_error(const vc_api::LlmError& e) {
 }
 
 void AgentCtx::on_llm_error_impl(const vc_api::LlmError& e) {
-    // 摘要请求失败分流（阶段二）：回退机械 digest——压缩永不卡死 turn 流
+    // 摘要请求失败分流：回退机械 digest——压缩永不卡死 turn 流
     if (compress_inflight_ && e.request_id == compress_seq_)
         return on_compress_error_(e);
     if (e.request_id != inflight_) return;  // 迟到错误 / agent 自发收口（rid=0）：忽略

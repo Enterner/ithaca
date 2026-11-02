@@ -54,9 +54,9 @@ AgentCtx& AgentPlugin::ensure_ctx_(const std::string& id) {
                             : (std::getenv("ITHACA_PERMISSION_MODE") != nullptr
                                    ? std::getenv("ITHACA_PERMISSION_MODE") : ""));
     c.rebuild_confirm_();
-    // 上下文压缩阶段二：动态阈值 0.9×W——env ITHACA_CONTEXT_WINDOW 显式覆盖
+    // 上下文压缩：动态阈值 0.9×W——env ITHACA_CONTEXT_WINDOW 显式覆盖
     //（测试/便携）> set_active 事件携带的窗口；ITHACA_CONTEXT_SUMMARY=off 关闭
-    // LLM 摘要（永远机械折叠，阶段一行为）。
+    // LLM 摘要（恒机械折叠）。
     if (const char* v = std::getenv("ITHACA_CONTEXT_WINDOW"); v != nullptr && *v != '\0') {
         c.ctx_window_env_ = true;
         c.set_context_window_(std::atoll(v));
@@ -123,8 +123,8 @@ AgentCtx* AgentPlugin::route_(const char* session) {
 nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
     host_ = host;
     // poster：dispatch 推迟一拍的投递通道（见 AgentCtx::dispatch_after_done_），
-    // 全槽共享（poster 无状态）。领取失败不阻激活——回退同步分发，只是事件顺序
-    // 回到旧行为。
+    // 全槽共享（poster 无状态）。领取失败不阻激活——回退同步分发（工具事件与
+    // llm_done 派发同帧，失去推迟一拍的序保证）。
     if (host.acquire_poster(&poster_) != NOSTOS_OK)
         host.log(3, "ithaca.agent: 领取 poster 失败——工具分发回退同步（事件顺序退回旧行为）");
 
@@ -191,7 +191,7 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         }
     });
 
-    // M6/session 持久化：ITHACA_SESSION_FILE ⇒ 启动恢复 = 首个槽（load 与切换
+    // 会话持久化：ITHACA_SESSION_FILE ⇒ 启动恢复 = 首个槽（load 与切换
     // 共用路径；activate 期无 webui 竞争）
     if (const char* v = std::getenv("ITHACA_SESSION_FILE"); v != nullptr && *v != '\0') {
         const std::string id = session_id_of_state(v);

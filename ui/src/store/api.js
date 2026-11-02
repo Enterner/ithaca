@@ -93,7 +93,7 @@ export function fmtK(n) {
 /**
  * fetch JSON 助手：带 body ⇒ POST JSON，无 body ⇒ GET。
  * NOTE: POST 端点必须显式传 {}——无 body 会发 GET（踩过: pickFolder 404 静默无效）。
- * 非 JSON 响应（宿主 500 HTML / 代理错误页）不再抛 SyntaxError——调用点读到的
+ * 非 JSON 响应（宿主 500 HTML / 代理错误页）不抛 SyntaxError——调用点读到的
  * 是 {ok:false, error}，失败路径可控；业务语义仍以返回体的 ok 字段为准。
  */
 export async function api(path, body) {
@@ -118,17 +118,20 @@ export function fetchConfig() {
   return api('/api/config')
 }
 
-/** 文件树目录列举（代理 workspace list；jail/上限/黑名单在提供方与后端）。 */
+/** 文件树目录列举（代理 workspace list；jail/上限/黑名单在提供方与后端）。
+ *  失败行为：{ok:false,error}（越界/超限/网络），调用方在槽位上显示 error。 */
 export function fetchFsList(path, depth = 1) {
   return api('/api/fs/list?path=' + encodeURIComponent(path) + '&depth=' + depth)
 }
 
-/** 代码查看器文件内容（代理 workspace read）。 */
+/** 代码查看器文件内容（代理 workspace read）。
+ *  失败行为：{ok:false,error}；大文件 truncated=true（内容按提供方护栏截断）。 */
 export function fetchFile(path) {
   return api('/api/fs/read?path=' + encodeURIComponent(path))
 }
 
-/** MCP server 状态行（mcp-status.json 的读取面；缺文件返回空清单）。 */
+/** MCP server 状态行（mcp-status.json 的读取面；缺文件返回空清单）。
+ *  失败行为：{ok:false,error}（网络），调用方按空状态显示。 */
 export function fetchMcpStatus() {
   return api('/api/mcp/status')
 }
@@ -144,12 +147,14 @@ export function attUrl(path) {
 }
 
 /** 文档版式预览 URL（/api/fs/preview；office 插件转 PDF 的流式出口）。
- *  调用方自带超时——不走 api() 的 10s GET 上限，转换服务端自限 30s。 */
+ *  调用方自带超时——不走 api() 的 10s GET 上限，转换服务端按源文件大小自限
+ * （30-120s 看门狗杀进程）。 */
 export function previewUrl(path) {
   return '/api/fs/preview?path=' + encodeURIComponent(path)
 }
 
-/** 子代理工作明细存档（右栏过程视图的历史补齐；按 turn 过滤）。 */
+/** 子代理工作明细存档（右栏过程视图的历史补齐；按 turn 过滤）。
+ *  失败行为：{ok:false,error} 或 reject；调用方 catch 后只显示实时增量。 */
 export function fetchAgentLog(turn) {
   return api('/api/agent-log?turn=' + turn)
 }
@@ -157,12 +162,15 @@ export function fetchAgentLog(turn) {
 /**
  * 设置面「从 API 获取模型」：请后端代理请求平台 GET /models（CORS 挡浏览器
  * 直连）。结果经 SSE provider_models 事件回设置面，不在本调用的返回值里。
+ * 失败行为：本调用返回值只是受理回执（{ok:false}=受理失败）；平台侧失败经
+ * SSE 的 ok/error 字段回设置面。
  */
 export function fetchProviderModels(name, baseUrl, apiKey) {
   return api('/api/provider/models', { name, base_url: baseUrl, api_key: apiKey })
 }
 
-/** 上下文构成分解（悬停指示器拉取；后端读活跃会话 state.json 估算+实测修正）。 */
+/** 上下文构成分解（悬停指示器拉取；后端读活跃会话 state.json 估算+实测修正）。
+ *  失败行为：{ok:false,error}，悬停卡不出现（调用方按 seq 竞态丢弃迟到响应）。 */
 export function fetchCtxBreakdown() {
   return api('/api/context/breakdown')
 }

@@ -1,6 +1,6 @@
 #pragma once
 // 统一工具表的机制件（产品级共享头，准入 = ≥2 工具表插件消费；现状 4 家：
-// workspace/office/runner/mcp）。只收编无争议的机制样板：出参缓冲的「调用期
+// workspace/office/runner/mcp）。只托管无争议的机制样板：出参缓冲的「调用期
 // 有效」契约与发布三连。工具语义（list 自述 JSON / execute 分派）与 ToolRegister
 // 通告的取舍留各插件——基类继承刻意不做：C ABI 插件生态的惯例是样板收薄 helper、
 // 行为留插件（对齐 vckit::active_gate 的组合式先例）。

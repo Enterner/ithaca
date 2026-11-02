@@ -7,14 +7,15 @@
 //                    与无 profile 完全一致（向后兼容）。
 //     无 --selftest：装载插件后进入排水循环，Ctrl+C 退出。
 //     --seconds N  ：N 秒后干净退出（0 = 一直跑；自动化验收用，仿内核参考宿主）。
-//     --selftest   ：M0 冒烟。装载后直接驱动 vc.llm.v1 跑一次回放，校验
+//     --selftest   ：冒烟自检。装载后直接驱动 vc.llm.v1 跑一次回放，校验
 //                    「表调用 → 插件自有线程 → poster → 事件」全链路，收到 done/error 即退出。
 //                    宿主侧脚手架（订阅/剧本/点火/裁决）全在 selftest.cpp。
 //
 // 设计要点：
-//   · 排水节奏：poster 唤醒接缝驱动（内核 F3 落地）——任何插件 post 入队即 SetEvent
-//     唤醒主循环排水，交互延迟 ≈0；空闲时最多等 250ms（接缝出现前，低延迟与省电
-//     不可兼得：16ms 轮询空转、拉长周期则延迟劣化——这个取舍已被消解）。
+//   · 排水节奏：poster 唤醒接缝驱动（接缝由内核 set_post_wake 提供）——任何插件
+//     post 入队即 SetEvent 唤醒主循环排水，交互延迟 ≈0；空闲时最多等 250ms——
+//     延迟靠 post 即醒、省电靠拉长空闲等待，两全；纯轮询做不到：16ms 轮询空转、
+//     拉长周期则延迟劣化。
 //   · 宿主不含业务：事件在插件之间流动；宿主唯一的"应用知识"是契约头与这份自检。
 //   · 启动自检：加载结果与 PENDING 依赖点名打屏。
 #include "profile.hpp"
@@ -146,7 +147,7 @@ int main(int argc, char** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     _set_abort_behavior(0, _CALL_REPORTFAULT);
     // Debug CRT 断言改道 stderr（断言文本 + 源文件行号进 host.log 后即弃进程）：
-    // 默认弹窗形态在多实例/连续断言时会叠出一排模态框卡死无人值守链路（实测踩过: 
+    // 默认弹窗形态在多实例/连续断言时会叠出一排模态框卡死无人值守链路（踩过:
     // 工具轮次连发断言 → 8 个弹窗叠罗汉，宿主假死）。Debug 构建专属，Release 无 CRT
     // 断言路径不受影响。
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -184,7 +185,7 @@ int main(int argc, char** argv) {
     }
     // profile 装配先于一切 env 消费方（selftest 的场景 env 在其后应用 ⇒ 场景覆盖
     // profile 默认）；清单合并 = profile 在前、位置参数追加在后（两路可共存，
-    // 不带 --profile 时本段整体跳过，行为与旧版逐字一致）。
+    // 不带 --profile 时本段整体跳过，行为与无 profile 的裸宿主完全一致）。
     if (!profile_arg.empty()) {
         const ithaca::profile::Loaded prof =
             ithaca::profile::load(profile_arg, ithaca::profile::exe_dir(argv[0]));
@@ -242,7 +243,7 @@ int main(int argc, char** argv) {
 
     host.start();
 
-    // M2 懒激活（内核宿主策略）：manifest 依赖未就绪的插件登记 PENDING，重估后自动拉起。
+    // 懒激活（内核宿主策略）：manifest 依赖未就绪的插件登记 PENDING，重估后自动拉起。
     nostos::LazyGate gate{host.abi_bridge()};
     std::vector<nostos::DynamicPlugin> plugins;
     for (const auto& path : paths) {
@@ -269,11 +270,12 @@ int main(int argc, char** argv) {
             if (p.info().name == "vc.agent") agent_present = true;
         st.set_agent_present(agent_present);
         st.m2_drive(host);              // 仅无 agent 时生效（有 agent 让位，防抢剧本轮次）
-        st.m1_smoke_and_kick(host);     // workspace 冒烟 + M3 点火
+        st.m1_smoke_and_kick(host);     // workspace 冒烟 + M3 闭环场景点火（write→read→replace 编辑链）
     }
 
-    // 主循环：poster 唤醒驱动（内核 F3）——post 入队即唤醒，排水 + 懒激活重估；
-    // 空闲时最多等 250ms。selftest 的三阶段推进在 SelftestHarness::tick；
+    // 主循环：poster 唤醒驱动——post 入队即唤醒，排水 + 懒激活重估；
+    // 空闲时最多等 250ms。selftest 的三阶段（Run1 闭环→Run2 回灌→Cancel 取消）
+    // 推进在 SelftestHarness::tick；
     // --seconds 到点即退。
 #if defined(_WIN32)
     const HANDLE wake_event = CreateEventW(nullptr, /*bManualReset=*/FALSE, /*bInitialState=*/FALSE,

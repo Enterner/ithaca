@@ -59,7 +59,6 @@ const scenarios = [
     },
 ];
 
-// 两臂：baseline 巨型窗口（折叠永不触发）；treated 小窗口（预检/边界折叠确定性触发）
 const arms = [
     { name: "baseline", window: "100000000" },
     { name: "treated", window: "6000" },

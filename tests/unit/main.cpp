@@ -1,4 +1,4 @@
-// ithaca_unit_tests 入口：自注册用例统一运行（框架见 ithaca_test_framework.hpp）。
+// ithaca_unit_tests 入口：main 只调 vctest::run_all()，用例经 VC_TEST 自注册统一运行。
 #include "ithaca_test_framework.hpp"
 
 #include <cstdio>

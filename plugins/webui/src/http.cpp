@@ -1,3 +1,12 @@
+// vc_webui::http —— 单线程 select HTTP/SSE 服务器实现（接口与能力面见 http.hpp）。
+// 关键决定：
+//   · 跨线程判死只标 dead，closesocket 统一在循环线程本轮开头做——跨线程关闭
+//     与另一线程 select 的 fd 快照竞态是 UB（循环线程曾因此静默退出，服务挂死）。
+//   · 每客户端 buffer_cap 背压闸门（内存有界），入队后立即 flush，闸门量的是
+//     客户端真正消化不了的积压。
+//   · handler 在 select 线程持 clients_mu_ 同步执行；其回调链里的 broadcast 按
+//     重入闸门（g_handler_depth）直接丢弃——同线程非递归锁二次进入即死锁，闸掉。
+//   · 挂起-补响应经 respond 原语任意线程补发（api 闭包/office 转换线程依赖）。
 #include "http.hpp"
 
 #include <algorithm>
@@ -261,7 +270,7 @@ struct Server::Impl {
 
         sockaddr_in address{};
         address.sin_family = AF_INET;
-        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);  // 只监听本机
+        address.sin_addr.s_addr = ::htonl(INADDR_LOOPBACK);  // 只绑回环：不暴露到网络，仅供本机访问
         address.sin_port = ::htons(wanted_port);
         if (::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0) {
             if (error != nullptr) *error = "bind(127.0.0.1:" + std::to_string(wanted_port) + ") 失败";

@@ -56,7 +56,8 @@ export function startShellPoll() {
   if (shellPollTimer === null) shellPollTimer = setInterval(loadSessions, 3000)
 }
 
-/** 拉注册表 + 当前会话元数据，对齐侧栏/顶栏（各操作后的硬化刷新）。 */
+/** 拉注册表 + 当前会话元数据，对齐侧栏/顶栏（各操作后的硬化刷新）。
+ *  失败行为：网络失败时 rejection 上抛（多数调用点未捕获——列表保持旧值，等下次触发）。 */
 export async function loadSessions() {
   if (S.shell) {
     const r = await api('/api/shell/sessions')
@@ -90,7 +91,9 @@ async function cancelInflightTurn_() {
 /** 切到指定会话；先丢弃草稿（零请求零落盘）。
  *  切走不杀 turn：链运行中照常切（事件按归属会话路由，侧栏徽标跟进）；跨
  *  工作区目标会与运行中 turn 的文件面错配（workspace 插件单实例 jail）——先
- *  确认停止再切（服务端同规则兜底拒绝）。 */
+ *  确认停止再切（服务端同规则兜底拒绝）。
+ *  失败行为：open 请求网络失败 = loadSessions 纠回服务端活跃会话 + pollOnce
+ *  重放原会话（乐观清屏回滚）。 */
 export async function openSession(id) {
   S.draft = null
   if (id === S.curSession) return
@@ -137,7 +140,8 @@ export async function openSession(id) {
  *  跨工作区并发由服务端拒绝并在发送处报错。 */
 export const newSession = enterDraft
 
-/** 删除会话（后端连带 transcript/state；loadSessions 对齐侧栏）。 */
+/** 删除会话（后端连带 transcript/state；loadSessions 对齐侧栏）。
+ *  失败行为：网络失败 rejection 上抛、列表不动；壳模式删除失败由 1.5s 后的对账暴露。 */
 export async function delSession(id) {
   if (S.shell) {
     const row = S.sessions.find(x => x.id === id)
@@ -154,7 +158,8 @@ export async function delSession(id) {
   if (!S.curSession) resetView()
 }
 
-/** 重命名会话（注册表 title 字段）。 */
+/** 重命名会话（注册表 title 字段）。
+ *  失败行为：网络失败 rejection 上抛，标题保持旧值。 */
 export async function renameSession(id, title) {
   await api('/api/session/rename', { id, title })
   loadSessions()

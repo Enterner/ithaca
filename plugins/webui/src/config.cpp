@@ -47,7 +47,7 @@ void WebuiPlugin::load_config_() {
 }
 
 // ---- 配置两层化（多实例：凭据共享 + 实例覆盖层）---------------------------
-// 共享文件（ITHACA_WEBUI_CONFIG，未设 = home/config.json 即单实例原行为）存
+// 共享文件（ITHACA_WEBUI_CONFIG，未设 = 单实例模式，配置即 home/config.json）存
 // providers/Key 等凭据；实例差异项（当前供应商/模型/权限模式）落 home 的
 // config-local.json 覆盖层。唯一写者是设置面板 UI（用户驱动、低频），运行中
 // 的实例只读共享文件——结构上无写竞争。
@@ -72,7 +72,7 @@ void WebuiPlugin::merge_local_overlay_() {
         if (d.contains(k)) config_[k] = d[k];
 }
 bool WebuiPlugin::persist_config_() {
-    // 单实例模式 = 原 home/config.json 全量行为不变。共享模式下：providers/
+    // 单实例模式 = 配置全量写 home/config.json。共享模式下：providers/
     // Key 等凭据写共享文件，但**实例差异项（当前供应商/模型/权限模式）不进
     // 共享文件**（实例对差异项只读）——否则 A 实例切模型会把 B
     // 实例的重启默认值污染掉；差异项只落本实例覆盖层
@@ -127,10 +127,10 @@ bool WebuiPlugin::persist_config_() {
 
 json WebuiPlugin::config_public_() {
     // 供应商两层配置：providers 按模式单侧下发（mock=测试内置合成项；cloud=
-    // 用户配置项）——面板/模型下拉只显示当前模式一项（产品拍板）；api_key
-    // 原样下发，设置面板预填 password 输入框回显掩码点（产品拍板改口径：
-    // 本地桌面应用，key 本就以明文躺在用户盘的 config.json，回环不出本机；
-    // 旧「掩码不出前端」下已存 key 只能落占位符，与刚输入的形态分裂）。
+    // 用户配置项）——面板/模型下拉只显示当前模式一项（产品拍板）。api_key
+    // 原样下发，设置面板预填 password 输入框回显掩码点（产品拍板：本地桌面
+    // 应用，key 本就以明文躺在用户盘的 config.json，回环不出本机；不下发明文
+    // 则已存 key 只能以占位符预填，与刚输入的形态分裂）。
     // has_key 仍单独给：无 key 时输入框显示「未设置」占位。
     const bool mock = llm_mode_ == "mock";
     json providers = json::array();
@@ -277,7 +277,7 @@ static bool validate_providers(const json& in, const json& existing, json& clean
 // 清洗结果落位（api_config_save_ 第二段提纯）：current_provider 收敛——前端指定
 // 或保留，必须命中清单**且供应商启用（带启用模型）**，停用的供应商继续当当前项
 // 会让输入栏仍走它的凭据、停用语义失真（踩过）；不命中 ⇒ 回落第一个可用的。
-// provider/model 同步为当前供应商（重启 env 兼容 + 旧面板读法），当前模型不在
+// provider/model 同步为当前供应商（重启 env 兼容 + 面板按此二字段读取），当前模型不在
 // 启用列表 ⇒ 切到第一个启用模型。返回当前供应商的 api_key（cloud 无 key 拦截用）。
 static std::string settle_current_provider(json& config, const json& cleaned,
                                            const json& in) {

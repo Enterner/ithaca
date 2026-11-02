@@ -1,5 +1,5 @@
 // 会话创建生命周期 · API 层用例。
-// SC1（新口径）+ SC2a–d 的服务端镜像不变式：注册表只含已初始化会话。
+// 会话创建生命周期的服务端镜像不变式：注册表只含已初始化会话。
 import fs from "node:fs";
 import path from "node:path";
 import { test, expect, getJson, postJson, waitTurnDone } from "../helpers/host.mjs";
@@ -10,7 +10,7 @@ function transcriptLines(host, id) {
     return fs.readFileSync(tf, "utf8").split("\n").filter((l) => l.trim() !== "");
 }
 
-test("SC1 组合端点创建即初始化：注册表/transcript/回复/重启重放", async ({ host }) => {
+test("组合端点创建即初始化：注册表/transcript/回复/重启重放", async ({ host }) => {
     // 创建（带工作区 + 首条消息）
     const wsPath = path.join(host.ws, "proj");
     const r = await postJson(host.base, "/api/session/new", {
@@ -51,7 +51,7 @@ test("SC1 组合端点创建即初始化：注册表/transcript/回复/重启重
     expect(sessions2[0].turns).toBeGreaterThanOrEqual(1);
 });
 
-test("SC2a 镜像：裸 session/new 400，注册表不变", async ({ host }) => {
+test("镜像不变式：裸 session/new 400，注册表不变", async ({ host }) => {
     // 先正常创建一个会话，等 turn 收口（否则裸调用会先撞上 in_flight 门卫）
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     expect(created.body.ok).toBe(true);
@@ -69,7 +69,7 @@ test("SC2a 镜像：裸 session/new 400，注册表不变", async ({ host }) => 
     expect(files).toHaveLength(1);   // 只有原会话的 transcript
 });
 
-test("SC2b 镜像：缺 message 的工作区创建 400，目录不落盘", async ({ host }) => {
+test("镜像不变式：缺 message 的工作区创建 400，目录不落盘", async ({ host }) => {
     const wsPath = path.join(host.ws, "never-created");
     const r = await postJson(host.base, "/api/session/new", { workspace: wsPath });
     expect(r.status).toBe(400);
@@ -77,7 +77,7 @@ test("SC2b 镜像：缺 message 的工作区创建 400，目录不落盘", async
     expect((await getJson(host.base, "/api/sessions")).body).toHaveLength(0);
 });
 
-test("SC2c 启动清扫：孤儿条目与空 transcript 被兜底清除", async ({ host }) => {
+test("启动清扫：孤儿条目与空 transcript 被兜底清除", async ({ host }) => {
     // 预置老版本遗留：turns=0 条目 + 空 transcript 文件（首装种子形态），再启动
     const orphanId = "sOrphan";
     const indexJson = {
@@ -99,20 +99,20 @@ test("SC2c 启动清扫：孤儿条目与空 transcript 被兜底清除", async 
     expect(inp.status).toBe(400);
 });
 
-test("SC2d 镜像：失败创建后原会话与 active 分毫未动", async ({ host }) => {
+test("镜像不变式：失败创建后原会话与 active 分毫未动", async ({ host }) => {
     const created = await postJson(host.base, "/api/session/new", { message: "原会话" });
     const sid = created.body.id;
     await waitTurnDone(host);   // 等 turn 收口
     const beforeRecords = (await getJson(host.base, "/api/transcript?after=0")).body.records.length;
 
-    await postJson(host.base, "/api/session/new", {});   // 裸调用 400（SC2a 已断言状态码）
+    await postJson(host.base, "/api/session/new", {});   // 裸调用 400（状态码已在前一用例断言）
     expect((await getJson(host.base, "/api/session")).body.id).toBe(sid);
     expect((await getJson(host.base, "/api/transcript?after=0")).body.records.length).toBe(beforeRecords);
     const s = (await getJson(host.base, "/api/sessions")).body.find((x) => x.id === sid);
     expect(s.turns).toBe(1);
 });
 
-test("SC3 transcript 尾行损坏：崩溃中断的半行被忽略，会话照常可用", async ({ host }) => {
+test("transcript 尾行损坏：崩溃中断的半行被忽略，会话照常可用", async ({ host }) => {
     const created = await postJson(host.base, "/api/session/new", { message: "创建 hello.txt" });
     expect(created.body.ok).toBe(true);
     const sid = created.body.id;
