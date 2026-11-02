@@ -4,14 +4,23 @@
 > 理由，是否实施由内核节奏决定（改内核在子模块 `external/nostos` 工作树直接改）。
 > 新批次覆盖式更新「当前发现」；已落地的结论压缩进「落地状态」。
 
-## 当前发现（批次：沙盒权限「墙→闸」 · 2026-11-02——本批次无可优化点；观察 13–16 维持）
+## 当前发现（批次：mod 自扩展 · 2026-11-02——本批次无可优化点；观察 13–17 维持）
 
-**本批次无可优化点**：jail 与权限把关全在产品侧（shared/vckit/path_jail.hpp + 插件
-确认清单），语义改造零内核涉；批次内真实触发的平台事实（GetFullPathNameW 静默剥离
-段尾点/空格 ⇒ 卫生检查必须前置到规范化前）已随 path_jail.hpp 注释与单测留存，
-非内核缺口。
+**本批次无可优化点**：mods 装载面（宿主启动扫描 `<exe>\mods\*.dll`）、agent 工具表
+热接入（订阅契约既有事件 vc.tool.register）与随包 SDK 全在产品层，零内核涉；设计
+期排查过「agent 是否需要服务枚举 API」——契约既有 tool_register 通告恰好覆盖，
+未触发内核缺口。
 
-**立项标准（本批起生效）**：内核侧立项一律以内核仓 `external/nostos/docs/内核规范.md`
+**观察 17（低，2026-11-02 重启批次挂起，维持）**：loader 无运行期重载/卸载原语，
+应用新插件集只能进程级 respawn（触发场景：设计 webui「重启后端」时——插件清单
+启动定死，配置/清单变更的唯一应用途径是重启进程；宿主以 `--respawn` 分离
+respawner 同端口重拉完整解决）。loader 只有启动期 `DynamicPlugin::load` 与退出期
+`unload`。方向：若内核提供受控的运行期重载原语（unload → load 同路径），宿主可
+省掉进程旁路。记低优先的理由：运行中卸载的真实复杂性在插件侧收口（runner 子进
+程、webui 服务面、MCP 树）而非 loader 本身——respawn 是完整且廉价的产品侧解法，
+内核缺口收益有限。mod 批次注：mods 装载同样走 respawn 生效，未加剧此缺口。
+
+**立项标准（2026-10-31 审核批起生效）**：内核侧立项一律以内核仓 `external/nostos/docs/内核规范.md`
 的六问准入清单为准（机制非策略 / 非协议引擎框架 / OS 未提供 / 零依赖 / ≥2 消费方
 或 ABI 直接配套 / 回滚可表达）——任一不过即由产品仓 `shared/` 或插件私有收编，
 本文件记录裁决依据。
@@ -82,6 +91,7 @@ tframe 同款断言框架产品自备 62 行（tests/unit/ithaca_test_framework.
 
 | 日期 | 发现 | 状态 |
 |------|------|------|
+| 2026-11-02 | mod 自扩展批次：mods 装载面（宿主启动扫 `<exe>\mods\*.dll`，argv/profile 之外唯一自动发现通道）+ agent 工具表热接入（订阅契约既有 vc.tool.register，动态扩各槽取表名单——修掉"新工具表对 agent 默认不可见"的产品缺口）+ 随包 mod SDK（sdk/mod：单 include 根收口三棵产品头树 + 一键 cl 构建 + hello 示例）——发行版无源码自扩展闭环成立 | 已落地（产品仓随批次实施；e2e：stage 内 SDK 编示例 → mods 目录投放 → 装载/热接入/agent 调用/重启重扫/移除即失效全链验证；工作树待提交） |
 | 2026-11-02 | 沙盒权限「墙→闸」批次：PathJail 根外路径解析为自身并标 outside（把关上移三档权限模式）、auto-edit 的 outside_root dry 预检、full-auto 全权访问 + 切换确认弹窗——内核零改动 | 已落地（产品仓随批次实施，check 全绿；详见提交与 path_jail.hpp 头注释） |
 | 2026-11-02 | 观察 6/7：槽订阅「判空→submit→失败回退同步」三行收口节拍、表槽 JSON 调用「dump→调槽→parse→拷出参」五步样板、出参生命周期口径两插件各说各话（agent 立即拷贝 / webui 持存活缓冲） | 已落地（产品 SDK 层 shared/vckit 收编：slot_call.hpp——slot_call_json/str 出参在槽返回后立即消费、状态码透传、json 类型无感适配仓里两份 vendored 副本，消费方存活缓冲整体退役；poster.hpp 补 poster_defer——判空/作废就地同步执行，「必须执行」节拍三行收一步。消费跟迁：agent 全部表槽调用点（ctx_strategy/session/compress）与 done/error 收口节拍、webui 工具代理 call_tool_json_；ingest 槽回包单键信封解包——双层 JSON 转义让大结果膨胀 ~15% 且模型要穿透转义读正文，解包后与内置管线口径逐字节一致恢复。Owner 配对核验已在 cleanup 路径统一（现状达标）；scratch 维持 agent 私有（单消费，随内核收缩裁决）。无内核改动——便利件归产品 SDK 层，与 poster 原语同层） |
 | 2026-11-01 | 内核职责收缩：对照主流内核纪律审核（OS 内核 × 插件框架内核两参照系，机制/策略分离 + framework 不含 service）⇒ kit 能力层大部分不属内核——应用协议与策略（http/win_http/active_gate/config）、文本引擎（regex）、OS 机制封装（process/piped_process/win 部分件）、零消费死面（log/timer/task/process/config），另 vendored json（全仓 74% 行数）托管在内核属第三方库错放；标准成文于内核仓 `docs/内核规范.md`（六问准入，后续立项以此为据） | 已落地（内核：删 kit/config、log、timer、task、process 五件（产品仓零 include）；win/win_http/path_jail/piped_process/poster/active_gate 六件迁产品 shared/vckit（namespace nostos::kit → vckit）；regex 迁回 workspace、http 迁回 webui、scratch 迁回 agent（均单消费者，插件私有）；vendored json 落产品 shared/nlohmann；CMake 删 nostos::kit/nostos::kit_http 两目标，README/src/README kit 章节退役；kit/subscriptions（ABI 配套）留守。产品：40 处 include + 全部 nostos::kit 符号跟迁（http 件命名空间 vc_webui::http、regex 归 vcws、scratch 归 vc_agent）；webui 自编 src/http.cpp 并链 ws2_32；host/shell 挂 shared include，shell 摘除 NOSTOS_ROOT 接线；AGENTS.md shared/ 纪律行扩为宿主/壳裸名取用 + vckit/nlohmann 落点。内核自有代码 ~8.7k → ~5.5k 行，仓体 33.5k → ~5.7k（-83%）。工作树待提交） |

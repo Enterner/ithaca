@@ -8,6 +8,7 @@ export const S = reactive({
   live: null,           // 流式块 {reasoning, text, open}（SSE 专属，不落盘；open 默认折叠）
   since: 0, lastId: -1,
   conn: 'off',          // 'on' | 'off'
+  restarting: false,    // 重启后端在途（设置面板触发）：health 恢复前按钮停在「重启中…」
   inFlight: false,
   lastPrompt: 0,
   rate: '',   // 会话平均输出速率 tok/s（''=尚无计量，显示面隐藏）；records 增量采样维护

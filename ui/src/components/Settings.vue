@@ -10,7 +10,7 @@ import { ref, reactive, computed, watch, toRaw } from 'vue'
 import { NModal } from 'naive-ui'
 import Cdl from './Cdl.vue'
 import { S, saveConfig, loadPluginUi, fmtCtx, parseCtx, DEFAULT_CONTEXT,
-         fetchProviderModels } from '../store'
+         fetchProviderModels, restartBackend } from '../store'
 import { PRESETS } from '../presets'
 import { confirmDialog } from '../confirm'
 import McpSettings from './McpSettings.vue'
@@ -86,6 +86,19 @@ watch(() => S.provModelsEvt, (e) => {
   const clipped = fresh.length > pick.length ? `，已截取最新 ${pick.length} 个（其余 ${fresh.length - pick.length} 个可手动添加）` : ''
   fetchMsg.value = `平台返回 ${e.models.length} 个模型，新增 ${pick.length} 个${clipped}`
 })
+
+// 重启后端：全局动作（不属于任何 tab，挂标题行）。确认框只讲必然后果——
+// 进行中的回合会中断；重启在途按钮锁在「重启中…」，连接恢复由顶栏指示灯反馈
+async function onRestart() {
+  if (S.restarting) return
+  if (!(await confirmDialog({
+    title: '重启后端',
+    content: '进行中的回合会中断。',
+    positive: '重启',
+    type: 'warning',
+  }))) return
+  await restartBackend()
+}
 
 async function openPanel() {
   // 从 store 深拷贝。toRaw 先脱响应式代理再 structuredClone——S.providers 是
@@ -214,6 +227,8 @@ async function onSave() {
           <span v-if="S.pluginUi.length" class="tab" :class="{ on: tab === 'plug' }"
                 @click="tab = 'plug'">插件</span>
         </div>
+        <button class="stext" :disabled="S.restarting" @click="onRestart">
+          {{ S.restarting ? '重启中…' : '重启后端' }}</button>
       </div>
     </template>
     <div class="nbset" v-if="tab === 'model'">

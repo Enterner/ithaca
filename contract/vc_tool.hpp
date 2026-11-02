@@ -1,9 +1,10 @@
 #pragma once
 // ithaca 契约 —— 统一工具表。
 //
-// 任何插件都能成为"工具提供者"：svc 名自选（vc.tool.workspace / vc.tool.runner / …），
-// 表形状相同 ⇒ agent 泛型桥接，新增工具插件零 agent 改动。
-// 发现走 config 显式清单（agent.tools），本表不约定名字、只约定形状。
+// 任何插件都能成为"工具提供者"：svc 名自选（ithaca.tool.workspace /
+// ithaca.tool.runner / …），表形状相同 ⇒ agent 泛型桥接，新增工具插件零 agent 改动。
+// 发现双通道：config 显式清单（agent.tools / ITHACA_AGENT_TOOLS）+ vc.tool.register
+// 热接入（mod/后到插件的通告即扩名单）；本表不约定名字、只约定形状。
 // 布局纪律：C 布局、字段只在尾部追加、字符串只在调用期有效。
 #include <nostos/abi/interface.hpp>
 

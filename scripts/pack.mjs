@@ -38,6 +38,26 @@ for (const f of need) {
 }
 fs.cpSync(path.join(ROOT, "ui", "dist"), path.join(stage, "web", "dist"), { recursive: true });
 
+// ---- mod SDK（发行版自扩展：无源码环境构建 mods\ DLL）----
+// include 收口为单一根：contract 平铺（裸名 include）+ shared 树（目录根 include）
+// + nostos 树（<nostos/...> include）——三种产品头形态从同一 /I 全部可解，构建
+// 脚本与示例自仓内 sdk/mod/ 拷入（正本在仓，防随包副本漂移）。
+{
+    const sdk = path.join(stage, "sdk", "mod");
+    const inc = path.join(sdk, "include");
+    fs.mkdirSync(inc, { recursive: true });
+    for (const f of fs.readdirSync(path.join(ROOT, "contract"))) {
+        if (f.endsWith(".hpp")) fs.copyFileSync(path.join(ROOT, "contract", f), path.join(inc, f));
+    }
+    for (const d of ["shared", path.join("external", "nostos", "include")]) {
+        fs.cpSync(path.join(ROOT, d), inc, { recursive: true });
+    }
+    for (const f of ["build.cmd", "README.txt"]) {
+        fs.copyFileSync(path.join(ROOT, "sdk", "mod", f), path.join(sdk, f));
+    }
+    fs.cpSync(path.join(ROOT, "sdk", "mod", "example"), path.join(sdk, "example"), { recursive: true });
+}
+
 // 启动宿主.cmd：受信入口（cmd 链）先拉起宿主，ithaca.exe 再附着
 // （企业管控软件按父进程信任链拦截未知程序的子进程——cmd 签名父进程可放行）
 fs.copyFileSync(path.join(ROOT, "scripts", "启动宿主.cmd"), path.join(stage, "启动宿主.cmd"));

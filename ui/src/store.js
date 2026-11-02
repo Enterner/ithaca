@@ -8,6 +8,6 @@ export { api, fetchConfig, fetchFsList, fetchFile, fetchMcpStatus, fetchAgentLog
          fetchCtxBreakdown, fmtK, DEFAULT_CONTEXT, isImageAtt, attUrl, previewUrl } from './store/api'   // HTTP 契约原语与配置映射
 export { liveStart, pushLocal } from './store/records'   // 记录状态机的发送侧入口
 export { openSession, newSession, delSession, renameSession, loadSessions } from './store/sessions'   // 会话域：切换/新建/删除/重命名/注册表装载
-export { send, decide, setModel, setMode, saveConfig, pickFolder,
-         loadPluginUi, savePluginVals, saveMcpVals } from './store/actions'   // 用户动作：发送/裁决/热切/保存
+export { send, decide, setModel, setMode, saveConfig, restartBackend, pickFolder,
+         loadPluginUi, savePluginVals, saveMcpVals } from './store/actions'   // 用户动作：发送/裁决/热切/保存/重启后端
 export { boot } from './store/boot'   // 启动编排（health→配置→SSE→重放→会话）

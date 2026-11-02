@@ -172,6 +172,14 @@ private:
     http::Response file_(const std::string& rel);
     void broadcast_(json rec);
 
+    // ---- 自我重启（src/plugin.cpp）----------------------------------------------
+
+    /// POST /api/restart：自我重启宿主进程。spawn 本 exe 的分离 respawner
+    ///（等本进程死亡后按原命令行 + 固定端口重拉，协议见 host/main.cpp
+    /// respawn_entry）后 std::exit(0)——响应不送达（同 /api/shutdown），前端以
+    /// 断连为重启开始信号；spawn 失败抛异常经 defer_ 异常钩子补 500、进程存活。
+    void restart_self_();
+
     // ---- 会话记录（src/sessions.cpp）--------------------------------------------
 
     // owner = 记录归属会话（事件尾部 session 标解析，多会话并行各自落盘）：

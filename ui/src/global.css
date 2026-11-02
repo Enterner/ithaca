@@ -601,6 +601,14 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 
 /* 设置弹窗标签页（模型接入 / MCP 工具）与 MCP 状态块（Nebula，同 global 令牌） */
 .sethead { display: flex; align-items: center; width: 100%; }
+/* 标题行文字按钮（重启后端）：视觉语言同 .fs-btn（无框/暗色/hover 提亮）但不定宽
+   ——fs-btn 是 22×22 图标位，套文字会竖排（踩过） */
+.sethead .stext { margin-left: 10px; font-size: 12.5px; white-space: nowrap;
+                  flex-shrink: 0; background: none; border: none;
+                  color: var(--dim); cursor: pointer; border-radius: 5px;
+                  padding: 3px 8px; }
+.sethead .stext:hover { color: var(--text); background: rgba(255,255,255,.07); }
+.sethead .stext:disabled { opacity: .5; cursor: default; }
 .settabs { display: flex; gap: 4px; margin-left: auto; background: var(--panel);
            border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
 .settabs .tab { padding: 5px 16px; border-radius: 7px; font-size: 12.5px;

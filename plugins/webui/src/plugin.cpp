@@ -21,8 +21,19 @@
 #include "vcoffice/iface.hpp"  // vcoffice::kToolSvc：office 工具表（文档分流用）
 
 #include <cstdlib>  // std::getenv/atoi/atol/exit：环境变量、端口解析与关停
-
 #include <fstream>  // std::ofstream：实际端口落盘
+#include <stdexcept>  // std::runtime_error：restart_self_ 的失败出口（defer_ 钩子补 500）
+
+// NOTE: windows.h 必须在所有 nostos/vckit 头之后（内核 loader 同款纪律）——COM
+// 头的 #define interface struct 会撞 nostos::Context::interface；LEAN_AND_MEAN
+// 挡掉 COM 一半，NOMINMAX 挡 min/max 宏
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>  // 自我重启的进程原语（DuplicateHandle/CreateProcessW）
 
 namespace vc_webui {
 
@@ -372,6 +383,11 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
         // 已落盘，立即退出安全；响应不送达（接受该形态）。
         return defer_(req, [](std::uint64_t) { std::exit(0); });
     }
+    if (m == "POST" && t == "/api/restart") {
+        // 自我重启：respawner 等本进程死亡后同端口重拉（协议见 restart_self_
+        // 与 host/main.cpp respawn_entry）；响应不送达 = 前端断连即重启开始信号
+        return defer_(req, [this](std::uint64_t) { restart_self_(); });
+    }
     host_.log(2, "ithaca.webui: 404 " + m + " " + t);   // 诊断：路由未命中点
     return http::Response::status_page(404, "not found");
 }
@@ -388,6 +404,56 @@ http::Response WebuiPlugin::json_resp(json obj, int status) {
     http::Response r = http::Response::text(status, "application/json; charset=utf-8",
                                             std::move(s));
     return r;
+}
+
+// ---- 自我重启（POST /api/restart 宿主线程闭包；respawn 对端见 host/main.cpp
+// respawn_entry——本端只负责把 respawner 拉起来）--------------------------------
+
+void WebuiPlugin::restart_self_() {
+    std::wstring exe(32768, L'\0');
+    exe.resize(GetModuleFileNameW(nullptr, exe.data(),
+                                  static_cast<DWORD>(exe.size())));
+    if (exe.empty()) throw std::runtime_error("取自身路径失败");
+
+    // 原命令行去掉 argv[0] 后原样保留——respawner 只从尾部剥 flag，不重拼引号
+    std::wstring_view raw = GetCommandLineW();
+    size_t tail = 0;
+    if (!raw.empty() && raw.front() == L'"') {
+        const size_t endq = raw.find(L'"', 1);
+        tail = (endq == std::wstring_view::npos) ? raw.size() : endq + 1;
+    } else {
+        const size_t sp = raw.find(L' ');
+        tail = (sp == std::wstring_view::npos) ? raw.size() : sp;
+    }
+    while (tail < raw.size() && raw[tail] == L' ') ++tail;
+
+    std::wstring cmd;
+    cmd.reserve(exe.size() + (raw.size() - tail) + 64);
+    cmd += L'"'; cmd += exe; cmd += L"\" ";
+    if (tail < raw.size()) cmd.append(raw.substr(tail));
+    // NOTE: flag 固定追加在尾部（respawner 按精确后缀剥离）；等父传 pid 而非
+    // 句柄——respawner 起跑时本进程必然还在（spawn-then-exit 顺序），pid 无
+    // 复用窗口，免掉句柄继承链
+    cmd += L" --respawn " + std::to_wstring(GetCurrentProcessId());
+    cmd += L" --respawn-port " + std::to_wstring(server_ ? server_->port() : 0);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    // NOTE: bInheritHandles=FALSE——本进程的可继承句柄（监听 socket、transcript
+    // 文件等）泄进 respawner/新宿主会让新宿主 bind「成功」（SO_REUSEADDR 双绑）
+    // 而连接落进无人 accept 的旧套接字（踩过: 健康检查全超时，同端口双
+    // LISTENING）。代价：respawner 无 std 句柄，新宿主日志断写（下次壳拉起续上）
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr,
+                        /*bInheritHandles=*/FALSE, DETACHED_PROCESS,
+                        nullptr, nullptr, &si, &pi))
+        throw std::runtime_error("拉起 respawner 失败（gle=" +
+                                 std::to_string(GetLastError()) + "）");
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    // 同 /api/shutdown 的接受形态：逐回合已落盘、MCP 子树经 job 收口，立即退出
+    // 安全；挂起连接的响应不送达
+    std::exit(0);
 }
 
 std::string WebuiPlugin::mime_of(const fs::path& p) {

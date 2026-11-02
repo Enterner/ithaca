@@ -122,6 +122,29 @@ async function reloadConfig() {
   cfgFromServer(await api('/api/config'))
 }
 
+/**
+ * 重启后端进程：POST /api/restart（respawner 等旧进程死亡后同端口重拉，页面靠
+ * SSE 重连 + 补洞轮询自愈），health 恢复后回拉配置与会话。失败行为：POST 的
+ * 响应刻意不送达（进程先退，断连/超时即预期，不报错）；health 60s 未恢复 ⇒
+ * alert 收场、restarting 复位，不拉配置。
+ */
+export async function restartBackend() {
+  S.restarting = true
+  await Promise.race([
+    api('/api/restart', {}).catch(() => {}),   // 显式 {}：POST 端点（api() 无 body 发 GET）
+    new Promise(r => setTimeout(r, 8000)),     // 兜住 exit 卡死形态：不等悬挂连接
+  ])
+  let back = false
+  for (let i = 0; i < 60; i++) {
+    await new Promise(r => setTimeout(r, 1000))
+    try { if ((await api('/api/health')).ok) { back = true; break } } catch {}
+  }
+  S.restarting = false
+  if (!back) { alert('重启超时：后端未恢复'); return }
+  await reloadConfig()
+  loadSessions()
+}
+
 /** 权限模式切换（通告由 agent 在值真正变化时发，这里不重复发）。
  *  失败行为：请求失败返回 {ok:false,error}，本地模式值不动（下次拉配置对齐）。 */
 export async function setMode(mode) {

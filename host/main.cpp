@@ -10,6 +10,11 @@
 //     --selftest   ：冒烟自检。装载后直接驱动 vc.llm.v1 跑一次回放，校验
 //                    「表调用 → 插件自有线程 → poster → 事件」全链路，收到 done/error 即退出。
 //                    宿主侧脚手架（订阅/剧本/点火/裁决）全在 selftest.cpp。
+//     --respawn <pid> --respawn-port <端口>：
+//                  内部模式（webui /api/restart 触发，不进用法文本）：分离
+//                  respawner——等 pid 进程死亡后按原命令行（剥掉本组 flag）重新
+//                  拉起自身；不装载插件不进排水循环。端口经 ITHACA_WEBUI_PORT
+//                  覆盖为实际端口，实现同端口重启（见 respawn_entry 注释）。
 //
 // 设计要点：
 //   · 排水节奏：poster 唤醒接缝驱动（接缝由内核 set_post_wake 提供）——任何插件
@@ -25,11 +30,14 @@
 #include <nostos/loader.hpp>
 #include <nostos/nostos.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #if defined(_WIN32)
 #include <crtdbg.h>  // _CrtSetReportMode：Debug 断言改道 stderr（弹窗卡死无人值守链路）
 #endif
@@ -129,6 +137,113 @@ void on_sigabrt(int) {
     std::abort();
 }
 
+// ---- 自我 respawn（--respawn 内部模式；webui /api/restart 的落地机制）-------
+// 重启端点在本进程退出前 spawn 的分离 respawner：等父进程真正死亡（监听端口
+// 随之释放）后按原命令行重新拉起宿主。端口不变 ⇒ 前端（浏览器/WebView2 同源）
+// 靠既有自愈机制（SSE 重连 + 补洞轮询 + after 回填）原地恢复，无需端口再发现。
+// NOTE: 两段 spawn 一律 bInheritHandles=FALSE——父进程的可继承句柄（监听
+// socket、transcript 文件等）泄进 respawner/新宿主会让新宿主 bind「成功」
+//（SO_REUSEADDR 双绑）而连接落进无人 accept 的旧套接字（踩过: 健康检查全超
+// 时，netstat 同端口双 LISTENING）。代价是 std 句柄不透传，新宿主日志断写
+//（壳模式 host.log 到此为止，下次壳拉起续上）。
+// NOTE: 等父用 pid + OpenProcess：respawner 由「即将退出的父」spawn——起跑时
+// 父必然还在（spawn-then-exit 顺序），pid 无复用窗口；OpenProcess 失败即父已
+// 死亡，等待目标本身已达成，直接进入拉起。
+// NOTE: 新宿主 env 继承 respawner（= 旧宿主 env 全量），ITHACA_WEBUI_PORT 显式
+// 覆盖为实际端口——壳模式传 0（系统分配），不覆盖则新宿主换端口、同源自愈失效。
+// NOTE: 重启 = 复用原启动参数：插件清单启动时定死（argv 列 DLL 形态不变；
+// --profile 形态重读 profile，清单内增删的插件生效）。
+// 返回值：-1 = 非 respawn 模式（交回正常启动）；0 = respawn 完成；1 = respawn 失败。
+int respawn_entry(int argc, char** argv) {
+    DWORD parent_pid = 0;
+    std::string port;
+    bool is_respawn = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a = argv[i];
+        if (a == "--respawn" && i + 1 < argc) {
+            is_respawn = true;
+            parent_pid = static_cast<DWORD>(std::strtoul(argv[++i], nullptr, 10));
+        } else if (a == "--respawn-port" && i + 1 < argc) {
+            port = argv[++i];
+        }
+    }
+    if (!is_respawn) return -1;
+    if (port.empty()) return 1;   // 缺端口 = 无法保证同端口，宁可不起新实例
+
+    const std::wstring wport(port.begin(), port.end());   // 纯数字端口，窄化无损
+    SetEnvironmentVariableW(L"ITHACA_WEBUI_PORT", wport.c_str());
+
+    // 等父死亡（30s 上限）：超时 = 旧宿主 exit 卡死，宁可不起——双宿主会争抢
+    // 同一 home（index/transcript 共写）与端口
+    if (HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, parent_pid)) {
+        const DWORD w = WaitForSingleObject(parent, 30000);
+        CloseHandle(parent);
+        if (w != WAIT_OBJECT_0) return 1;
+    }
+
+    // 新宿主命令行 = 原命令行剥掉本组 flag：spawn 方固定把 flag 追加在尾部，
+    // 精确后缀匹配可安全剥离；不重拼引号，原始参数里的引号/空格原样保留
+    std::wstring cmd = GetCommandLineW();
+    const std::wstring suffix = L" --respawn " + std::to_wstring(parent_pid) +
+                                L" --respawn-port " + wport;
+    const auto pos = cmd.rfind(suffix);
+    if (pos == std::wstring::npos || pos + suffix.size() != cmd.size()) return 1;
+    cmd.resize(pos);
+
+    STARTUPINFOW si{};
+    si.cb = sizeof si;
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr,
+                        /*bInheritHandles=*/FALSE, DETACHED_PROCESS,
+                        nullptr, nullptr, &si, &pi))
+        return 1;   // 旧宿主已死：壳看门狗判停 / 用户点会话行重拉
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 0;
+}
+
+// ---- mods 目录扫描（约定式装载面）------------------------------------------
+// <exe>\mods\*.dll 按文件名序追加进插件清单——argv/profile 之外的唯一自动发现
+// 通道：mod 作者（含发行版里的 agent 自己，随包 sdk/mod 提供构建 SDK）把 DLL
+// 丢进目录、重启即生效，无需改启动器或 profile。重启 respawn 复用原命令行，
+// 本扫描属启动逻辑照跑 ⇒ 「装 mod → 点重启」闭环成立。
+// NOTE: 恒在 argv/profile 清单之后追加 ⇒ mod 晚于 agent 激活，其 tool_register
+// 热接入通告必然送达已订阅的 agent（先于 agent 装载的插件走静态清单/环境变量）。
+// NOTE: 壳多实例共享同一 exe 目录——mods 是全实例级装配，不随会话隔离。
+std::vector<std::string> scan_mods(const std::filesystem::path& dir,
+                                   const std::vector<std::string>& known) {
+    std::vector<std::string> found;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec)) return found;
+    auto fold = [](std::string s) {   // Windows 路径大小写不敏感：比较前统一折叠
+        for (char& c : s) c = static_cast<char>(std::tolower(
+                                  static_cast<unsigned char>(c)));
+        return s;
+    };
+    std::vector<std::string> known_fold;
+    known_fold.reserve(known.size());
+    for (const auto& p : known) {
+        auto canon = std::filesystem::weakly_canonical(p, ec);
+        known_fold.push_back(fold(ec ? p : canon.string()));
+    }
+    for (const auto& it : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (!it.is_regular_file(ec)) continue;
+        std::string ext = it.path().extension().string();
+        if (fold(ext) != ".dll") continue;
+        const std::string p = it.path().string();
+        const auto canon = std::filesystem::weakly_canonical(p, ec);
+        const std::string key = fold(ec ? p : canon.string());
+        if (std::find(known_fold.begin(), known_fold.end(), key) !=
+            known_fold.end())
+            continue;   // 与 argv/profile 指向同一文件：只装载一次
+        known_fold.push_back(key);
+        found.push_back(p);
+    }
+    std::sort(found.begin(), found.end());   // 文件名序 = 确定性装载序
+    return found;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -159,6 +274,13 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);  // 中文输出；VT 转义由界面插件自行启用
     signal(SIGABRT, on_sigabrt);  // abort 落点留痕（Debug 断言改道后仍可能直走 abort）
 #endif
+
+    // --respawn 内部模式先于一切启动逻辑：respawner 只是「等 + 拉起」的薄壳，
+    // 不装载插件、不进排水循环（正常启动没有这一态）
+    {
+        const int rc = respawn_entry(argc, argv);
+        if (rc >= 0) return rc;
+    }
 
     // 用法文本单一出处（--profile 缺值与无插件两出口共用；签名一变改这里一处）
     static const char* const kUsage =
@@ -196,6 +318,19 @@ int main(int argc, char** argv) {
         if (!prof.error.empty()) std::printf("profile 警告：%s\n", prof.error.c_str());
         std::printf("profile：%s（%s）\n", prof.name.c_str(), prof.path.c_str());
         paths.insert(paths.begin(), prof.plugins.begin(), prof.plugins.end());
+    }
+    // mods 扫描（约定式装载面，见 scan_mods 注释）在空清单判定之前——裸宿主 +
+    // 空 mods 仍拒绝启动，有 mod 则放行。selftest 跳过：验收剧本对在场插件集
+    // 敏感，mod 的偶发在场不得影响自动化判定。
+    if (!selftest) {
+        const std::filesystem::path mods_dir =
+            ithaca::profile::exe_dir(argv[0]) / "mods";
+        const std::vector<std::string> mods = scan_mods(mods_dir, paths);
+        if (!mods.empty()) {
+            std::printf("mods：%zu 个（%s）\n", mods.size(),
+                        mods_dir.string().c_str());
+            paths.insert(paths.end(), mods.begin(), mods.end());
+        }
     }
     if (paths.empty()) {
         std::printf("%s例：npm run dev（webui 开发链）或 scripts/启动宿主.cmd（桌面链）。\n",

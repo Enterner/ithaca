@@ -11,6 +11,7 @@
 
 #include "agent_plugin.hpp"
 
+#include <algorithm>  // std::find：热接入名单去重
 #include <cstdlib>  // std::getenv：工具清单/权限模式/会话文件
 #include <fstream>  // std::ifstream：系统提示词文件通道
 #include <iterator>  // std::istreambuf_iterator：提示词整读
@@ -47,6 +48,12 @@ AgentCtx& AgentPlugin::ensure_ctx_(const std::string& id) {
         //（可选能力不阻激活）
         c.tool_svcs_ = {"ithaca.tool.workspace", "ithaca.tool.office",
                         "ithaca.tool.mcp", "ithaca.tool.runner"};
+    // 热接入名单继承：本槽创建前已通告的工具表（mod/后到插件）直接在列——
+    // 静态清单与通告可能重叠（内置表迟到重发），去重防取表重复
+    for (const auto& svc : dynamic_tools_)
+        if (std::find(c.tool_svcs_.begin(), c.tool_svcs_.end(), svc) ==
+            c.tool_svcs_.end())
+            c.tool_svcs_.push_back(svc);
     // 权限模式：确认清单由模式映射（见 rebuild_confirm_）——env 设默认，事件
     // 活值优先（boot 回放先于首槽的时序兜底）
     c.mode_ = vc_api::normalize_permission_mode(
@@ -191,6 +198,25 @@ nostos_status AgentPlugin::activate(const nostos::abi::Host& host) {
         }
     });
 
+    // 工具表热接入：mod/后到插件的 tool_register 通告进来即扩取表名单——发现
+    // 主通道仍是每 turn 取表（ctx_tools），这里只扩名单。双写：dynamic_tools_
+    // 供未来新槽继承，既有槽就地追加（去重防重复通告）。回调与本文件各事件
+    // 处理器同在宿主线程串行，无锁。
+    sub_tools_ = host.on(vc_api::tool_register, [this](const void* p) {
+        const auto* e = static_cast<const vc_api::ToolRegister*>(p);
+        if (e == nullptr || e->svc_name == nullptr || *e->svc_name == '\0') return;
+        const std::string svc = e->svc_name;
+        if (std::find(dynamic_tools_.begin(), dynamic_tools_.end(), svc) !=
+            dynamic_tools_.end())
+            return;
+        dynamic_tools_.push_back(svc);
+        for (auto& [id, ctx] : ctxs_) {
+            auto& tv = ctx->tool_svcs_;
+            if (std::find(tv.begin(), tv.end(), svc) == tv.end()) tv.push_back(svc);
+        }
+        host_.log(2, "ithaca.agent: 工具表接入 " + svc);
+    });
+
     // 会话持久化：ITHACA_SESSION_FILE ⇒ 启动恢复 = 首个槽（load 与切换
     // 共用路径；activate 期无 webui 竞争）
     if (const char* v = std::getenv("ITHACA_SESSION_FILE"); v != nullptr && *v != '\0') {
@@ -213,6 +239,8 @@ void AgentPlugin::deactivate() noexcept {
     sub_mode_ = {};
     sub_llm_set_ = {};
     sub_workspace_ = {};
+    sub_tools_ = {};
+    dynamic_tools_.clear();   // 重激活时由各表的 tool_register 重新通告回填
     ctxs_.clear();       // 槽订阅随 RAII 释放（slot_subs_ 在 ctx 内）
     active_ = nullptr;
     host_.log(2, "ithaca.agent: 已停用");

@@ -18,8 +18,10 @@
 // 职责边界：编排/上下文/审批策略执行在本插件；不碰文件、不起进程、
 // 不解析工具语义（工具自述经 list() 反射透传给 LLM）。
 //
-// 工具发现：env ITHACA_AGENT_TOOLS（svc 名清单，默认 workspace/office/mcp/runner
-// 四族），每次 turn 开始按清单取表（缺表跳过并通告）。审批策略：suggest 逐条问 /
+// 工具发现：双通道——静态清单 env ITHACA_AGENT_TOOLS（svc 名清单，默认
+// workspace/office/mcp/runner 四族）+ vc.tool.register 热接入（mod/后到插件的
+// 通告即扩名单，既有槽就地追加、新槽继承）；每 turn 开始按名单取表（缺表跳过
+// 并通告）。审批策略：suggest 逐条问 /
 // auto-edit 编辑免批、命令逐条问 / full-auto 全自动（沙箱由 runner 负责）；
 // ITHACA_PERMISSION_MODE 设默认，vc.permission.mode 事件热切。
 //
@@ -489,6 +491,8 @@ private:
     nostos::abi::Host::Subscription sub_mode_{};
     nostos::abi::Host::Subscription sub_llm_set_{};     // 模型窗口事件（动态阈值的数据源）
     nostos::abi::Host::Subscription sub_workspace_{};   // 工作区热切（子代理类型目录跟随）
+    nostos::abi::Host::Subscription sub_tools_{};       // 工具表热接入（vc.tool.register）
+    std::vector<std::string> dynamic_tools_;   // 热接入名单：新槽创建时继承（既有槽就地追加）
 };
 
 }  // namespace vc_agent
