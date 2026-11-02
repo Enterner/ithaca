@@ -1,5 +1,7 @@
 // 附件管线（plugin/webui 的附件切片）。
-// /api/upload：上传落盘工作区 .ithaca/uploads/（base64 解码 + 撞名避让）；
+// /api/upload：上传落盘工作区 .ithaca/uploads/（base64 解码 + 撞名避让，JSON 兼容
+// 面——e2e 与小文件）；/api/upload/raw：原始字节直传（大文件通路，上限 1GB——
+// base64-JSON 对 1GB 级文件要做 4/3 膨胀 + JSON 序列化副本，内存不可行）；
 // attachments_payload_：相对路径数组 → 多模态载荷（图片读字节内联 data_url，
 // 非图片仅元数据）；/api/attachment：附件图片字节（前端预览的数据源）。
 // 纯逻辑件（base64/mime 折叠/文件名净化）在插件根 attachments.hpp。
@@ -10,6 +12,32 @@
 #include <sstream>  // std::ostringstream：附件文件整读
 
 namespace vc_webui {
+
+/// 两条上传路由共用的落盘段（defer 闭包体内、宿主线程执行）：工作区就绪检查 +
+/// uploads 落盘 + 撞名避让 + {ok,path} 回发。字节在调用前备妥（JSON 路由解码、
+/// raw 路由直收）。
+void WebuiPlugin::upload_store_(std::uint64_t conn, std::string name, std::string bytes) {
+    if (host_workspace_.empty())
+        return respond_err_(conn, "没有工作区——请先发送首条消息创建会话再上传附件");
+    std::error_code ec;
+    const fs::path dir = fs::path(host_workspace_) / ".ithaca" / "uploads";
+    fs::create_directories(dir, ec);
+    // 撞名加序号（在扩展名前插 " (n)"——下载的文件名习惯，不破坏类型）
+    fs::path target = dir / name;
+    const std::wstring stem = fs::path(name).stem().wstring();
+    const std::wstring ext = fs::path(name).extension().wstring();
+    for (int n = 1; fs::exists(target, ec) && n < 1000; ++n)
+        target = dir / (stem + L" (" + std::to_wstring(n) + L")" + ext);
+    std::ofstream out(target, std::ios::binary);
+    if (!out)
+        return respond_err_(conn, "附件写盘失败：" + target.string());
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    if (!out) return respond_err_(conn, "附件写盘失败（写中途错误）：" + target.string());
+    // 相对路径回前端（/ 分隔——模型与 read 工具同口径）
+    std::string rel = ".ithaca/uploads/" + target.filename().string();
+    server_->respond(conn, json_resp({{"ok", true}, {"path", rel}}));
+}
 
 /// POST /api/upload {name, data(base64)} → 附件落盘到工作区 .ithaca/uploads/，
 /// 返回 {ok, path}。直接写盘不经 apply 提案：上传是用户自己的文件进场，不是对
@@ -27,35 +55,33 @@ http::Response WebuiPlugin::api_upload_(const http::Request& req) {
             return json_resp({{"ok", false}, {"error", "附件过大（>20MB）"}});
         return defer_(req, [this, name = std::move(name),
                             data = std::move(data)](std::uint64_t conn) mutable {
-            if (host_workspace_.empty())
-                return respond_err_(conn, "没有工作区——请先发送首条消息创建会话再上传附件");
             std::string bytes;
             if (!base64_decode(data, bytes))
                 return respond_err_(conn, "附件数据不是有效的 base64");
             if (bytes.size() > 20ull * 1024 * 1024)
                 return respond_err_(conn, "附件过大（>20MB）");
-            std::error_code ec;
-            const fs::path dir = fs::path(host_workspace_) / ".ithaca" / "uploads";
-            fs::create_directories(dir, ec);
-            // 撞名加序号（在扩展名前插 " (n)"——下载的文件名习惯，不破坏类型）
-            fs::path target = dir / name;
-            const std::wstring stem = fs::path(name).stem().wstring();
-            const std::wstring ext = fs::path(name).extension().wstring();
-            for (int n = 1; fs::exists(target, ec) && n < 1000; ++n)
-                target = dir / (stem + L" (" + std::to_wstring(n) + L")" + ext);
-            std::ofstream out(target, std::ios::binary);
-            if (!out)
-                return respond_err_(conn, "附件写盘失败：" + target.string());
-            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-            out.close();
-            if (!out) return respond_err_(conn, "附件写盘失败（写中途错误）：" + target.string());
-            // 相对路径回前端（/ 分隔——模型与 read 工具同口径）
-            std::string rel = ".ithaca/uploads/" + target.filename().string();
-            server_->respond(conn, json_resp({{"ok", true}, {"path", rel}}));
+            upload_store_(conn, std::move(name), std::move(bytes));
         });
     } catch (const std::exception& e) {
         return json_resp({{"ok", false}, {"error", e.what()}});
     }
+}
+
+/// POST /api/upload/raw?name=<文件名>，body = 原始字节 → 同 /api/upload 落盘。
+/// NOTE: defer 捕获 + 解析层 substr 使内存峰值 ≈ 2-3× 体积——本地回环单用户可
+/// 接受；分块落盘需动服务层解析，不值得。
+http::Response WebuiPlugin::api_upload_raw_(const http::Request& req) {
+    std::string name = sanitize_upload_name(req.query("name"));
+    if (name.empty())
+        return json_resp({{"ok", false}, {"error", "附件名为空"}});
+    if (name.size() > 120)
+        return json_resp({{"ok", false}, {"error", "附件名过长（>120 字节）"}});
+    if (req.body.size() > kUploadRawMax)
+        return json_resp({{"ok", false}, {"error", "附件过大（>1GB）"}}, 413);
+    return defer_(req, [this, name = std::move(name),
+                        body = req.body](std::uint64_t conn) mutable {
+        upload_store_(conn, std::move(name), std::move(body));
+    });
 }
 
 /// 附件相对路径数组 → 多模态载荷（TurnInput.attachments_json 的 JSON 数组）：

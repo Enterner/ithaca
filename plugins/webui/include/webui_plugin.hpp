@@ -281,6 +281,14 @@ private:
     /// POST /api/upload {name, data(base64)} → 附件落盘工作区 .ithaca/uploads/
     ///（副作用：写盘；不经 apply 提案——上传是文件进场不是内容修改）
     http::Response api_upload_(const http::Request& req);
+    /// POST /api/upload/raw?name=<文件名>，body = 原始字节 → 同 /api/upload 落盘。
+    /// 大文件通路（上限 kUploadRawMax = 1GB）：前端以 File 直接作请求体（浏览器
+    /// 流式发送），绕开 base64-JSON 管线的 4/3 膨胀与 JS 侧整文件拷贝——1GB 级
+    /// 文件在那条管线下要数 GB 内存，实际不可用。副作用同 /api/upload。
+    http::Response api_upload_raw_(const http::Request& req);
+    // 两条上传路由共用的落盘段（defer 闭包体内、宿主线程执行）：工作区就绪检查
+    // + uploads 落盘 + 撞名避让 + {ok,path} 回发。字节在调用前备妥。
+    void upload_store_(std::uint64_t conn, std::string name, std::string bytes);
     /// GET /api/attachment?path= → 附件图片字节流（纯读；uploads 白名单内的图片）
     http::Response api_attachment_(const http::Request& req);
     // 附件路径 → 多模态载荷（data_url 内联；上传落点 .ithaca/uploads/ 即白名单）

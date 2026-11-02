@@ -103,7 +103,7 @@ function onMenu(v) {
   if (v === 'upload') fileEl.value && fileEl.value.click()
   else if (v === 'compress') api('/api/session/cmd', { cmd: 1 })   // 结果走 agent 通告回流
 }
-const MAX_UPLOAD = 20 * 1024 * 1024
+const MAX_UPLOAD = 1024 * 1024 * 1024   // 1GB，与后端 kUploadRawMax 镜像（attachments.hpp）
 const uploadingNames = new Set()   // in-flight 集合：并发 drop 同名文件只传一次
 async function uploadFiles(files) {
   // hero/草稿态无落点：附件路径必须属于真实工作区，而目录创建延迟到首条消息
@@ -116,16 +116,15 @@ async function uploadFiles(files) {
   for (const f of files) {
     if (uploadingNames.has(f.name)) { showHint('「' + f.name + '」正在上传中'); continue }
     if (S.attachments.some(a => a.name === f.name)) { showHint('「' + f.name + '」已在附件列表'); continue }
-    if (f.size > MAX_UPLOAD) { showHint('「' + f.name + '」超过 20MB 上传上限'); continue }
+    if (f.size > MAX_UPLOAD) { showHint('「' + f.name + '」超过 1GB 上传上限'); continue }
     uploadingNames.add(f.name)
     try {
-      const data = await new Promise((res, rej) => {
-        const r = new FileReader()
-        r.onload = () => res(String(r.result).replace(/^data:[^,]*,/, ''))
-        r.onerror = () => rej(r.error)
-        r.readAsDataURL(f)
-      })
-      const r = await api('/api/upload', { name: f.name, data })
+      // 原始二进制直传：File 直接作请求体（浏览器流式发送，JS 侧零整文件缓冲）——
+      // base64-JSON 管线对 1GB 级文件要做 4/3 膨胀 + JSON 序列化副本，内存不可行。
+      // 不带超时信号：大文件传输时长不可预估，失败由 catch 兜底
+      const r = await fetch('/api/upload/raw?name=' + encodeURIComponent(f.name),
+                            { method: 'POST', body: f })
+        .then(x => x.json()).catch(() => ({ ok: false, error: '上传请求失败' }))
       if (r.ok) {
         // 显示名取后端返回的最终落盘名（撞名时带 " (n)" 后缀，chip 才分得清）
         S.attachments.push({ path: r.path, name: r.path.split('/').pop(), mime: f.type || '' })

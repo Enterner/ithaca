@@ -518,7 +518,7 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 .filedrag { position: absolute; top: 0; left: 0; width: 8px; height: 100%;
             cursor: ew-resize; z-index: 45; }
 .ftree { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 5px 10px;
-         font-size: 12.5px; }
+         font-size: 12.5px; user-select: none; }   /* 操作面禁选中：拖行会带出蓝色文本选区 */
 .ft-row { position: relative; display: flex; align-items: center; gap: 6px; height: 26px;
           padding-right: 8px; padding-left: calc(8px + var(--d, 0) * 14px);
           border-radius: 6px; cursor: pointer; white-space: nowrap; color: var(--text); }
@@ -526,11 +526,6 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
 .ft-row.sel { background: rgba(124,140,248,.10);
               box-shadow: inset 0 0 0 1px rgba(139,92,246,.35); }
 .ft-row.sel .ft-name { color: #fff; }
-/* 引导线:每行左端缩进区画竖线,相位对齐各祖先级的箭头中点(14px 步进) */
-.ft-row::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px;
-                  width: calc(var(--d, 0) * 14px + 2px); pointer-events: none;
-                  background: repeating-linear-gradient(90deg, rgba(255,255,255,.06) 0 1px, transparent 1px 14px);
-                  background-position-x: 14px; }
 .ft-chev { width: 12px; flex: none; display: inline-flex; justify-content: center;
            color: var(--dim); }
 .ft-chev svg { width: 11px; height: 11px; transition: transform .18s ease; }
@@ -572,7 +567,10 @@ code.ic { background: var(--panel); border: 1px solid var(--line); border-radius
           border: 1px solid color-mix(in srgb, var(--teal) 55%, transparent);
           border-radius: 3px; padding: 0 5px; }
 .cv-wrap { flex: 1; min-height: 0; position: relative; }
-.cv-host { position: absolute; inset: 0; }
+/* HACK: 嵌入式浏览器合成器偶发把 Monaco 的 margin 层粘在旧帧上——行号/文本出
+   现不随 DOM 更新的残影（层隐藏实验实锤：真 gutter visibility:hidden 后数字仍
+   在）。提升为独立合成层让本区域重绘整层失效，降低复发；对正常渲染零副作用 */
+.cv-host { position: absolute; inset: 0; transform: translateZ(0); }
 .cv-diff { position: absolute; inset: 0; overflow: auto; }
 .cv-state { position: absolute; inset: 0; display: flex; align-items: center;
             justify-content: center; color: var(--dim); font-size: 12.5px;

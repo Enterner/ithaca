@@ -218,9 +218,11 @@ nostos_status WebuiPlugin::activate(const nostos::abi::Host& host) {
         port = config_.value("port", 8790);
     std::string err;
     http::ServerOptions opts;
-    // 默认 2MB 只够对话输入——附件上传走 base64 JSON（约 4/3 膨胀），按 20MB
-    // 附件上限抬到 32MB；本机回环服务，请求缓冲随请求分配，非常驻
-    opts.max_request = 32ull * 1024 * 1024;
+    // 默认 2MB 只够对话输入——上限按 /api/upload/raw 的原始二进制上传体（1GB，
+    // kUploadRawMax）+ 请求行/头余量放宽。请求体在服务层整体缓进内存（client.in
+    // + body 拷贝 ≈ 2× 峰值），本地回环单用户可接受；停滞回收按数据到达刷新
+    //（http.cpp 读循环），大文件持续上传不会被掐
+    opts.max_request = 1024ull * 1024 * 1024 + 1024ull * 1024;
     server_ = std::make_shared<http::Server>(static_cast<std::uint16_t>(port), *this,
                                              opts, &err);
     if (server_ == nullptr || !server_->ok()) {
@@ -352,6 +354,7 @@ http::Response WebuiPlugin::handle(const http::Request& req) {
     if (m == "POST" && t == "/api/input") return api_input_(req);
     if (m == "POST" && t == "/api/decision") return api_decision_(req);
     if (m == "POST" && t == "/api/upload") return api_upload_(req);
+    if (m == "POST" && t == "/api/upload/raw") return api_upload_raw_(req);
     if (m == "POST" && t == "/api/session/cmd") return api_session_cmd_(req);
     if (m == "POST" && t == "/api/model") return api_model_(req);
     if (m == "POST" && t == "/api/provider/models") return api_provider_models_(req);

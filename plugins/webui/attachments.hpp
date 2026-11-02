@@ -4,9 +4,14 @@
 // ——上传端点与多模态载荷共用的字节口径，跨端点复制必然漂移。
 #include "vcws/text.hpp"  // vcws::ascii_lower：图片扩展名折叠（共享件）
 
+#include <cstddef>
 #include <string>
 
 namespace vc_webui {
+
+// 原始二进制上传体上限（/api/upload/raw）：1GB。前端 MAX_UPLOAD（InputBar.vue）
+// 与此镜像——改一处必须同步另一处
+inline constexpr std::size_t kUploadRawMax = 1024ull * 1024 * 1024;
 
 // base64 编码（标准字母表 + padding）：多模态附件把上传的图片字节内联为 data_url
 inline std::string base64_encode(const std::string& in) {
